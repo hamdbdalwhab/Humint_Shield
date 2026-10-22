@@ -1,0 +1,68 @@
+# --- Secrets & local configuration -------------------------------------------
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+*.p12
+*.pfx
+
+# --- Python -------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.pyc
+*.egg-info/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+*.db
+*.sqlite
+*.sqlite3
+_migration_test.db
+launcher_probe.db
+
+# Local verification probes (contain machine-specific paths / test credentials).
+backend/test_brevo.py
+backend/test_*_live.py
+backend/_*.py
+
+# --- Node / frontend ----------------------------------------------------------
+node_modules/
+dist/
+build/
+frontend/dist/
+frontend/build/
+frontend/coverage/
+frontend/playwright-report/
+frontend/test-results/
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# --- Local runtime logs -------------------------------------------------------
+*.log
+.tunnel.log
+.tunnel.out.log
+.backend.out.log
+.backend.err.log
+backend/server.out.log
+backend/server.err.log
+.script-run.log
+
+# --- Sensitive documentation evidence ----------------------------------------
+# These screenshots contain real employee addresses and captured form values.
+docs/screenshots/
+
+# --- Editors / OS -------------------------------------------------------------
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db

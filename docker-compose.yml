@@ -1,0 +1,134 @@
+# ============================================================================
+# HUMINT Shield - full stack
+#
+#   postgres 16  -> primary datastore
+#   redis 7.2    -> Celery broker/result backend + rate-limit counters
+#   backend      -> FastAPI (gunicorn + uvicorn workers), runs migrations
+#   worker       -> Celery worker (background campaign delivery)
+#   beat         -> Celery beat (retention / housekeeping schedules)
+#   frontend     -> nginx serving the compiled SPA + reverse-proxying the API
+#
+# Usage:
+#   cp .env.example .env      # then edit SECRET_KEY / ENCRYPTION_KEY / BREVO_API_KEY
+#   docker compose up -d --build
+#   open http://localhost:8080
+# ============================================================================
+name: humint-shield
+
+x-backend-build: &backend-build
+  context: ./backend
+
+x-backend-database-url: &backend-database-url
+  DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-humint}:${POSTGRES_PASSWORD:-humint}@postgres:5432/${POSTGRES_DB:-humint_shield}
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-humint}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-humint}
+      POSTGRES_DB: ${POSTGRES_DB:-humint_shield}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        [
+          'CMD-SHELL',
+          'pg_isready -U ${POSTGRES_USER:-humint} -d ${POSTGRES_DB:-humint_shield}',
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    networks: [humint]
+
+  redis:
+    image: redis:7.2-alpine
+    restart: unless-stopped
+    command: ['redis-server', '--appendonly', 'yes', '--save', '60', '1']
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    networks: [humint]
+
+  backend:
+    build: *backend-build
+    image: humint-shield-backend:latest
+    restart: unless-stopped
+    command: ['web']
+    env_file: [.env]
+    environment:
+      <<: *backend-database-url
+      REDIS_URL: redis://redis:6379/0
+      RUN_MIGRATIONS: 'true'
+      PORT: '8000'
+    ports:
+      - '${API_PORT:-8000}:8000'
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks: [humint]
+
+  worker:
+    build: *backend-build
+    image: humint-shield-backend:latest
+    restart: unless-stopped
+    command: ['worker']
+    env_file: [.env]
+    environment:
+      <<: *backend-database-url
+      REDIS_URL: redis://redis:6379/0
+      RUN_MIGRATIONS: 'false'
+      CELERY_CONCURRENCY: '4'
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks: [humint]
+
+  beat:
+    build: *backend-build
+    image: humint-shield-backend:latest
+    restart: unless-stopped
+    command: ['beat', '--schedule', '/tmp/celerybeat-schedule']
+    env_file: [.env]
+    environment:
+      <<: *backend-database-url
+      REDIS_URL: redis://redis:6379/0
+      RUN_MIGRATIONS: 'false'
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks: [humint]
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        # Same-origin deployment: nginx proxies /api and /training to the backend.
+        VITE_API_BASE_URL: /
+    image: humint-shield-frontend:latest
+    restart: unless-stopped
+    ports:
+      - '${HTTP_PORT:-8080}:80'
+    depends_on:
+      backend:
+        condition: service_started
+    networks: [humint]
+
+volumes:
+  pgdata:
+  redisdata:
+
+networks:
+  humint:
+    driver: bridge

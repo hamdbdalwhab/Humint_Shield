@@ -1,0 +1,341 @@
+/**
+ * Typed API surface. Every backend endpoint used by the UI is wrapped here so
+ * components never build URLs by hand.
+ */
+import { http } from '@/api/client';
+import type {
+  AccessTokenResponse,
+  Assignment,
+  BrevoVerification,
+  BulkImportResult,
+  Campaign,
+  CampaignActivity,
+  CampaignCreate,
+  CampaignRecipientDetail,
+  CampaignResults,
+  DashboardSummary,
+  EmailTemplate,
+  EmailTemplateCreate,
+  EmailTemplateUpdate,
+  Employee,
+  EmployeeCreate,
+  EmployeeDossier,
+  EmployeeUpdate,
+  HealthReport,
+  LaunchResult,
+  LiveBoard,
+  Paginated,
+  PhishingReport,
+  RuntimeConfig,
+  TemplatePreview,
+  TimelineEvent,
+  TokenResponse,
+  TrackingCompleteResponse,
+  TrackingContext,
+  TrackingSubmission,
+  TrainingModule,
+  User,
+} from '@/types';
+
+export interface EmployeeListParams {
+  page?: number;
+  per_page?: number;
+  search?: string;
+  department?: string;
+  is_active?: boolean;
+}
+
+export const authApi = {
+  async login(username: string, password: string): Promise<TokenResponse> {
+    const { data } = await http.post<TokenResponse>('/api/v1/auth/login', { username, password });
+    return data;
+  },
+  async refresh(refreshToken: string): Promise<AccessTokenResponse> {
+    const { data } = await http.post<AccessTokenResponse>('/api/v1/auth/refresh', {
+      refresh_token: refreshToken,
+    });
+    return data;
+  },
+  async logout(): Promise<void> {
+    await http.post('/api/v1/auth/logout');
+  },
+  async me(): Promise<User> {
+    const { data } = await http.get<User>('/api/v1/auth/me');
+    return data;
+  },
+};
+
+export const employeesApi = {
+  async list(orgId: string, params: EmployeeListParams = {}): Promise<Paginated<Employee>> {
+    const { data } = await http.get<Paginated<Employee>>(
+      `/api/v1/organizations/${orgId}/employees`,
+      { params },
+    );
+    return data;
+  },
+  async get(orgId: string, id: string): Promise<Employee> {
+    const { data } = await http.get<Employee>(`/api/v1/organizations/${orgId}/employees/${id}`);
+    return data;
+  },
+  async create(orgId: string, payload: EmployeeCreate): Promise<Employee> {
+    const { data } = await http.post<Employee>(
+      `/api/v1/organizations/${orgId}/employees`,
+      payload,
+    );
+    return data;
+  },
+  async update(orgId: string, id: string, payload: EmployeeUpdate): Promise<Employee> {
+    const { data } = await http.put<Employee>(
+      `/api/v1/organizations/${orgId}/employees/${id}`,
+      payload,
+    );
+    return data;
+  },
+  async remove(orgId: string, id: string): Promise<void> {
+    await http.delete(`/api/v1/organizations/${orgId}/employees/${id}`);
+  },
+  async bulkImport(orgId: string, file: File): Promise<BulkImportResult> {
+    const form = new FormData();
+    form.append('file', file);
+    const { data } = await http.post<BulkImportResult>(
+      `/api/v1/organizations/${orgId}/employees/bulk`,
+      form,
+      { headers: { 'Content-Type': 'multipart/form-data' } },
+    );
+    return data;
+  },
+  async timeline(orgId: string, id: string): Promise<TimelineEvent[]> {
+    const { data } = await http.get<TimelineEvent[]>(
+      `/api/v1/organizations/${orgId}/employees/${id}/timeline`,
+    );
+    return data;
+  },
+  async dossier(orgId: string, id: string): Promise<EmployeeDossier> {
+    const { data } = await http.get<EmployeeDossier>(
+      `/api/v1/organizations/${orgId}/employees/${id}/dossier`,
+    );
+    return data;
+  },
+};
+
+export const templatesApi = {
+  async list(orgId: string, params: { search?: string; is_active?: boolean } = {}) {
+    const { data } = await http.get<EmailTemplate[]>(
+      `/api/v1/organizations/${orgId}/email-templates`,
+      { params },
+    );
+    return data;
+  },
+  async create(orgId: string, payload: EmailTemplateCreate): Promise<EmailTemplate> {
+    const { data } = await http.post<EmailTemplate>(
+      `/api/v1/organizations/${orgId}/email-templates`,
+      payload,
+    );
+    return data;
+  },
+  async update(orgId: string, id: string, payload: EmailTemplateUpdate): Promise<EmailTemplate> {
+    const { data } = await http.put<EmailTemplate>(
+      `/api/v1/organizations/${orgId}/email-templates/${id}`,
+      payload,
+    );
+    return data;
+  },
+  async remove(orgId: string, id: string): Promise<void> {
+    await http.delete(`/api/v1/organizations/${orgId}/email-templates/${id}`);
+  },
+  async preview(orgId: string, id: string, employeeId: string): Promise<TemplatePreview> {
+    const { data } = await http.post<TemplatePreview>(
+      `/api/v1/organizations/${orgId}/email-templates/${id}/preview`,
+      { employee_id: employeeId },
+    );
+    return data;
+  },
+};
+
+export const campaignsApi = {
+  async list(orgId: string, status?: string): Promise<Campaign[]> {
+    const { data } = await http.get<Campaign[]>(
+      `/api/v1/organizations/${orgId}/email-campaigns`,
+      { params: status ? { status } : {} },
+    );
+    return data;
+  },
+  async get(orgId: string, id: string): Promise<Campaign> {
+    const { data } = await http.get<Campaign>(
+      `/api/v1/organizations/${orgId}/email-campaigns/${id}`,
+    );
+    return data;
+  },
+  async create(orgId: string, payload: CampaignCreate): Promise<Campaign> {
+    const { data } = await http.post<Campaign>(
+      `/api/v1/organizations/${orgId}/email-campaigns`,
+      payload,
+    );
+    return data;
+  },
+  async remove(orgId: string, id: string): Promise<void> {
+    await http.delete(`/api/v1/organizations/${orgId}/email-campaigns/${id}`);
+  },
+  async update(
+    orgId: string,
+    id: string,
+    payload: Partial<CampaignCreate>,
+  ): Promise<Campaign> {
+    const { data } = await http.put<Campaign>(
+      `/api/v1/organizations/${orgId}/email-campaigns/${id}`,
+      payload,
+    );
+    return data;
+  },
+  async launch(orgId: string, id: string): Promise<LaunchResult> {
+    const { data } = await http.post<LaunchResult>(
+      `/api/v1/organizations/${orgId}/email-campaigns/${id}/launch`,
+    );
+    return data;
+  },
+  async results(orgId: string, id: string): Promise<CampaignResults> {
+    const { data } = await http.get<CampaignResults>(
+      `/api/v1/organizations/${orgId}/email-campaigns/${id}/results`,
+    );
+    return data;
+  },
+  async live(orgId: string, id: string): Promise<LiveBoard> {
+    const { data } = await http.get<LiveBoard>(
+      `/api/v1/organizations/${orgId}/email-campaigns/${id}/live`,
+    );
+    return data;
+  },
+  async recipient(
+    orgId: string,
+    campaignId: string,
+    employeeId: string,
+  ): Promise<CampaignRecipientDetail> {
+    const { data } = await http.get<CampaignRecipientDetail>(
+      `/api/v1/organizations/${orgId}/email-campaigns/${campaignId}/recipients/${employeeId}`,
+    );
+    return data;
+  },
+  async activity(orgId: string, campaignId: string, limit = 1000): Promise<CampaignActivity> {
+    const { data } = await http.get<CampaignActivity>(
+      `/api/v1/organizations/${orgId}/email-campaigns/${campaignId}/activity`,
+      { params: { limit } },
+    );
+    return data;
+  },
+  exportUrl(orgId: string, id: string): string {
+    return `/api/v1/organizations/${orgId}/email-campaigns/${id}/export`;
+  },
+  async exportCsv(orgId: string, id: string): Promise<Blob> {
+    const { data } = await http.get(
+      `/api/v1/organizations/${orgId}/email-campaigns/${id}/export`,
+      { responseType: 'blob' },
+    );
+    return data as Blob;
+  },
+};
+
+export const lmsApi = {
+  async dashboard(orgId: string): Promise<DashboardSummary> {
+    const { data } = await http.get<DashboardSummary>(
+      `/api/v1/organizations/${orgId}/dashboard`,
+    );
+    return data;
+  },
+  async modules(orgId: string): Promise<TrainingModule[]> {
+    const { data } = await http.get<TrainingModule[]>(
+      `/api/v1/organizations/${orgId}/training-modules`,
+    );
+    return data;
+  },
+  async assignments(orgId: string, params: { status?: string; employee_id?: string } = {}) {
+    const { data } = await http.get<Assignment[]>(
+      `/api/v1/organizations/${orgId}/assignments`,
+      { params },
+    );
+    return data;
+  },
+  async createAssignment(
+    orgId: string,
+    payload: { module_id: string; employee_id?: string; due_date?: string; notes?: string },
+  ): Promise<Assignment> {
+    const { data } = await http.post<Assignment>(
+      `/api/v1/organizations/${orgId}/assignments`,
+      payload,
+    );
+    return data;
+  },
+  async completeAssignment(orgId: string, id: string): Promise<Assignment> {
+    const { data } = await http.post<Assignment>(
+      `/api/v1/organizations/${orgId}/assignments/${id}/complete`,
+    );
+    return data;
+  },
+  async reports(orgId: string, status?: string): Promise<PhishingReport[]> {
+    const { data } = await http.get<PhishingReport[]>(
+      `/api/v1/organizations/${orgId}/reports`,
+      { params: status ? { status } : {} },
+    );
+    return data;
+  },
+  async updateReport(
+    orgId: string,
+    id: string,
+    payload: { status?: string; triage_notes?: string },
+  ): Promise<PhishingReport> {
+    const { data } = await http.put<PhishingReport>(
+      `/api/v1/organizations/${orgId}/reports/${id}`,
+      payload,
+    );
+    return data;
+  },
+};
+
+export const trackingApi = {
+  async context(trackingUuid: string): Promise<TrackingContext> {
+    const { data } = await http.get<TrackingContext>(
+      `/api/v1/track/context/${trackingUuid}`,
+    );
+    return data;
+  },
+  async formViewed(trackingUuid: string): Promise<void> {
+    await http.post(`/api/v1/track/form-view/${trackingUuid}`);
+  },
+  async submit(trackingUuid: string, payload: TrackingSubmission) {
+    const { data } = await http.post<{ success: boolean; first_time: boolean; message: string }>(
+      `/api/v1/track/submit/${trackingUuid}`,
+      payload,
+    );
+    return data;
+  },
+  async complete(trackingUuid: string): Promise<TrackingCompleteResponse> {
+    const { data } = await http.post<TrackingCompleteResponse>(
+      `/api/v1/track/complete/${trackingUuid}`,
+    );
+    return data;
+  },
+  async report(trackingUuid: string) {
+    const { data } = await http.post<{ success: boolean; message: string }>(
+      `/api/v1/track/report/${trackingUuid}`,
+    );
+    return data;
+  },
+};
+
+export const diagnosticsApi = {
+  async health(): Promise<HealthReport> {
+    const { data } = await http.get<HealthReport>('/api/v1/test/health');
+    return data;
+  },
+  async config(): Promise<RuntimeConfig> {
+    const { data } = await http.get<RuntimeConfig>('/api/v1/test/config');
+    return data;
+  },
+  async sendTestEmail(toEmail: string) {
+    const { data } = await http.post('/api/v1/test/brevo', { to_email: toEmail });
+    return data as { success: boolean; message_id: string | null; error: string | null };
+  },
+  async verifyBrevo(): Promise<BrevoVerification> {
+    const { data } = await http.get<BrevoVerification>('/api/v1/test/brevo/verify');
+    return data;
+  },
+};
