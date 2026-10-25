@@ -13,12 +13,31 @@ import structlog
 from app.config import Settings
 
 
+def _force_utf8(stream: object) -> None:
+    """Make a console/file stream safe for non-ASCII log messages.
+
+    Windows consoles often default to a legacy code page (for example cp1256).
+    Provider error messages can contain arrows or other Unicode punctuation;
+    without this guard, writing such a message raises ``UnicodeEncodeError``
+    inside the logging handler and can turn a clean provider error into a 500.
+    """
+    reconfigure = getattr(stream, "reconfigure", None)
+    if callable(reconfigure):
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, OSError, ValueError):
+            # Captured/pseudo streams may not support reconfiguration.
+            pass
+
+
 def configure_logging(settings: Settings) -> None:
     """Configure stdlib logging + structlog.
 
     Args:
         settings: Application settings providing level and JSON preference.
     """
+    _force_utf8(sys.stdout)
+    _force_utf8(sys.stderr)
     level = getattr(logging, settings.log_level.upper(), logging.INFO)
 
     logging.basicConfig(

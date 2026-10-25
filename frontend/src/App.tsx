@@ -16,6 +16,7 @@ import { CampaignsPage } from '@/pages/CampaignsPage';
 import { DashboardPage } from '@/pages/DashboardPage';
 import { EmployeeDossierPage } from '@/pages/EmployeeDossierPage';
 import { EmployeesPage } from '@/pages/EmployeesPage';
+import { HackedPage } from '@/pages/HackedPage';
 import { LoginPage } from '@/pages/LoginPage';
 import { LiveBoardPage } from '@/pages/LiveBoardPage';
 import { MyTrainingPage } from '@/pages/MyTrainingPage';
@@ -27,7 +28,6 @@ import { SettingsPage } from '@/pages/SettingsPage';
 import { TemplatesPage } from '@/pages/TemplatesPage';
 import { TrainingExperiencePage } from '@/pages/TrainingExperiencePage';
 import { TrainingLibraryPage } from '@/pages/TrainingLibraryPage';
-import { TrainingPage } from '@/pages/TrainingPage';
 
 /** Wrap a page in the authenticated application shell. */
 function Shell({ children }: { children: ReactNode }) {
@@ -43,8 +43,9 @@ export function App() {
     <Routes>
       <Route path="/login" element={<LoginPage />} />
       <Route path="/phish/:trackingUuid" element={<PhishingLandingPage />} />
+      <Route path="/hacked/:trackingUuid" element={<HackedPage />} />
       <Route path="/training-experience/:trackingUuid" element={<TrainingExperiencePage />} />
-      <Route path="/training/:trackingUuid" element={<TrainingPage />} />
+      <Route path="/training/:trackingUuid" element={<TrainingExperiencePage />} />
 
       <Route
         path="/"

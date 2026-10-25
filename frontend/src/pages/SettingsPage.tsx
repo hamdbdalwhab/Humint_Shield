@@ -300,6 +300,70 @@ export function SettingsPage() {
           <Card>
             <CardContent>
               <Typography variant="h3" sx={{ fontSize: '1.05rem', mb: 2 }}>
+                Vonage SMS &amp; WhatsApp
+              </Typography>
+              {configQuery.isLoading ? (
+                <LoadingState label="Loading delivery configuration..." />
+              ) : configQuery.error ? (
+                <Alert severity="error">{errorMessage(configQuery.error)}</Alert>
+              ) : configQuery.data ? (
+                <Stack spacing={1.5}>
+                  <Stack direction="row" spacing={1} sx={{ flexWrap: 'wrap', gap: 1 }}>
+                    <StateChip
+                      ok={Boolean(configQuery.data.vonage_sms_configured)}
+                      label={`SMS: ${configQuery.data.vonage_sms_configured ? 'ready' : 'not configured'}`}
+                    />
+                    <StateChip
+                      ok={Boolean(configQuery.data.vonage_whatsapp_configured)}
+                      label={`WhatsApp: ${configQuery.data.vonage_whatsapp_configured ? 'ready' : 'not configured'}`}
+                    />
+                    <Chip
+                      size="small"
+                      variant="outlined"
+                      color={configQuery.data.vonage_application_configured ? 'success' : 'default'}
+                      label={
+                        configQuery.data.vonage_application_configured
+                          ? 'WhatsApp JWT application'
+                          : 'API key/secret auth'
+                      }
+                    />
+                  </Stack>
+                  <Typography variant="body2">
+                    <strong>SMS sender:</strong> {configQuery.data.vonage_sms_from || 'not set'}
+                  </Typography>
+                  <Typography variant="body2">
+                    <strong>WhatsApp sender:</strong>{' '}
+                    {configQuery.data.vonage_whatsapp_from || 'not set'}
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    Credentials stay in <code>backend/.env</code> and are never sent to the browser.
+                    Configure these callback URLs in the Vonage dashboard so delivery and read
+                    receipts can update campaign results:
+                  </Typography>
+                  <Stack spacing={0.5}>
+                    <Typography variant="body2" sx={{ fontFamily: 'monospace', wordBreak: 'break-all' }}>
+                      SMS DLR: {configQuery.data.base_url.replace(/\/+$/, '')}
+                      {configQuery.data.vonage_webhook_paths?.sms_dlr ?? ''}
+                    </Typography>
+                    <Typography variant="body2" sx={{ fontFamily: 'monospace', wordBreak: 'break-all' }}>
+                      WhatsApp status: {configQuery.data.base_url.replace(/\/+$/, '')}
+                      {configQuery.data.vonage_webhook_paths?.whatsapp_status ?? ''}
+                    </Typography>
+                  </Stack>
+                  <Typography variant="caption" color="text.secondary">
+                    SMS callbacks include the per-message callback URL automatically. WhatsApp
+                    status callbacks belong to the Vonage application linked to the sender.
+                  </Typography>
+                </Stack>
+              ) : null}
+            </CardContent>
+          </Card>
+        </Grid>
+
+        <Grid item xs={12}>
+          <Card>
+            <CardContent>
+              <Typography variant="h3" sx={{ fontSize: '1.05rem', mb: 2 }}>
                 Compliance basis
               </Typography>
               <Stack spacing={1} divider={<Divider flexItem />}>

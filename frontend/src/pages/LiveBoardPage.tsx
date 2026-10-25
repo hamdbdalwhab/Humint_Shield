@@ -69,6 +69,7 @@ const STATUS_META: Record<
   form_viewed: { label: 'Form shown', color: 'warning', accent: '#f57c00', hint: 'Credential form displayed' },
   submitted: { label: 'Submitted', color: 'error', accent: '#d32f2f', hint: 'Credentials were entered' },
   completed: { label: 'Completed', color: 'success', accent: '#2e7d32', hint: 'Micro-training finished' },
+  reported_safe: { label: 'Reported Safe', color: 'success', accent: '#FFD54F', hint: 'Employee reported the simulation safe' },
   failed: { label: 'Failed', color: 'error', accent: '#b71c1c', hint: 'The email could not be sent' },
 };
 
@@ -81,6 +82,7 @@ const STATUS_ORDER: Record<LiveStatus, number> = {
   form_viewed: 5,
   submitted: 6,
   completed: 7,
+  reported_safe: 8,
 };
 
 const EVENT_TONES: Record<string, ChipColor> = {

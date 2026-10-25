@@ -18,6 +18,15 @@ redis==5.2.1
 sib-api-v3-sdk==7.6.0
 httpx==0.28.1
 python-multipart==0.0.20
+# Vonage SDK.  3.13.1 is the first release compatible with Pydantic 2;
+# 3.12.0 pins pydantic 1.x and would break FastAPI's Pydantic 2 models.
+vonage==3.13.1
+# Executive PDF reports: ReportLab + Arabic shaping/bidi.
+reportlab==5.1.0
+arabic-reshaper==3.0.1
+python-bidi==0.6.12
+pillow==13.0.0
+python-dotenv==1.2.4
 structlog==24.4.0
 prometheus-fastapi-instrumentator==7.0.0
 tenacity==9.0.0

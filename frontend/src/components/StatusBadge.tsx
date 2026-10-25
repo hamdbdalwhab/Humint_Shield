@@ -28,6 +28,7 @@ const ENGAGEMENT_COLORS: Record<
   clicked: 'warning',
   submitted: 'error',
   completed: 'success',
+  reported_safe: 'success',
   failed: 'error',
 };
 
@@ -38,6 +39,7 @@ const ENGAGEMENT_ACCENT: Record<EngagementStatus, string> = {
   clicked: '#FFB020',
   submitted: '#FF1744',
   completed: '#00E676',
+  reported_safe: '#FFD54F',
   failed: '#FF1744',
 };
 
@@ -82,11 +84,18 @@ export function EngagementStatusBadge({ status }: { status: EngagementStatus }) 
       size="small"
       variant="outlined"
       icon={<Dot color={accent} />}
-      label={status}
+      label={status === 'reported_safe' ? 'REPORTED SAFE' : status}
       color={ENGAGEMENT_COLORS[status]}
       sx={{
         fontWeight: 700,
         textTransform: 'capitalize',
+        ...(status === 'reported_safe'
+          ? {
+              color: '#FFD54F',
+              borderColor: 'rgba(255,213,79,.45)',
+              bgcolor: 'rgba(255,213,79,.06)',
+            }
+          : {}),
         boxShadow: `0 0 14px ${alpha(accent, 0.10)}`,
       }}
     />

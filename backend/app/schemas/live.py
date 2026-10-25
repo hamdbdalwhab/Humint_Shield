@@ -19,6 +19,7 @@ class LiveCampaign(BaseModel):
 
     id: uuid.UUID
     name: str
+    channel: str = "email"
     status: str
     template_name: str | None = None
     difficulty_level: int | None = None
@@ -67,7 +68,7 @@ class LiveRecipient(BaseModel):
     email: str
     department: str | None = None
     job_title: str | None = None
-    #: pending | sent | opened | clicked | form_viewed | submitted | completed | failed
+    #: pending | sent | opened | clicked | form_viewed | submitted | completed | reported_safe | failed
     status: str
     #: Independent of the funnel: the recipient flagged the message as phishing.
     reported: bool = False
@@ -79,6 +80,9 @@ class LiveRecipient(BaseModel):
     submitted_at: datetime | None = None
     reported_at: datetime | None = None
     completed_at: datetime | None = None
+    quiz_score: int | None = None
+    quiz_total: int | None = None
+    is_reported_safe: bool = False
     open_count: int = 0
     click_count: int = 0
     submission_count: int = 0

@@ -201,7 +201,7 @@ async def employees(db: AsyncSession, organization: Organization) -> list[HumanA
 
 @pytest_asyncio.fixture
 async def builtin_templates(db: AsyncSession, organization: Organization) -> list[EmailTemplate]:
-    """Seed the eight built-in templates and return them."""
+    """Seed the thirteen built-in templates and return them."""
     await seed_builtin_templates(db, organization.id)
     await db.commit()
     from sqlalchemy import select

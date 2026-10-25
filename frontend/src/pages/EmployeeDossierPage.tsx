@@ -25,23 +25,34 @@ import Tabs from '@mui/material/Tabs';
 import Typography from '@mui/material/Typography';
 import ArrowBackIcon from '@mui/icons-material/ArrowBack';
 import SendIcon from '@mui/icons-material/Send';
+import VerifiedUserIcon from '@mui/icons-material/VerifiedUser';
 import { useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import toast from 'react-hot-toast';
 import { Link as RouterLink, useParams } from 'react-router-dom';
 
-import { employeesApi } from '@/api/endpoints';
+import { employeesApi, trackingApi } from '@/api/endpoints';
 import { EmptyState, LoadingState } from '@/components/Feedback';
 import { InteractionTimeline } from '@/components/InteractionTimeline';
 import { PageHeader } from '@/components/PageHeader';
 import { StatCard } from '@/components/StatCard';
 import { EngagementStatusBadge } from '@/components/StatusBadge';
 import { SubmissionCard } from '@/components/SubmissionCard';
+import { ThreatBadge } from '@/components/ThreatBadge';
 import { useAuth } from '@/hooks/useAuth';
 import { errorMessage } from '@/lib/errors';
 import { formatDate, formatDateTime } from '@/lib/format';
 import type { EmployeeCampaignRecord } from '@/types';
 
-function CampaignRow({ record }: { record: EmployeeCampaignRecord }) {
+function CampaignRow({
+  record,
+  onReportSafe,
+  reporting,
+}: {
+  record: EmployeeCampaignRecord;
+  onReportSafe: (trackingUuid: string) => void;
+  reporting: boolean;
+}) {
   return (
     <TableRow hover>
       <TableCell sx={{ minWidth: 220 }}>
@@ -60,6 +71,11 @@ function CampaignRow({ record }: { record: EmployeeCampaignRecord }) {
       <TableCell align="center">
         <EngagementStatusBadge status={record.status} />
       </TableCell>
+      <TableCell align="center">
+        {record.quiz_score !== null
+          ? `${record.quiz_score}/${record.quiz_total ?? 5}`
+          : '—'}
+      </TableCell>
       <TableCell sx={{ fontFamily: 'monospace', whiteSpace: 'nowrap' }}>{formatDateTime(record.sent_at)}</TableCell>
       <TableCell sx={{ fontFamily: 'monospace', whiteSpace: 'nowrap' }}>{formatDateTime(record.opened_at)}</TableCell>
       <TableCell sx={{ fontFamily: 'monospace', whiteSpace: 'nowrap' }}>{formatDateTime(record.clicked_at)}</TableCell>
@@ -70,6 +86,35 @@ function CampaignRow({ record }: { record: EmployeeCampaignRecord }) {
       <TableCell align="center">{record.open_count}</TableCell>
       <TableCell align="center">{record.click_count}</TableCell>
       <TableCell align="center">{record.submission_count}</TableCell>
+      <TableCell align="center">
+        <Button
+          size="small"
+          variant="outlined"
+          startIcon={<VerifiedUserIcon />}
+          disabled={record.is_reported_safe || reporting}
+          onClick={() => onReportSafe(record.tracking_uuid)}
+          sx={{
+            color: record.is_reported_safe ? 'success.main' : '#FFD54F',
+            borderColor: record.is_reported_safe
+              ? 'rgba(0,230,118,.35)'
+              : 'rgba(255,213,79,.5)',
+            bgcolor: record.is_reported_safe
+              ? 'rgba(0,230,118,.05)'
+              : 'rgba(255,213,79,.06)',
+            whiteSpace: 'nowrap',
+            '&:hover': {
+              borderColor: record.is_reported_safe
+                ? 'rgba(0,230,118,.55)'
+                : 'rgba(255,213,79,.85)',
+              bgcolor: record.is_reported_safe
+                ? 'rgba(0,230,118,.08)'
+                : 'rgba(255,213,79,.12)',
+            },
+          }}
+        >
+          {record.is_reported_safe ? 'Reported Safe' : reporting ? '…' : 'Report Safe'}
+        </Button>
+      </TableCell>
     </TableRow>
   );
 }
@@ -78,11 +123,24 @@ export function EmployeeDossierPage() {
   const { employeeId } = useParams<{ employeeId: string }>();
   const { organizationId } = useAuth();
   const [tab, setTab] = useState(0);
+  const queryClient = useQueryClient();
 
   const query = useQuery({
     queryKey: ['employee-dossier', organizationId, employeeId],
     queryFn: () => employeesApi.dossier(organizationId as string, employeeId as string),
     enabled: Boolean(organizationId && employeeId),
+  });
+
+  const reportSafeMutation = useMutation({
+    mutationFn: (trackingUuid: string) => trackingApi.reportSafe(trackingUuid),
+    onSuccess: (result) => {
+      toast.success(result.message || 'Reported safe — immunity set to 100%.');
+      void queryClient.invalidateQueries({
+        queryKey: ['employee-dossier', organizationId, employeeId],
+      });
+      void queryClient.invalidateQueries({ queryKey: ['employees', organizationId] });
+    },
+    onError: (error) => toast.error(errorMessage(error)),
   });
 
   if (query.isLoading) return <LoadingState label="Loading employee dossier…" />;
@@ -148,6 +206,12 @@ export function EmployeeDossierPage() {
             <Chip label={`Immunity score ${employee.immunity_score.toFixed(1)}`} color="primary" />
             <Chip
               variant="outlined"
+              label={`Elo ${employee.elo_score ?? 1000}`}
+              sx={{ fontWeight: 800 }}
+            />
+            <ThreatBadge level={employee.threat_level} />
+            <Chip
+              variant="outlined"
               label={
                 employee.behavioral_category
                   ? employee.behavioral_category.replace('_', ' ')
@@ -189,6 +253,7 @@ export function EmployeeDossierPage() {
                   <TableRow>
                     <TableCell>Campaign</TableCell>
                     <TableCell align="center">Status</TableCell>
+                    <TableCell align="center">Quiz</TableCell>
                     <TableCell>Sent</TableCell>
                     <TableCell>Opened</TableCell>
                     <TableCell>Clicked</TableCell>
@@ -199,11 +264,20 @@ export function EmployeeDossierPage() {
                     <TableCell align="center">Opens</TableCell>
                     <TableCell align="center">Clicks</TableCell>
                     <TableCell align="center">Submits</TableCell>
+                    <TableCell align="center">Safe report</TableCell>
                   </TableRow>
                 </TableHead>
                 <TableBody>
                   {campaigns.map((record) => (
-                    <CampaignRow key={record.campaign_id} record={record} />
+                    <CampaignRow
+                      key={record.campaign_id}
+                      record={record}
+                      onReportSafe={(trackingUuid) => reportSafeMutation.mutate(trackingUuid)}
+                      reporting={
+                        reportSafeMutation.isPending &&
+                        reportSafeMutation.variables === record.tracking_uuid
+                      }
+                    />
                   ))}
                 </TableBody>
               </Table>

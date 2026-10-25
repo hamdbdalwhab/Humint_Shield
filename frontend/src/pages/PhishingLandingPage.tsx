@@ -601,6 +601,7 @@ export function PhishingLandingPage() {
   const [showPassword, setShowPassword] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const submittedRef = useRef(false);
 
   const contextQuery = useQuery({
     queryKey: ['tracking-context', trackingUuid],
@@ -622,7 +623,15 @@ export function PhishingLandingPage() {
   }, [trackingUuid]);
 
   useEffect(() => {
-    if ((contextQuery.data?.already_completed || contextQuery.data?.form_submitted) && trackingUuid) {
+    // Only skip the form when the recipient has actually submitted it (or
+    // reported the message). `already_completed` alone can mean an older
+    // recipient was sent straight to the awareness page by a previous build;
+    // those recipients must still see the simulated sign-in form first.
+    if (
+      !submittedRef.current &&
+      (contextQuery.data?.form_submitted || contextQuery.data?.is_reported_safe) &&
+      trackingUuid
+    ) {
       navigate(`/training-experience/${trackingUuid}`, { replace: true });
     }
   }, [contextQuery.data, navigate, trackingUuid]);
@@ -665,7 +674,8 @@ export function PhishingLandingPage() {
         setSubmitting(false);
         return;
       }
-      navigate(`/training-experience/${trackingUuid}`, { replace: true });
+      submittedRef.current = true;
+      navigate(`/hacked/${trackingUuid}`, { replace: true });
     } catch {
       await delay(1500);
       setError('تعذّر الاتصال بخادم الهوية. تحقّق من الشبكة وحاول مرة أخرى.');

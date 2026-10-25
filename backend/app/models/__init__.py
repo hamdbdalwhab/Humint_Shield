@@ -8,6 +8,8 @@ from __future__ import annotations
 from app.database import Base
 from app.models.email_campaign import (
     CAMPAIGN_STATUSES,
+    CHANNELS,
+    DEFAULT_CHANNEL,
     EmailCampaign,
     EmailTracking,
     TrainingInteraction,
@@ -21,6 +23,8 @@ from app.models.user import User
 __all__ = [
     "Base",
     "CAMPAIGN_STATUSES",
+    "CHANNELS",
+    "DEFAULT_CHANNEL",
     "DEFAULT_VARIABLES",
     "EmailCampaign",
     "EmailTemplate",

@@ -215,7 +215,7 @@ async def test_full_campaign_lifecycle(
         follow_redirects=False,
     )
     assert clicked.status_code == 302
-    assert f"/training/{rows[1].tracking_uuid}" in clicked.headers["location"]
+    assert f"/phish/{rows[1].tracking_uuid}" in clicked.headers["location"]
 
     completed = await client.post(f"/api/v1/track/complete/{rows[1].tracking_uuid}")
     assert completed.status_code == 200
@@ -241,7 +241,9 @@ async def test_full_campaign_lifecycle(
     assert export.headers["content-type"].startswith("text/csv")
     assert "attachment" in export.headers["content-disposition"]
     csv_text = export.text
-    assert "employee_id,name,email,department,status" in csv_text
+    assert "employee_id,name,email,phone,channel,department,status" in csv_text
+    assert "delivery_status" in csv_text
+    assert "provider_message_id" in csv_text
     assert "submitted_at" in csv_text
     assert "password_length" in csv_text
     assert employees[0].email in csv_text

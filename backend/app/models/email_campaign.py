@@ -5,6 +5,7 @@ import uuid
 from datetime import datetime, timezone
 
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -20,6 +21,8 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.database import Base, INETType, JSONBType, UUIDType, generate_uuid
 
 CAMPAIGN_STATUSES = ("draft", "active", "completed", "aborted")
+CHANNELS = ("email", "sms", "whatsapp")
+DEFAULT_CHANNEL = "email"
 
 
 def _utcnow() -> datetime:
@@ -29,7 +32,7 @@ def _utcnow() -> datetime:
 class EmailCampaign(Base):
     """A single authorized simulation run against a set of employees."""
 
-    __tablename__ = "email_campaigns"
+    __tablename__ = "campaigns"
     __table_args__ = (
         CheckConstraint(
             "status IN ('draft','active','completed','aborted')",
@@ -42,9 +45,12 @@ class EmailCampaign(Base):
         UUIDType, ForeignKey("organizations.id", ondelete="CASCADE"), index=True, nullable=False
     )
     template_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUIDType, ForeignKey("email_templates.id", ondelete="SET NULL")
+        UUIDType, ForeignKey("templates.id", ondelete="SET NULL")
     )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
+    channel: Mapped[str] = mapped_column(
+        String(20), default=DEFAULT_CHANNEL, server_default=DEFAULT_CHANNEL, index=True, nullable=False
+    )
     status: Mapped[str] = mapped_column(String(20), default="draft", index=True)
     target_employee_ids: Mapped[list] = mapped_column(JSONBType, default=list)
     total_targets: Mapped[int] = mapped_column(Integer, default=0)
@@ -82,7 +88,7 @@ class EmailTracking(Base):
     the click-wrapped links, and the training page URL.
     """
 
-    __tablename__ = "email_tracking"
+    __tablename__ = "tracking_events"
     __table_args__ = (
         UniqueConstraint("tracking_uuid", name="uq_tracking_uuid"),
         UniqueConstraint("campaign_id", "employee_id", name="uq_tracking_campaign_employee"),
@@ -90,7 +96,7 @@ class EmailTracking(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUIDType, primary_key=True, default=generate_uuid)
     campaign_id: Mapped[uuid.UUID] = mapped_column(
-        UUIDType, ForeignKey("email_campaigns.id", ondelete="CASCADE"), index=True, nullable=False
+        UUIDType, ForeignKey("campaigns.id", ondelete="CASCADE"), index=True, nullable=False
     )
     employee_id: Mapped[uuid.UUID] = mapped_column(
         UUIDType, ForeignKey("human_assets.id", ondelete="CASCADE"), index=True, nullable=False
@@ -98,21 +104,37 @@ class EmailTracking(Base):
     tracking_uuid: Mapped[uuid.UUID] = mapped_column(
         UUIDType, unique=True, index=True, nullable=False, default=generate_uuid
     )
-    email_template_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUIDType, ForeignKey("email_templates.id", ondelete="SET NULL")
+    template_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUIDType, ForeignKey("templates.id", ondelete="SET NULL")
+    )
+    channel: Mapped[str] = mapped_column(
+        String(20), default=DEFAULT_CHANNEL, server_default=DEFAULT_CHANNEL, index=True, nullable=False
     )
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: Provider-neutral delivery receipt state (for example ``submitted``,
+    #: ``delivered``, ``read``, ``failed``).  ``None`` for legacy email rows.
+    delivery_status: Mapped[str | None] = mapped_column(String(20))
+    #: Last provider error, when a delivery failed or was rejected.
+    delivery_error: Mapped[str | None] = mapped_column(String(500))
+    #: When a WhatsApp read receipt was received.
+    read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: When the provider last reported a failed/rejected delivery.
+    failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     opened_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     clicked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    completed_training_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    brevo_message_id: Mapped[str | None] = mapped_column(String(255))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: Generic provider fields. ``email`` currently uses Brevo; SMS/WhatsApp will
+    #: use Vonage without a schema change.
+    provider: Mapped[str | None] = mapped_column(String(30), default="brevo")
+    provider_message_id: Mapped[str | None] = mapped_column(String(255), index=True)
     open_count: Mapped[int] = mapped_column(Integer, default=0)
     click_count: Mapped[int] = mapped_column(Integer, default=0)
-    #: When the simulated credential form was first rendered to the recipient.
-    form_viewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    #: When the simulated credential form was first submitted.
-    form_submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: When the interactive training page (or the simulated form) was first rendered.
+    viewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: When the simulated credential form (or another channel's equivalent) was
+    #: first submitted.
+    submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     submission_count: Mapped[int] = mapped_column(Integer, default=0)
     #: Whatever identifier the recipient typed (usually their work email).
     submitted_identifier: Mapped[str | None] = mapped_column(String(255))
@@ -131,6 +153,14 @@ class EmailTracking(Base):
     client_context: Mapped[dict | None] = mapped_column(JSONBType)
     #: When the recipient flagged the simulation as suspicious (a good outcome).
     reported_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: Quiz result: correct answers out of ``quiz_total``.
+    quiz_score: Mapped[int | None] = mapped_column(Integer)
+    quiz_total: Mapped[int | None] = mapped_column(Integer, default=5)
+    #: Set when an administrator records an out-of-band "report safe" for an
+    #: employee who recognised and reported the message without clicking.
+    is_reported_safe: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False
+    )
     last_ip_address: Mapped[str | None] = mapped_column(INETType)
     last_user_agent: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
@@ -145,12 +175,65 @@ class EmailTracking(Base):
         order_by="TrainingInteraction.occurred_at",
     )
 
+    # ------------------------------------------------------------------ #
+    # Backwards-compatible attribute names
+    # ------------------------------------------------------------------ #
+    # The unified schema uses generic channel-neutral names. These properties
+    # keep older call sites (and the pre-0005 audit scripts) working without
+    # duplicating data in the database.
+    @property
+    def email_template_id(self) -> uuid.UUID | None:
+        """Deprecated alias for :attr:`template_id`."""
+        return self.template_id
+
+    @email_template_id.setter
+    def email_template_id(self, value: uuid.UUID | None) -> None:
+        self.template_id = value
+
+    @property
+    def brevo_message_id(self) -> str | None:
+        """Deprecated alias for :attr:`provider_message_id`."""
+        return self.provider_message_id
+
+    @brevo_message_id.setter
+    def brevo_message_id(self, value: str | None) -> None:
+        self.provider_message_id = value
+
+    @property
+    def form_viewed_at(self) -> datetime | None:
+        """Deprecated alias for :attr:`viewed_at`."""
+        return self.viewed_at
+
+    @form_viewed_at.setter
+    def form_viewed_at(self, value: datetime | None) -> None:
+        self.viewed_at = value
+
+    @property
+    def form_submitted_at(self) -> datetime | None:
+        """Deprecated alias for :attr:`submitted_at`."""
+        return self.submitted_at
+
+    @form_submitted_at.setter
+    def form_submitted_at(self, value: datetime | None) -> None:
+        self.submitted_at = value
+
+    @property
+    def completed_training_at(self) -> datetime | None:
+        """Deprecated alias for :attr:`completed_at`."""
+        return self.completed_at
+
+    @completed_training_at.setter
+    def completed_training_at(self, value: datetime | None) -> None:
+        self.completed_at = value
+
     @property
     def status(self) -> str:
         """Derive a human readable status from the timestamps."""
-        if self.completed_training_at is not None:
+        if self.is_reported_safe:
+            return "reported_safe"
+        if self.completed_at is not None:
             return "completed"
-        if self.form_submitted_at is not None:
+        if self.submitted_at is not None:
             return "submitted"
         if self.clicked_at is not None:
             return "clicked"
@@ -185,10 +268,10 @@ class TrainingInteraction(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUIDType, primary_key=True, default=generate_uuid)
     tracking_id: Mapped[uuid.UUID] = mapped_column(
-        UUIDType, ForeignKey("email_tracking.id", ondelete="CASCADE"), index=True, nullable=False
+        UUIDType, ForeignKey("tracking_events.id", ondelete="CASCADE"), index=True, nullable=False
     )
     campaign_id: Mapped[uuid.UUID] = mapped_column(
-        UUIDType, ForeignKey("email_campaigns.id", ondelete="CASCADE"), index=True, nullable=False
+        UUIDType, ForeignKey("campaigns.id", ondelete="CASCADE"), index=True, nullable=False
     )
     employee_id: Mapped[uuid.UUID] = mapped_column(
         UUIDType, ForeignKey("human_assets.id", ondelete="CASCADE"), index=True, nullable=False

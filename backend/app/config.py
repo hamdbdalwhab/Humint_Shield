@@ -93,6 +93,165 @@ class Settings(BaseSettings):
         """Return ``True`` when outbound mail should use SMTP, not Brevo."""
         return (self.email_transport or "").strip().lower() == "smtp"
 
+    # --- Vonage (SMS + WhatsApp) ------------------------------------------
+    #: Vonage API credentials.  Create an API key/secret in the Vonage
+    #: dashboard.  Missing values disable real SMS/WhatsApp delivery; the email
+    #: channel continues to work.
+    vonage_api_key: str = ""
+    vonage_api_secret: str = ""
+    #: Alphanumeric Sender ID (SMS) or WhatsApp Sandbox/business number.
+    vonage_sms_from: str = "Vonage APIs"
+    vonage_whatsapp_from: str = ""
+    #: Optional Vonage Application credentials for JWT-authenticated Messages
+    #: API calls.  The private key can be the PEM content itself or a path to
+    #: the downloaded ``.key`` file.  When both are set, WhatsApp uses JWT;
+    #: otherwise the SDK falls back to API key/secret authentication.
+    vonage_application_id: str = ""
+    vonage_private_key: str = ""
+    #: Optional Messages API host, for example the WhatsApp sandbox endpoint
+    #: ``https://messages-sandbox.nexmo.com``.  Empty uses Vonage production.
+    vonage_messages_base_url: str = ""
+    #: Per-request timeout for the synchronous Vonage SDK calls.
+    vonage_timeout_seconds: float = 15.0
+    #: Optional shared secret appended to the dashboard webhook URLs as
+    #: ``?token=...`` (or sent as ``X-Vonage-Webhook-Token``).  When set, the
+    #: webhook endpoints reject callbacks without it.
+    vonage_webhook_token: str = ""
+
+    @property
+    def vonage_credentials_configured(self) -> bool:
+        """Return ``True`` when non-placeholder API credentials are present."""
+        key = (self.vonage_api_key or "").strip()
+        secret = (self.vonage_api_secret or "").strip()
+        placeholders = ("your", "change-me", "example")
+        if not key or not secret:
+            return False
+        if key.lower().startswith(placeholders) or secret.lower().startswith(placeholders):
+            return False
+        return True
+
+    @property
+    def vonage_sms_configured(self) -> bool:
+        """Return ``True`` when SMS credentials and a sender are configured."""
+        sender = (self.vonage_sms_from or "").strip()
+        return bool(self.vonage_credentials_configured and sender)
+
+    @property
+    def vonage_whatsapp_configured(self) -> bool:
+        """Return ``True`` when WhatsApp credentials and a sender are configured."""
+        sender = (self.vonage_whatsapp_from or "").strip()
+        app_id = (self.vonage_application_id or "").strip()
+        private_key = (self.vonage_private_key or "").strip()
+        # Application credentials are optional, but a partial pair is almost
+        # always a misconfiguration.  Refuse it instead of silently falling
+        # back to API key/secret authentication.
+        if bool(app_id) != bool(private_key):
+            return False
+        return bool(self.vonage_credentials_configured and sender)
+
+    @property
+    def vonage_application_configured(self) -> bool:
+        """Return ``True`` when both application ID and private key are set."""
+        return bool(
+            (self.vonage_application_id or "").strip()
+            and (self.vonage_private_key or "").strip()
+        )
+
+    @property
+    def vonage_configured(self) -> bool:
+        """Return ``True`` when the API credentials are configured.
+
+        Channel-specific readiness is exposed by :attr:`vonage_sms_configured`
+        and :attr:`vonage_whatsapp_configured`; this property is the common
+        credential check used by the diagnostics endpoint.
+        """
+        return self.vonage_credentials_configured
+
+    def vonage_missing_settings(self, channel: str) -> list[str]:
+        """Return the environment variable names required for ``channel``.
+
+        Args:
+            channel: ``sms`` or ``whatsapp``.
+
+        Returns:
+            A sorted list of missing/placeholder environment variable names.
+        """
+        missing: list[str] = []
+        if not self.vonage_credentials_configured:
+            missing.extend(["VONAGE_API_KEY", "VONAGE_API_SECRET"])
+        if channel == "sms" and not (self.vonage_sms_from or "").strip():
+            missing.append("VONAGE_SMS_FROM")
+        if channel == "whatsapp":
+            if not (self.vonage_whatsapp_from or "").strip():
+                missing.append("VONAGE_WHATSAPP_FROM")
+            app_id = (self.vonage_application_id or "").strip()
+            private_key = (self.vonage_private_key or "").strip()
+            if bool(app_id) != bool(private_key):
+                missing.extend(["VONAGE_APPLICATION_ID", "VONAGE_PRIVATE_KEY"])
+        return missing
+
+    # --- AI template generation -------------------------------------------
+    #: OpenAI-compatible chat-completions provider.  ``openai`` and ``groq``
+    #: have sensible defaults; ``custom`` requires an explicit base URL and
+    #: model.  No provider SDK is required — the service uses ``httpx``.
+    llm_provider: str = "openai"
+    llm_api_key: str = ""
+    llm_model: str = ""
+    llm_base_url: str = ""
+    llm_timeout_seconds: float = 120.0
+    llm_max_tokens: int = 1800
+
+    @property
+    def llm_provider_slug(self) -> str:
+        """Return the normalized provider name."""
+        return (self.llm_provider or "openai").strip().lower()
+
+    @property
+    def llm_base_url_resolved(self) -> str:
+        """Return the provider base URL, including the ``/v1`` suffix."""
+        configured = (self.llm_base_url or "").strip().rstrip("/")
+        if configured:
+            return configured
+        if self.llm_provider_slug == "groq":
+            return "https://api.groq.com/openai/v1"
+        if self.llm_provider_slug == "openai":
+            return "https://api.openai.com/v1"
+        return ""
+
+    @property
+    def llm_model_resolved(self) -> str:
+        """Return the configured model or the provider's default."""
+        configured = (self.llm_model or "").strip()
+        if configured:
+            return configured
+        if self.llm_provider_slug == "groq":
+            return "llama-3.3-70b-versatile"
+        if self.llm_provider_slug == "openai":
+            return "gpt-4o-mini"
+        return ""
+
+    @property
+    def llm_configured(self) -> bool:
+        """Return ``True`` when a key, base URL and model are all available."""
+        key = (self.llm_api_key or "").strip()
+        placeholders = ("your", "change-me", "example", "sk-your")
+        if not key or key.lower().startswith(placeholders):
+            return False
+        return bool(self.llm_base_url_resolved and self.llm_model_resolved)
+
+    def llm_missing_settings(self) -> list[str]:
+        """Return the environment variable names needed for AI generation."""
+        missing: list[str] = []
+        key = (self.llm_api_key or "").strip()
+        placeholders = ("your", "change-me", "example", "sk-your")
+        if not key or key.lower().startswith(placeholders):
+            missing.append("LLM_API_KEY")
+        if not self.llm_base_url_resolved:
+            missing.append("LLM_BASE_URL")
+        if not self.llm_model_resolved:
+            missing.append("LLM_MODEL")
+        return missing
+
     # --- Application -------------------------------------------------------
     base_url: str = "http://localhost:8000"
     frontend_url: str = "http://localhost:5173"

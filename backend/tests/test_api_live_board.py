@@ -71,7 +71,7 @@ async def test_live_board_reports_every_recipient_state(
     assert (
         await client.get(f"/api/v1/track/click/{first.tracking_uuid}", follow_redirects=False)
     ).status_code == 302
-    assert (await client.get(f"/training/{first.tracking_uuid}")).status_code == 200
+    assert (await client.get(f"/training-legacy/{first.tracking_uuid}")).status_code == 200
     assert (
         await client.post(
             f"/api/v1/track/submit/{first.tracking_uuid}",

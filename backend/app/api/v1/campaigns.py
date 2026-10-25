@@ -30,6 +30,7 @@ from app.services.brevo_email_service import BrevoEmailService
 from app.services.campaign_launcher import CampaignLaunchError, CampaignLauncher
 from app.services.interaction_report import InteractionReportService
 from app.services.live_board import LiveBoardService
+from app.services.vonage_service import is_e164_phone
 
 logger = get_logger(__name__)
 router = APIRouter(
@@ -53,11 +54,16 @@ async def _get_campaign(
     return campaign
 
 
-async def _validate_template(db: AsyncSession, org_id: uuid.UUID, template_id: uuid.UUID) -> EmailTemplate:
-    """Assert a template exists, belongs to the org and is active.
+async def _validate_template(
+    db: AsyncSession,
+    org_id: uuid.UUID,
+    template_id: uuid.UUID,
+    channel: str = "email",
+) -> EmailTemplate:
+    """Assert a template exists, belongs to the org, is active and matches the channel.
 
     Raises:
-        HTTPException: 404 when missing, 400 when inactive.
+        HTTPException: 404 when missing, 400 when inactive or channel-mismatched.
     """
     template = await db.get(EmailTemplate, template_id)
     if template is None or template.organization_id != org_id:
@@ -66,34 +72,70 @@ async def _validate_template(db: AsyncSession, org_id: uuid.UUID, template_id: u
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Template is not active"
         )
+    if (template.channel or "email") != channel:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Template channel '{template.channel}' does not match "
+                f"campaign channel '{channel}'"
+            ),
+        )
     return template
 
 
 async def _validate_targets(
-    db: AsyncSession, org_id: uuid.UUID, employee_ids: list[uuid.UUID]
+    db: AsyncSession,
+    org_id: uuid.UUID,
+    employee_ids: list[uuid.UUID],
+    channel: str = "email",
 ) -> list[uuid.UUID]:
-    """Keep only employee ids that exist within the organization.
+    """Keep employee ids that exist in the organization and can receive the channel.
+
+    For SMS/WhatsApp every target must have a valid E.164 phone number.  This
+    prevents a recipient without a number from being selected, and also blocks a
+    silent skip at send time.
 
     Raises:
-        HTTPException: 400 when no valid target remains.
+        HTTPException: 400 when no valid target remains or a phone channel has
+            recipients without a usable E.164 number.
     """
     if not employee_ids:
         return []
     unique_ids = list(dict.fromkeys(employee_ids))
     rows = (
         await db.execute(
-            select(HumanAsset.id).where(
+            select(HumanAsset).where(
                 HumanAsset.organization_id == org_id, HumanAsset.id.in_(unique_ids)
             )
         )
     ).scalars().all()
-    valid = list(rows)
+    valid = [employee for employee in rows]
     if not valid:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="None of the selected employees belong to this organization",
         )
-    return valid
+    if (channel or "email").lower() in {"sms", "whatsapp"}:
+        missing = [employee.email for employee in valid if not (employee.phone or "").strip()]
+        invalid = [
+            f"{employee.email} ({employee.phone})"
+            for employee in valid
+            if (employee.phone or "").strip() and not is_e164_phone(employee.phone)
+        ]
+        if missing or invalid:
+            problems: list[str] = []
+            if missing:
+                problems.append(f"missing phone number: {', '.join(missing[:10])}")
+            if invalid:
+                problems.append(f"phone not in E.164 format: {', '.join(invalid[:10])}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"{channel.upper()} campaigns require a valid E.164 phone number "
+                    f"for every target. {'; '.join(problems)}"
+                ),
+            )
+    return [employee.id for employee in valid]
 
 
 @router.get("", response_model=list[CampaignPublic], summary="List campaigns")
@@ -135,13 +177,16 @@ async def create_campaign(
         HTTPException: 404 when the template is unknown, 400 when no valid
             target is provided.
     """
-    await _validate_template(db, org_id, payload.template_id)
-    valid_targets = await _validate_targets(db, org_id, payload.target_employee_ids)
+    await _validate_template(db, org_id, payload.template_id, payload.channel)
+    valid_targets = await _validate_targets(
+        db, org_id, payload.target_employee_ids, payload.channel
+    )
 
     campaign = EmailCampaign(
         organization_id=org_id,
         template_id=payload.template_id,
         name=payload.name,
+        channel=payload.channel,
         status="draft",
         target_employee_ids=[str(t) for t in valid_targets],
         total_targets=len(valid_targets),
@@ -192,17 +237,36 @@ async def update_campaign(
             detail=f"Campaign is '{campaign.status}' and can no longer be edited",
         )
     data = payload.model_dump(exclude_unset=True)
+    channel = data.get("channel", campaign.channel or "email")
     if data.get("template_id"):
-        await _validate_template(db, org_id, data["template_id"])
+        await _validate_template(db, org_id, data["template_id"], channel)
         campaign.template_id = data["template_id"]
+    elif "channel" in data and campaign.template_id is not None:
+        # The UI clears the template when the channel changes, but an API client
+        # may switch channels alone. Fail now rather than at launch.
+        await _validate_template(db, org_id, campaign.template_id, channel)
+    if "channel" in data and data["channel"]:
+        campaign.channel = data["channel"]
     if "name" in data and data["name"]:
         campaign.name = data["name"]
     # ``difficulty_level`` is accepted for API symmetry but is a property of the
     # template, so it is validated (by the schema) and otherwise not persisted.
     if data.get("target_employee_ids") is not None:
-        valid_targets = await _validate_targets(db, org_id, data["target_employee_ids"])
+        valid_targets = await _validate_targets(
+            db, org_id, data["target_employee_ids"], channel
+        )
         campaign.target_employee_ids = [str(t) for t in valid_targets]
         campaign.total_targets = len(valid_targets)
+    elif "channel" in data and (channel or "email").lower() in {"sms", "whatsapp"}:
+        # Changing an existing draft to a phone channel must validate the
+        # already-selected recipients too, not just newly supplied ones.
+        existing_ids: list[uuid.UUID] = []
+        for value in campaign.target_employee_ids or []:
+            try:
+                existing_ids.append(uuid.UUID(str(value)))
+            except (ValueError, AttributeError, TypeError):
+                continue
+        await _validate_targets(db, org_id, existing_ids, channel)
     await db.commit()
     await db.refresh(campaign)
     logger.info("campaign_updated", campaign_id=str(campaign_id))
@@ -259,26 +323,62 @@ async def launch_campaign(
         HTTPException: 400 when the campaign cannot be launched.
     """
     campaign = await _get_campaign(db, org_id, campaign_id)
+    channel = (campaign.channel or "email").strip().lower()
 
-    # Fail fast with an actionable reason when real delivery cannot work.  Without
-    # this check the launcher would materialise tracking rows and mark every
-    # recipient as failed with no explanation shown in the UI.
-    if not get_settings().email_dry_run:
-        brevo_check = await BrevoEmailService().verify_configuration()
-        if not brevo_check.get("valid"):
-            hint = (
-                brevo_check.get("hint")
-                or brevo_check.get("error")
-                or "Brevo rejected the request"
-            )
+    # Re-validate the target phones at launch time: an employee's number may
+    # have been removed after the draft was created.
+    if channel in {"sms", "whatsapp"}:
+        launch_targets: list[uuid.UUID] = []
+        for value in campaign.target_employee_ids or []:
+            try:
+                launch_targets.append(uuid.UUID(str(value)))
+            except (ValueError, AttributeError, TypeError):
+                continue
+        await _validate_targets(db, org_id, launch_targets, channel)
+
+    settings = get_settings()
+    if channel == "email":
+        # Fail fast with an actionable reason when real email delivery cannot
+        # work.  Without this check the launcher would materialise tracking rows
+        # and mark every recipient as failed with no explanation shown in the UI.
+        if not settings.email_dry_run:
+            brevo_check = await BrevoEmailService().verify_configuration()
+            if not brevo_check.get("valid"):
+                hint = (
+                    brevo_check.get("hint")
+                    or brevo_check.get("error")
+                    or "Brevo rejected the request"
+                )
+                logger.warning(
+                    "campaign_launch_blocked_brevo",
+                    campaign_id=str(campaign_id),
+                    error=hint,
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail=f"Real delivery is blocked: {hint}",
+                )
+    else:
+        ready = (
+            settings.vonage_sms_configured
+            if channel == "sms"
+            else settings.vonage_whatsapp_configured
+        )
+        if not ready:
+            missing = settings.vonage_missing_settings(channel)
+            hint = ", ".join(missing) if missing else "Vonage credentials/sender are incomplete"
             logger.warning(
-                "campaign_launch_blocked_brevo",
+                "campaign_launch_blocked_vonage",
                 campaign_id=str(campaign_id),
-                error=hint,
+                channel=channel,
+                missing=missing,
             )
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
-                detail=f"Real delivery is blocked: {hint}",
+                detail=(
+                    f"Real {channel.upper()} delivery is blocked: configure {hint} "
+                    "in backend/.env and restart the server."
+                ),
             )
 
     if background_tasks:
@@ -457,9 +557,17 @@ async def export_campaign(
             "employee_id",
             "name",
             "email",
+            "phone",
+            "channel",
             "department",
             "status",
             "sent_at",
+            "delivered_at",
+            "delivery_status",
+            "delivery_error",
+            "read_at",
+            "failed_at",
+            "provider_message_id",
             "opened_at",
             "clicked_at",
             "form_viewed_at",
@@ -482,9 +590,17 @@ async def export_campaign(
                 row["employee_id"],
                 row["name"],
                 row["email"],
+                row.get("phone") or "",
+                row.get("channel") or "",
                 row["department"] or "",
                 row["status"],
                 row["sent_at"].isoformat() if row["sent_at"] else "",
+                row["delivered_at"].isoformat() if row.get("delivered_at") else "",
+                row.get("delivery_status") or "",
+                row.get("delivery_error") or "",
+                row["read_at"].isoformat() if row.get("read_at") else "",
+                row["failed_at"].isoformat() if row.get("failed_at") else "",
+                row.get("provider_message_id") or "",
                 row["opened_at"].isoformat() if row["opened_at"] else "",
                 row["clicked_at"].isoformat() if row["clicked_at"] else "",
                 row["form_viewed_at"].isoformat() if row["form_viewed_at"] else "",

@@ -25,7 +25,7 @@ def _settings(**overrides) -> Settings:
         "email_dry_run": False,
         "email_max_retries": 3,
         "email_retry_base_delay": 0.001,
-        "email_timeout_seconds": 5.0,
+        "email_timeout_seconds": 15.0,
         "base_url": "http://testserver",
     }
     base.update(overrides)
@@ -235,6 +235,10 @@ def test_ip_allowlist_rejection_names_the_blocked_address() -> None:
     assert described["blocked_ip"] == "80.253.185.154"
     assert described["action_url"] == AUTHORISED_IPS_URL
     assert "80.253.185.154" in described["hint"]
+    assert (
+        "Your server IP is blocked by the email provider. Please allowlist it "
+        "in your Brevo dashboard."
+    ) in described["hint"]
 
 
 def test_ip_allowlist_rejection_supports_ipv6() -> None:

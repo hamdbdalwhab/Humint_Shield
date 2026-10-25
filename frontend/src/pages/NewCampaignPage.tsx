@@ -57,6 +57,19 @@ import type { Employee } from '@/types';
 
 const STEPS = ['التفاصيل', 'المستهدفون', 'المراجعة'];
 
+const CHANNEL_LABELS: Record<'email' | 'sms' | 'whatsapp', string> = {
+  email: 'البريد الإلكتروني — Brevo',
+  sms: 'رسائل SMS — Vonage',
+  whatsapp: 'واتساب — Vonage',
+};
+
+/** Strict E.164: country code plus 8-15 digits, no separators. */
+const E164_PATTERN = /^\+[1-9]\d{7,14}$/;
+
+function hasValidPhone(phone: string | null | undefined): boolean {
+  return Boolean(phone && E164_PATTERN.test(phone.trim()));
+}
+
 function difficultyLabel(value: number): string {
   if (value <= 3) return 'سهل — مؤشرات واضحة';
   if (value <= 6) return 'متوسط — واقعي لكن قابل للكشف';
@@ -71,6 +84,7 @@ export function NewCampaignPage() {
 
   const [step, setStep] = useState(0);
   const [name, setName] = useState('');
+  const [channel, setChannel] = useState<'email' | 'sms' | 'whatsapp'>('email');
   const [templateId, setTemplateId] = useState('');
   const [difficulty, setDifficulty] = useState(5);
   const [selected, setSelected] = useState<Map<string, Employee>>(new Map());
@@ -86,8 +100,8 @@ export function NewCampaignPage() {
   const [launchError, setLaunchError] = useState<string | null>(null);
 
   const templatesQuery = useQuery({
-    queryKey: ['templates', organizationId],
-    queryFn: () => templatesApi.list(organizationId as string, { is_active: true }),
+    queryKey: ['templates', organizationId, channel],
+    queryFn: () => templatesApi.list(organizationId as string, { is_active: true, channel }),
     enabled: Boolean(organizationId),
   });
 
@@ -141,12 +155,15 @@ export function NewCampaignPage() {
     setStep(2);
   }, [preselectId, name, templateId, preselectQuery.data]);
 
-  // Verify the outbound path before showing "Launch". A blocked Brevo IP is
-  // the most common cause of a launch that produces no email; surfacing it on
-  // the review step prevents an operator from assuming the send succeeded.
+  // Verify the outbound path before showing "Launch". Email uses Brevo; SMS
+  // and WhatsApp use Vonage. A missing key/sender is surfaced before an
+  // operator can assume a real send happened.
   const preflightQuery = useQuery({
-    queryKey: ['delivery-preflight'],
-    queryFn: () => diagnosticsApi.verifyBrevo(),
+    queryKey: ['delivery-preflight', channel],
+    queryFn: () =>
+      channel === 'email'
+        ? diagnosticsApi.verifyBrevo()
+        : diagnosticsApi.verifyVonage(channel),
     enabled: step === 2,
     staleTime: 15_000,
     retry: false,
@@ -161,6 +178,7 @@ export function NewCampaignPage() {
         const campaign = await campaignsApi.create(organizationId, {
           name,
           template_id: templateId,
+          channel,
           difficulty_level: difficulty,
           target_employee_ids: targets,
         });
@@ -171,6 +189,7 @@ export function NewCampaignPage() {
         await campaignsApi.update(organizationId, campaignId, {
           name,
           template_id: templateId,
+          channel,
           target_employee_ids: targets,
         });
       }
@@ -199,6 +218,31 @@ export function NewCampaignPage() {
     [employeesQuery.data],
   );
 
+  const isPhoneChannel = channel === 'sms' || channel === 'whatsapp';
+
+  function isSelectable(employee: Employee): boolean {
+    return !isPhoneChannel || hasValidPhone(employee.phone);
+  }
+
+  // Switching to a phone channel must immediately remove any target that has
+  // no number instead of letting the review step hide an invalid recipient.
+  useEffect(() => {
+    if (!isPhoneChannel) return;
+    setSelected((current) => {
+      const next = new Map(
+        Array.from(current.entries()).filter(([, employee]) => hasValidPhone(employee.phone)),
+      );
+      return next.size === current.size ? current : next;
+    });
+  }, [isPhoneChannel]);
+
+  const selectableVisible = useMemo(
+    () => visibleEmployees.filter((employee) => isSelectable(employee)),
+    // ``isSelectable`` is derived from isPhoneChannel and the employee list.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [visibleEmployees, isPhoneChannel],
+  );
+
   const departments = useMemo(() => {
     const counts = new Map<string, number>();
     visibleEmployees.forEach((employee) => {
@@ -210,9 +254,11 @@ export function NewCampaignPage() {
 
   const selectedTemplate = templatesQuery.data?.find((template) => template.id === templateId);
   const allVisibleSelected =
-    visibleEmployees.length > 0 && visibleEmployees.every((employee) => selected.has(employee.id));
+    selectableVisible.length > 0 &&
+    selectableVisible.every((employee) => selected.has(employee.id));
 
   function toggleEmployee(employee: Employee) {
+    if (!isSelectable(employee)) return;
     setSelected((current) => {
       const next = new Map(current);
       if (next.has(employee.id)) next.delete(employee.id);
@@ -224,7 +270,7 @@ export function NewCampaignPage() {
   function selectAllVisible() {
     setSelected((current) => {
       const next = new Map(current);
-      visibleEmployees.forEach((employee) => next.set(employee.id, employee));
+      selectableVisible.forEach((employee) => next.set(employee.id, employee));
       return next;
     });
   }
@@ -242,8 +288,17 @@ export function NewCampaignPage() {
   }
 
   const canLeaveStepOne = name.trim().length > 0 && templateId.length > 0;
-  const canLeaveStepTwo = selected.size > 0;
   const selectedList = Array.from(selected.values());
+  const selectedPhonesValid =
+    !isPhoneChannel || selectedList.every((employee) => hasValidPhone(employee.phone));
+  const canLeaveStepTwo = selected.size > 0 && selectedPhonesValid;
+  const invalidPhoneCount = visibleEmployees.filter(
+    (employee) => !hasValidPhone(employee.phone),
+  ).length;
+  const channelNoun =
+    channel === 'email' ? 'رسالة بريد إلكتروني' : channel === 'sms' ? 'رسالة SMS' : 'رسالة واتساب';
+  const providerName = channel === 'email' ? 'Brevo/SMTP' : 'Vonage';
+  const preflightBlocked = Boolean(preflightQuery.data && !preflightQuery.data.valid);
 
   return (
     <>
@@ -300,8 +355,21 @@ export function NewCampaignPage() {
                 onChange={(event) => setName(event.target.value)}
                 helperText="اسم داخلي — لا يظهر للمستهدفين أبداً."
               />
-              <TextField select label="قناة الإرسال" value="email" fullWidth disabled>
+              <TextField
+                select
+                label="قناة الإرسال"
+                value={channel}
+                fullWidth
+                onChange={(event) => {
+                  const nextChannel = event.target.value as 'email' | 'sms' | 'whatsapp';
+                  setChannel(nextChannel);
+                  setTemplateId('');
+                }}
+                helperText="البريد الإلكتروني يُرسل عبر Brevo، وSMS وواتساب يُرسلان عبر Vonage. أرقام الهاتف يجب أن تكون بصيغة E.164 مثل +966500000000."
+              >
                 <MenuItem value="email">البريد الإلكتروني</MenuItem>
+                <MenuItem value="sms">SMS — Vonage</MenuItem>
+                <MenuItem value="whatsapp">واتساب — Vonage</MenuItem>
               </TextField>
               <TextField
                 select
@@ -318,7 +386,9 @@ export function NewCampaignPage() {
                 disabled={templatesQuery.isLoading}
                 helperText={
                   templatesQuery.data && templatesQuery.data.length === 0
-                    ? 'لا توجد قوالب نشطة — أنشئ قالباً من صفحة القوالب أولاً.'
+                    ? channel === 'email'
+                      ? 'لا توجد قوالب بريد نشطة — أنشئ قالباً من صفحة القوالب أولاً.'
+                      : `لا توجد قوالب ${channel === 'sms' ? 'SMS' : 'واتساب'} نشطة — أنشئ قالباً من صفحة القوالب واختر القناة الصحيحة.`
                     : 'القالب يحدد قصة المرسل والموضوع ونص الرسالة.'
                 }
               >
@@ -437,13 +507,23 @@ export function NewCampaignPage() {
                 />
               </Stack>
 
+              {isPhoneChannel && invalidPhoneCount > 0 ? (
+                <Alert severity="info">
+                  {invalidPhoneCount} موظفاً في النتائج الحالية بلا رقم هاتف صالح بصيغة E.164؛
+                  تم تعطيل تحديدهم لأن قنوات SMS وواتساب تتطلب رقماً دولياً مثل
+                  +966500000000. صحّح الرقم من صفحة الموظفين ثم أعد المحاولة.
+                </Alert>
+              ) : null}
+
               <Stack
                 direction={{ xs: 'column', sm: 'row' }}
                 spacing={1}
                 alignItems={{ xs: 'stretch', sm: 'center' }}
               >
-                <Button size="small" variant="outlined" onClick={selectAllVisible} disabled={visibleEmployees.length === 0}>
-                  {allVisibleSelected ? 'كل النتائج محددة مسبقاً' : `تحديد كل النتائج (${visibleEmployees.length})`}
+                <Button size="small" variant="outlined" onClick={selectAllVisible} disabled={selectableVisible.length === 0}>
+                  {allVisibleSelected
+                    ? 'كل النتائج القابلة للإرسال محددة مسبقاً'
+                    : `تحديد كل النتائج (${selectableVisible.length})`}
                 </Button>
                 <Button size="small" onClick={clearAll} disabled={selected.size === 0}>
                   مسح الكل
@@ -488,6 +568,7 @@ export function NewCampaignPage() {
                         <TableCell padding="checkbox">تحديد</TableCell>
                         <TableCell>الاسم</TableCell>
                         <TableCell>البريد</TableCell>
+                        {isPhoneChannel ? <TableCell>الهاتف (E.164)</TableCell> : null}
                         <TableCell>القسم</TableCell>
                         <TableCell align="center">مستوى الوصول</TableCell>
                         <TableCell>آخر اختبار</TableCell>
@@ -498,22 +579,43 @@ export function NewCampaignPage() {
                       {visibleEmployees.map((employee) => (
                         <TableRow
                           key={employee.id}
-                          hover
+                          hover={isSelectable(employee)}
                           onClick={() => toggleEmployee(employee)}
-                          sx={{ cursor: 'pointer' }}
+                          sx={{
+                            cursor: isSelectable(employee) ? 'pointer' : 'not-allowed',
+                            opacity: isSelectable(employee) ? 1 : 0.55,
+                          }}
                           selected={selected.has(employee.id)}
                         >
                           <TableCell padding="checkbox">
-                            <Checkbox
-                              checked={selected.has(employee.id)}
-                              onClick={(event) => event.stopPropagation()}
-                              onChange={() => toggleEmployee(employee)}
-                            />
+                            <Tooltip
+                              title={
+                                isSelectable(employee)
+                                  ? ''
+                                  : employee.phone?.trim()
+                                    ? 'رقم الهاتف ليس بصيغة E.164 — صحّحه من ملف الموظف'
+                                    : 'أضف رقم هاتف بصيغة E.164 من ملف الموظف أولاً'
+                              }
+                            >
+                              <span>
+                                <Checkbox
+                                  checked={selected.has(employee.id)}
+                                  disabled={!isSelectable(employee)}
+                                  onClick={(event) => event.stopPropagation()}
+                                  onChange={() => toggleEmployee(employee)}
+                                />
+                              </span>
+                            </Tooltip>
                           </TableCell>
                           <TableCell>
                             {employee.first_name} {employee.last_name}
                           </TableCell>
                           <TableCell>{employee.email}</TableCell>
+                          {isPhoneChannel ? (
+                            <TableCell sx={{ fontFamily: 'monospace', whiteSpace: 'nowrap' }}>
+                              {employee.phone?.trim() ? employee.phone : 'لا يوجد رقم'}
+                            </TableCell>
+                          ) : null}
                           <TableCell>{employee.department ?? '—'}</TableCell>
                           <TableCell align="center">{employee.access_level}</TableCell>
                           <TableCell>
@@ -601,7 +703,7 @@ export function NewCampaignPage() {
                     <strong>الاسم:</strong> {name}
                   </Typography>
                   <Typography variant="body2">
-                    <strong>القناة:</strong> البريد الإلكتروني
+                    <strong>القناة:</strong> {CHANNEL_LABELS[channel]}
                   </Typography>
                   <Typography variant="body2">
                     <strong>القالب:</strong> {selectedTemplate?.name ?? '—'}
@@ -630,6 +732,7 @@ export function NewCampaignPage() {
                       <TableRow>
                         <TableCell>الاسم</TableCell>
                         <TableCell>البريد</TableCell>
+                        {isPhoneChannel ? <TableCell>الهاتف</TableCell> : null}
                         <TableCell>القسم</TableCell>
                         <TableCell>المسمى الوظيفي</TableCell>
                       </TableRow>
@@ -641,6 +744,11 @@ export function NewCampaignPage() {
                             {employee.first_name} {employee.last_name}
                           </TableCell>
                           <TableCell>{employee.email}</TableCell>
+                          {isPhoneChannel ? (
+                            <TableCell sx={{ fontFamily: 'monospace', whiteSpace: 'nowrap' }}>
+                              {employee.phone ?? '—'}
+                            </TableCell>
+                          ) : null}
                           <TableCell>{employee.department ?? '—'}</TableCell>
                           <TableCell>{employee.job_title ?? '—'}</TableCell>
                         </TableRow>
@@ -667,6 +775,13 @@ export function NewCampaignPage() {
                   <Typography variant="body2">
                     {preflightQuery.data.hint ?? preflightQuery.data.error ?? 'فشل فحص الإرسال.'}
                   </Typography>
+                  {'missing' in preflightQuery.data &&
+                  Array.isArray(preflightQuery.data.missing) &&
+                  preflightQuery.data.missing.length > 0 ? (
+                    <Typography variant="body2" sx={{ fontFamily: 'monospace', mt: 0.5 }}>
+                      إعدادات ناقصة: {preflightQuery.data.missing.join('، ')}
+                    </Typography>
+                  ) : null}
                   {preflightQuery.data.blocked_ip ? (
                     <Typography variant="body2" sx={{ fontFamily: 'monospace', mt: 0.5 }}>
                       عنوان IP المحجوب: {preflightQuery.data.blocked_ip}
@@ -680,14 +795,25 @@ export function NewCampaignPage() {
                       underline="hover"
                       sx={{ display: 'inline-block', mt: 0.5 }}
                     >
-                      فتح إعدادات مزوّد البريد
+                      {channel === 'email' ? 'فتح إعدادات مزوّد البريد' : 'فتح إعدادات Vonage'}
                     </Link>
                   ) : null}
                 </Alert>
               ) : preflightQuery.data?.valid ? (
                 <Alert severity="success">
-                  الإرسال جاهز — {preflightQuery.data.detail?.transport === 'smtp' ? 'SMTP' : 'Brevo'}{' '}
-                  استلم إعدادات المرسل بنجاح.
+                  الإرسال جاهز —{' '}
+                  {channel === 'email'
+                    ? preflightQuery.data.detail?.transport === 'smtp'
+                      ? 'SMTP'
+                      : 'Brevo'
+                    : `Vonage (${channel === 'sms' ? 'SMS' : 'WhatsApp'})`}{' '}
+                  استلم إعدادات المرسل بنجاح
+                  {channel !== 'email' &&
+                  typeof preflightQuery.data.detail?.from === 'string' &&
+                  preflightQuery.data.detail.from.trim()
+                    ? ` — المرسل: ${preflightQuery.data.detail.from}`
+                    : ''}
+                  .
                 </Alert>
               ) : preflightQuery.error ? (
                 <Alert severity="warning">
@@ -713,14 +839,23 @@ export function NewCampaignPage() {
               ) : null}
 
               <Alert severity="warning">
-                سيتم إرسال <strong>{selected.size} رسالة حقيقية</strong> من عنوان المرسل المُعدّ.
-                يجب أن تكون العناوين مملوكة للشركة ومشمولة بسياسة الاستخدام المقبول. كل فتح ونقرة
-                وقيمة مُدخلة تُسجّل في تقرير الحملة.
+                سيتم إرسال <strong>{selected.size} {channelNoun} حقيقية</strong> عبر {providerName} من
+                المرسل المُعدّ. يجب أن تكون العناوين مملوكة للشركة ومشمولة بسياسة الاستخدام
+                المقبول. يُضاف رابط تتبع فريد لكل مستهدف، وكل فتح ونقرة وقيمة مُدخلة تُسجّل في
+                تقرير الحملة.
               </Alert>
 
               <Stack direction="row" justifyContent="space-between">
                 <Button onClick={() => setStep(1)}>رجوع</Button>
-                <Tooltip title={selected.size === 0 ? 'اختر مستهدفاً واحداً على الأقل' : ''}>
+                <Tooltip
+                  title={
+                    selected.size === 0
+                      ? 'اختر مستهدفاً واحداً على الأقل'
+                      : preflightBlocked
+                        ? 'الإرسال محجوب حتى تُكمل إعدادات المزوّد'
+                        : ''
+                  }
+                >
                   <span>
                     <Button
                       variant="contained"
@@ -730,7 +865,7 @@ export function NewCampaignPage() {
                           <CircularProgress size={18} color="inherit" />
                         ) : null
                       }
-                      disabled={launchMutation.isPending || selected.size === 0}
+                      disabled={launchMutation.isPending || selected.size === 0 || preflightBlocked}
                       onClick={() => setConfirmOpen(true)}
                     >
                       إطلاق الحملة
@@ -742,7 +877,7 @@ export function NewCampaignPage() {
               {launchMutation.isPending ? (
                 <Box>
                   <Typography variant="body2" color="text.secondary" gutterBottom>
-                    جارٍ إرسال {selected.size} رسالة…
+                    جارٍ إرسال {selected.size} {channelNoun} عبر {providerName}…
                   </Typography>
                   <LinearProgress />
                 </Box>
@@ -755,7 +890,7 @@ export function NewCampaignPage() {
       <ConfirmDialog
         open={confirmOpen}
         title="تأكيد الإطلاق"
-        message={`سيتم إرسال ${selected.size} رسالة حقيقية إلى الموظفين المحددين. هل تريد المتابعة؟`}
+        message={`سيتم إرسال ${selected.size} ${channelNoun} حقيقية عبر ${providerName} إلى الموظفين المحددين. هل تريد المتابعة؟`}
         confirmLabel="إرسال الرسائل"
         destructive
         busy={launchMutation.isPending}

@@ -59,11 +59,13 @@ def _label(event_type: str | None) -> str | None:
 
 def _status(tracking: EmailTracking, *, launched: bool) -> str:
     """Derive the funnel status, keeping form views as their own stage."""
-    if tracking.completed_training_at is not None:
+    if tracking.is_reported_safe:
+        return "reported_safe"
+    if tracking.completed_at is not None:
         return "completed"
-    if tracking.form_submitted_at is not None:
+    if tracking.submitted_at is not None:
         return "submitted"
-    if tracking.form_viewed_at is not None:
+    if tracking.viewed_at is not None:
         return "form_viewed"
     if tracking.clicked_at is not None:
         return "clicked"
@@ -82,10 +84,10 @@ def _fallback_last_event(tracking: EmailTracking) -> tuple[str | None, datetime 
     instead of showing an empty card.
     """
     candidates = [
-        ("training_completed", tracking.completed_training_at),
-        ("form_submitted", tracking.form_submitted_at),
+        ("training_completed", tracking.completed_at),
+        ("form_submitted", tracking.submitted_at),
         ("phishing_reported", tracking.reported_at),
-        ("form_viewed", tracking.form_viewed_at),
+        ("form_viewed", tracking.viewed_at),
         ("link_clicked", tracking.clicked_at),
         ("email_opened", tracking.opened_at),
         ("email_delivered", tracking.delivered_at),
@@ -180,24 +182,28 @@ class LiveBoardService:
                     "department": employee.department,
                     "job_title": employee.job_title,
                     "status": status,
-                    "reported": tracking.reported_at is not None,
+                    "reported": bool(tracking.is_reported_safe)
+                    or tracking.reported_at is not None,
                     "sent_at": _aware(tracking.sent_at),
                     "delivered_at": _aware(tracking.delivered_at),
                     "opened_at": _aware(tracking.opened_at),
                     "clicked_at": _aware(tracking.clicked_at),
-                    "form_viewed_at": _aware(tracking.form_viewed_at),
-                    "submitted_at": _aware(tracking.form_submitted_at),
+                    "form_viewed_at": _aware(tracking.viewed_at),
+                    "submitted_at": _aware(tracking.submitted_at),
                     "reported_at": _aware(tracking.reported_at),
-                    "completed_at": _aware(tracking.completed_training_at),
+                    "completed_at": _aware(tracking.completed_at),
+                    "quiz_score": tracking.quiz_score,
+                    "quiz_total": tracking.quiz_total,
+                    "is_reported_safe": bool(tracking.is_reported_safe),
                     "open_count": tracking.open_count or 0,
                     "click_count": tracking.click_count or 0,
                     "submission_count": tracking.submission_count or 0,
                     "interactions_count": interaction_counts.get(tracking.id, 0),
                     "seconds_to_open": _seconds_between(tracking.sent_at, tracking.opened_at),
                     "seconds_to_click": _seconds_between(tracking.sent_at, tracking.clicked_at),
-                    "seconds_to_form": _seconds_between(tracking.sent_at, tracking.form_viewed_at),
+                    "seconds_to_form": _seconds_between(tracking.sent_at, tracking.viewed_at),
                     "seconds_to_submit": _seconds_between(
-                        tracking.sent_at, tracking.form_submitted_at
+                        tracking.sent_at, tracking.submitted_at
                     ),
                     "last_event_at": last_at,
                     "last_event_type": last_type,
@@ -239,6 +245,7 @@ class LiveBoardService:
             "campaign": {
                 "id": campaign.id,
                 "name": campaign.name,
+                "channel": campaign.channel or "email",
                 "status": campaign.status,
                 "template_name": template_name,
                 "difficulty_level": difficulty,

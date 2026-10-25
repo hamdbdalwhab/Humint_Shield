@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import uuid
 from datetime import datetime, timezone
+from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import func, select, update
@@ -33,6 +34,12 @@ from app.models import (
 )
 from app.security import EncryptionError, decrypt_value, encrypt_value
 from app.services.classification_engine import ClassificationEngine
+from app.services.elo_engine import (
+    CLICK_ELO_DELTA,
+    apply_click,
+    apply_report,
+    clamp_elo,
+)
 
 logger = get_logger(__name__)
 
@@ -210,7 +217,7 @@ def latest_submitted_values(tracking: EmailTracking) -> dict[str, str] | None:
     values = decrypt_payload(tracking.submitted_payload_encrypted)
     if values:
         return values
-    if tracking.form_submitted_at is None:
+    if tracking.submitted_at is None:
         return None
     legacy: dict[str, str] = {}
     if tracking.submitted_identifier:
@@ -422,7 +429,11 @@ class TrackingService:
                 .values(clicked_count=EmailCampaign.clicked_count + 1)
             )
             await self._adjust_employee(
-                db, row.employee_id, delta=-CLICK_PENALTY, increment_clicks=first_click
+                db,
+                row.employee_id,
+                delta=-CLICK_PENALTY,
+                increment_clicks=first_click,
+                elo_delta=CLICK_ELO_DELTA,
             )
         self._record_interaction(
             db,
@@ -443,13 +454,19 @@ class TrackingService:
         return row
 
     async def log_completion(
-        self, tracking_uuid: uuid.UUID | str, db: AsyncSession
+        self,
+        tracking_uuid: uuid.UUID | str,
+        db: AsyncSession,
+        score: int | None = None,
+        total: int | None = None,
     ) -> EmailTracking | None:
         """Record that the recipient finished the micro-training.
 
         Args:
             tracking_uuid: Per-recipient tracking UUID.
             db: Active session.
+            score: Number of correct quiz answers, when supplied by the page.
+            total: Number of quiz questions, when supplied by the page.
 
         Returns:
             The updated row, or ``None`` when the UUID is unknown.
@@ -462,12 +479,19 @@ class TrackingService:
             logger.warning("track_complete_unknown", tracking_uuid=str(tracking_uuid))
             return None
 
-        if row.completed_training_at is not None:
+        # Persist the quiz result even when the page is reloaded after
+        # completion; the completion counter must only increment once.
+        if score is not None:
+            clamped_total = max(1, min(int(total or 5), 100))
+            row.quiz_score = max(0, min(int(score), clamped_total))
+            row.quiz_total = clamped_total
+
+        if row.completed_at is not None:
             logger.info("training_already_completed", tracking_uuid=str(uid))
             return row
 
         now = _now()
-        row.completed_training_at = now
+        row.completed_at = now
         self._record_interaction(
             db,
             row,
@@ -475,22 +499,63 @@ class TrackingService:
             now,
             ip_address=row.last_ip_address,
             user_agent=row.last_user_agent,
-            details={"countdown_seconds": 60},
+            details={
+                "countdown_seconds": 60,
+                "quiz_score": row.quiz_score,
+                "quiz_total": row.quiz_total,
+            },
         )
         await db.execute(
             update(EmailCampaign)
             .where(EmailCampaign.id == row.campaign_id)
             .values(completed_count=EmailCampaign.completed_count + 1)
         )
-        # A completed debrief is a deliberate positive signal.  Recomputing the
-        # score from the engagement ledger would immediately erase the +5 bonus
-        # because the ledger has no "training completed" input, so apply the
-        # delta without reclassifying afterwards.
-        await self._adjust_employee(
-            db, row.employee_id, delta=COMPLETION_BONUS, reclassify=False
-        )
+
+        # A completed debrief is a deliberate positive signal. Recompute the
+        # baseline from the 90-day ledger, then add the completion bonus plus a
+        # small knowledge bonus derived from the quiz. This keeps the score
+        # reproducible instead of stacking deltas indefinitely.
+        employee = await db.get(HumanAsset, row.employee_id)
+        if employee is not None:
+            try:
+                metrics = await self.classification_engine.gather_metrics(
+                    employee.id, db
+                )
+                baseline = self.classification_engine.score_from_metrics(metrics)
+                quiz_bonus = 0.0
+                if row.quiz_score is not None and row.quiz_total:
+                    quiz_bonus = round(
+                        min(3.0, (row.quiz_score / row.quiz_total) * 3.0), 2
+                    )
+                final_score = min(
+                    MAX_SCORE, baseline + COMPLETION_BONUS + quiz_bonus
+                )
+                employee.immunity_score = Decimal(str(round(final_score, 2)))
+                employee.behavioral_category = (
+                    self.classification_engine.category_from_metrics(
+                        metrics, final_score
+                    )
+                )
+                employee.requires_mandatory_training = (
+                    employee.behavioral_category == "unaware"
+                )
+                employee.under_enhanced_monitoring = (
+                    employee.behavioral_category == "critical_risk"
+                )
+                await db.flush()
+            except Exception as exc:  # pragma: no cover - best effort
+                logger.warning(
+                    "completion_score_recalculation_failed",
+                    tracking_uuid=str(uid),
+                    error=str(exc),
+                )
         await db.flush()
-        logger.info("training_completed", tracking_uuid=str(uid))
+        logger.info(
+            "training_completed",
+            tracking_uuid=str(uid),
+            quiz_score=row.quiz_score,
+            quiz_total=row.quiz_total,
+        )
         return row
 
     async def mark_form_viewed(
@@ -502,7 +567,7 @@ class TrackingService:
     ) -> EmailTracking | None:
         """Record that the simulated credential form was rendered.
 
-        Every render is appended to the ledger, while ``form_viewed_at`` keeps
+        Every render is appended to the ledger, while ``viewed_at`` keeps
         the first one so the funnel stays stable.
 
         Args:
@@ -521,9 +586,9 @@ class TrackingService:
         if row is None:
             return None
         now = _now()
-        first_view = row.form_viewed_at is None
+        first_view = row.viewed_at is None
         if first_view:
-            row.form_viewed_at = now
+            row.viewed_at = now
         views = (
             await db.scalar(
                 select(func.count(TrainingInteraction.id)).where(
@@ -595,10 +660,10 @@ class TrackingService:
             return None
 
         now = _now()
-        first_submission = row.form_submitted_at is None
+        first_submission = row.submitted_at is None
         row.submission_count = (row.submission_count or 0) + 1
         if first_submission:
-            row.form_submitted_at = now
+            row.submitted_at = now
         if identifier:
             row.submitted_identifier = str(identifier)[:255]
 
@@ -727,10 +792,129 @@ class TrackingService:
         )
         db.add(report)
         employee.total_reports = (employee.total_reports or 0) + 1
+        # A report is a positive security behaviour.  Apply the Elo reward only
+        # on the first report; the ``reported_at`` guard above already makes the
+        # whole operation idempotent.
+        employee.elo_score = apply_report(employee.elo_score)
         await db.flush()
         await self._classify(employee.id, db)
-        logger.info("simulation_reported", tracking_uuid=str(uid), report_id=str(report.id))
+        logger.info(
+            "simulation_reported",
+            tracking_uuid=str(uid),
+            report_id=str(report.id),
+            elo_score=employee.elo_score,
+        )
         return report
+
+    async def mark_reported_safe(
+        self,
+        tracking_uuid: uuid.UUID | str,
+        db: AsyncSession,
+        *,
+        ip_address: str | None = None,
+        user_agent: str | None = None,
+        actor: str = "administrator",
+    ) -> tuple[EmailTracking, HumanAsset, bool] | None:
+        """Record an out-of-band "report safe" outcome (admin action).
+
+        Employees sometimes recognise a simulation and report it through a
+        channel other than the tracking link. An administrator can record that
+        outcome against the tracking row: the event becomes ``reported_safe``,
+        the quiz score is fixed at 5/5, and the employee's immunity score is set
+        to 100%.
+
+        The operation is idempotent: calling it again returns the existing row
+        without creating a second phishing report or event.
+
+        Args:
+            tracking_uuid: Per-recipient tracking UUID.
+            db: Active session.
+            ip_address: Administrator/client IP, when known.
+            user_agent: Administrator/client User-Agent, when known.
+            actor: Human label stored in the audit event.
+
+        Returns:
+            ``(tracking, employee, already_reported_safe)`` or ``None`` when
+            the UUID is unknown.
+        """
+        uid = self._coerce_uuid(tracking_uuid)
+        if uid is None:
+            return None
+        row = await self._locked_tracking(db, EmailTracking.tracking_uuid, uid)
+        if row is None:
+            logger.warning("track_report_safe_unknown", tracking_uuid=str(tracking_uuid))
+            return None
+        employee = await db.get(HumanAsset, row.employee_id)
+        if employee is None:  # pragma: no cover - FK guarantees existence
+            return None
+
+        if row.is_reported_safe:
+            return row, employee, True
+
+        now = _now()
+        was_reported = row.reported_at is not None
+        row.is_reported_safe = True
+        row.quiz_score = 5
+        row.quiz_total = 5
+        if row.reported_at is None:
+            row.reported_at = now
+        row.last_ip_address = ip_address or row.last_ip_address
+        row.last_user_agent = (user_agent or row.last_user_agent or "")[:2000] or None
+
+        if not was_reported:
+            employee.total_reports = (employee.total_reports or 0) + 1
+            report = PhishingReport(
+                organization_id=employee.organization_id,
+                employee_id=employee.id,
+                reported_email_subject="Simulated phishing email (report safe)",
+                reported_sender=None,
+                description=(
+                    "Employee reported the simulation safe without clicking. "
+                    "Recorded by an administrator."
+                ),
+                status="resolved",
+                is_training_simulation=True,
+                details={
+                    "tracking_uuid": str(row.tracking_uuid),
+                    "campaign_id": str(row.campaign_id),
+                    "source": "admin_report_safe",
+                    "actor": actor,
+                },
+            )
+            db.add(report)
+
+        employee.immunity_score = Decimal("100.00")
+        employee.behavioral_category = "competent"
+        employee.requires_mandatory_training = False
+        employee.under_enhanced_monitoring = False
+        if not was_reported:
+            # The report reward is applied once.  A row already reported through
+            # the public training page has had its +32; an administrator marking
+            # that same report safe must not grant it a second time.
+            employee.elo_score = apply_report(employee.elo_score)
+        self._record_interaction(
+            db,
+            row,
+            EVENT_REPORTED,
+            now,
+            ip_address,
+            user_agent,
+            {
+                "source": "admin_report_safe",
+                "reported_safe": True,
+                "quiz_score": 5,
+                "quiz_total": 5,
+                "actor": actor,
+            },
+        )
+        await db.flush()
+        logger.info(
+            "simulation_report_safe",
+            tracking_uuid=str(uid),
+            employee_id=str(employee.id),
+            actor=actor,
+        )
+        return row, employee, False
 
     # ------------------------------------------------------------------ #
     # Internals
@@ -750,7 +934,7 @@ class TrackingService:
             row: The tracking row being updated.
             now: Timestamp to apply when no earlier evidence exists.
         """
-        anchor = row.form_viewed_at or now
+        anchor = row.viewed_at or now
         if row.opened_at is None:
             row.opened_at = anchor
             row.open_count = (row.open_count or 0) + 1
@@ -770,6 +954,11 @@ class TrackingService:
             employee = await db.get(HumanAsset, row.employee_id)
             if employee is not None:
                 employee.total_clicks = (employee.total_clicks or 0) + 1
+                # A direct form submission (without the click endpoint) still
+                # proves the recipient followed the simulated link.  Apply the
+                # Elo click penalty exactly once, when the click marker is
+                # backfilled here.
+                employee.elo_score = apply_click(employee.elo_score)
 
     async def _classify(self, employee_id: uuid.UUID, db: AsyncSession) -> None:
         """Re-derive the employee's category, never failing the request.
@@ -800,6 +989,7 @@ class TrackingService:
         delta: float,
         increment_clicks: bool = False,
         reclassify: bool = True,
+        elo_delta: int = 0,
     ) -> None:
         """Apply a score delta to an employee and optionally reclassify them.
 
@@ -810,6 +1000,8 @@ class TrackingService:
             increment_clicks: When ``True`` also bump ``total_clicks``.
             reclassify: When ``False`` keep the manually adjusted score instead
                 of replacing it with a fresh ledger-derived score.
+            elo_delta: Signed change applied to the independent ``elo_score``.
+                The Elo rating is never derived from ``immunity_score``.
         """
         employee = await db.get(HumanAsset, employee_id)
         if employee is None:  # pragma: no cover - FK guarantees existence
@@ -817,6 +1009,8 @@ class TrackingService:
         current = float(employee.immunity_score or 0)
         new_score = max(MIN_SCORE, min(MAX_SCORE, current + delta))
         employee.immunity_score = new_score  # type: ignore[assignment]
+        if elo_delta:
+            employee.elo_score = clamp_elo(int(employee.elo_score or 1000) + elo_delta)
         if increment_clicks:
             employee.total_clicks = (employee.total_clicks or 0) + 1
             employee.last_test_date = _now()

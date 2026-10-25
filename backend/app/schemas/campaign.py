@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.schemas.employee import EmployeePublic
 
@@ -15,6 +15,7 @@ class CampaignBase(BaseModel):
 
     name: str = Field(min_length=1, max_length=255)
     template_id: uuid.UUID
+    channel: str = Field(default="email", pattern="^(email|sms|whatsapp)$")
     difficulty_level: int = Field(default=5, ge=1, le=10)
 
 
@@ -29,6 +30,7 @@ class CampaignUpdate(BaseModel):
 
     name: str | None = Field(default=None, min_length=1, max_length=255)
     template_id: uuid.UUID | None = None
+    channel: str | None = Field(default=None, pattern="^(email|sms|whatsapp)$")
     difficulty_level: int | None = Field(default=None, ge=1, le=10)
     target_employee_ids: list[uuid.UUID] | None = None
 
@@ -42,6 +44,7 @@ class CampaignPublic(BaseModel):
     organization_id: uuid.UUID
     template_id: uuid.UUID | None
     name: str
+    channel: str = "email"
     status: str
     target_employee_ids: list[str]
     total_targets: int
@@ -105,16 +108,27 @@ class CampaignEmployeeResult(BaseModel):
     employee_id: uuid.UUID
     name: str
     email: str
+    phone: str | None = None
+    channel: str = "email"
     department: str | None = None
     job_title: str | None = None
     status: str
     sent_at: datetime | None = None
+    delivered_at: datetime | None = None
+    delivery_status: str | None = None
+    delivery_error: str | None = None
+    read_at: datetime | None = None
+    failed_at: datetime | None = None
+    provider_message_id: str | None = None
     opened_at: datetime | None = None
     clicked_at: datetime | None = None
     submitted_at: datetime | None = None
     completed_at: datetime | None = None
     form_viewed_at: datetime | None = None
     reported_at: datetime | None = None
+    quiz_score: int | None = None
+    quiz_total: int | None = None
+    is_reported_safe: bool = False
     open_count: int = 0
     click_count: int = 0
     submission_count: int = 0
@@ -125,6 +139,10 @@ class CampaignEmployeeResult(BaseModel):
     password_length: int | None = None
     immunity_score: float | None = None
     behavioral_category: str | None = None
+    elo_score: int | None = None
+    threat_level: str | None = None
+    template_name: str | None = None
+    template_difficulty: int | None = None
     error: str | None = None
 
 
@@ -169,16 +187,25 @@ class EmployeeCampaignRecord(BaseModel):
     campaign_name: str
     campaign_status: str
     template_name: str | None = None
+    channel: str = "email"
     tracking_uuid: uuid.UUID
     status: str
     sent_at: datetime | None = None
     delivered_at: datetime | None = None
+    delivery_status: str | None = None
+    delivery_error: str | None = None
+    read_at: datetime | None = None
+    failed_at: datetime | None = None
+    provider_message_id: str | None = None
     opened_at: datetime | None = None
     clicked_at: datetime | None = None
     form_viewed_at: datetime | None = None
     submitted_at: datetime | None = None
     reported_at: datetime | None = None
     completed_at: datetime | None = None
+    quiz_score: int | None = None
+    quiz_total: int | None = None
+    is_reported_safe: bool = False
     open_count: int = 0
     click_count: int = 0
     submission_count: int = 0
@@ -245,6 +272,41 @@ class TrackingCompleteResponse(BaseModel):
     success: bool
     already_completed: bool = False
     message: str = ""
+    quiz_score: int | None = None
+    quiz_total: int | None = None
+    immunity_score: float | None = None
+    behavioral_category: str | None = None
+
+
+class TrainingCompleteRequest(BaseModel):
+    """Quiz result posted by the interactive training page.
+
+    ``score`` is the number of correct answers and ``total`` the number of
+    questions.  The response stores the raw pair; percentages are derived by
+    the dashboard.
+    """
+
+    score: int = Field(ge=0, le=100)
+    total: int = Field(default=5, ge=1, le=100)
+
+    @model_validator(mode="after")
+    def _score_within_total(self) -> "TrainingCompleteRequest":
+        """Reject impossible scores before they reach the database."""
+        if self.score > self.total:
+            raise ValueError("score cannot exceed total")
+        return self
+
+
+class ReportSafeResponse(BaseModel):
+    """Response from the admin ``POST /track/report-safe/{tracking_uuid}``."""
+
+    success: bool
+    message: str = ""
+    quiz_score: int | None = None
+    quiz_total: int | None = None
+    immunity_score: float | None = None
+    behavioral_category: str | None = None
+    already_reported_safe: bool = False
 
 
 class TrainingSubmission(BaseModel):

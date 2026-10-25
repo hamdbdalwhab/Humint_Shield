@@ -36,6 +36,11 @@ class HumanAsset(Base):
     job_title: Mapped[str | None] = mapped_column(String(100))
     access_level: Mapped[int] = mapped_column(Integer, default=1)
     immunity_score: Mapped[Decimal] = mapped_column(Numeric(6, 2), default=Decimal("50.00"))
+    #: Elo-style adaptive-difficulty rating.  Starts at 1000 for every employee;
+    #: the first click is -32 and the first report is +32.
+    elo_score: Mapped[int] = mapped_column(
+        Integer, default=1000, server_default="1000", nullable=False
+    )
     behavioral_category: Mapped[str | None] = mapped_column(String(20), default="hesitant")
     total_tests_received: Mapped[int] = mapped_column(Integer, default=0)
     total_clicks: Mapped[int] = mapped_column(Integer, default=0)

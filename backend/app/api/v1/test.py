@@ -1,7 +1,7 @@
 """Diagnostic endpoints: deliverability test and dependency health."""
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -12,6 +12,7 @@ from app.logging_config import get_logger
 from app.models import User
 from app.schemas import TestEmailRequest
 from app.services.brevo_email_service import BrevoEmailService
+from app.services.vonage_service import VonageService
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/test", tags=["diagnostics"])
@@ -83,6 +84,9 @@ async def health(
         "redis": {"ok": redis_ok, "error": redis_error},
         "brevo_configured": settings.brevo_configured,
         "email_dry_run": settings.email_dry_run,
+        "vonage_configured": settings.vonage_configured,
+        "vonage_sms_configured": settings.vonage_sms_configured,
+        "vonage_whatsapp_configured": settings.vonage_whatsapp_configured,
     }
 
 
@@ -105,6 +109,67 @@ async def verify_brevo(
     return await BrevoEmailService().verify_configuration()
 
 
+@router.get(
+    "/vonage/verify",
+    dependencies=[Depends(rate_limit(limit=20, window=60, scope="test_vonage_verify"))],
+    summary="Validate the Vonage SMS/WhatsApp configuration",
+)
+async def verify_vonage(
+    channel: str = Query("sms", pattern="^(sms|whatsapp)$"),
+    user: User = Depends(require_roles("admin", "manager")),
+) -> dict:
+    """Report whether real Vonage delivery is configured for a channel.
+
+    This endpoint deliberately does not send a message.  It validates the
+    environment and returns the exact dashboard webhook URLs that must be
+    configured for delivery/read receipts.
+
+    Args:
+        channel: ``sms`` or ``whatsapp``.
+        user: Authenticated admin/manager.
+
+    Returns:
+        ``{"valid", "error", "detail", "missing", "webhook_urls", ...}``.
+    """
+    settings = get_settings()
+    service = VonageService(settings=settings)
+    status_data = service.configuration_status(channel)
+    missing = status_data["missing"]
+    base_url = settings.base_url.rstrip("/")
+    webhook_urls = {
+        "sms_dlr": f"{base_url}/api/v1/webhooks/vonage/dlr",
+        "whatsapp_status": f"{base_url}/api/v1/webhooks/vonage/whatsapp-status",
+    }
+    if status_data["valid"]:
+        hint = f"Vonage {channel.upper()} sender '{status_data['from']}' is configured."
+        error = None
+    else:
+        error = (
+            "Vonage is not fully configured; set "
+            + (", ".join(missing) if missing else "the missing values")
+            + " in backend/.env"
+        )
+        hint = error
+    return {
+        **status_data,
+        "error": error,
+        "hint": hint,
+        "detail": {
+            "transport": "vonage",
+            "channel": channel,
+            "from": status_data["from"],
+            "application_configured": status_data["application_configured"],
+            "messages_base_url": status_data["messages_base_url"],
+        },
+        "sms_ready": settings.vonage_sms_configured,
+        "whatsapp_ready": settings.vonage_whatsapp_configured,
+        "vonage_configured": settings.vonage_configured,
+        "vonage_application_configured": settings.vonage_application_configured,
+        "webhook_urls": webhook_urls,
+        "webhook_token_required": bool((settings.vonage_webhook_token or "").strip()),
+    }
+
+
 @router.get("/config", summary="Non-secret runtime configuration")
 async def config_summary(
     user: User = Depends(require_roles("admin", "manager", "viewer")),
@@ -124,6 +189,16 @@ async def config_summary(
         "brevo_configured": settings.brevo_configured,
         "smtp_configured": settings.smtp_configured,
         "email_dry_run": settings.email_dry_run,
+        "vonage_configured": settings.vonage_configured,
+        "vonage_sms_configured": settings.vonage_sms_configured,
+        "vonage_whatsapp_configured": settings.vonage_whatsapp_configured,
+        "vonage_application_configured": settings.vonage_application_configured,
+        "vonage_sms_from": settings.vonage_sms_from,
+        "vonage_whatsapp_from": settings.vonage_whatsapp_from,
+        "vonage_webhook_paths": {
+            "sms_dlr": "/api/v1/webhooks/vonage/dlr",
+            "whatsapp_status": "/api/v1/webhooks/vonage/whatsapp-status",
+        },
         "rate_limit_enabled": settings.rate_limit_enabled,
         "environment": settings.environment,
     }

@@ -13,6 +13,7 @@ import Button from '@mui/material/Button';
 import Card from '@mui/material/Card';
 import CardContent from '@mui/material/CardContent';
 import Chip from '@mui/material/Chip';
+import CircularProgress from '@mui/material/CircularProgress';
 import Grid from '@mui/material/Grid';
 import IconButton from '@mui/material/IconButton';
 import MenuItem from '@mui/material/MenuItem';
@@ -29,6 +30,11 @@ import TextField from '@mui/material/TextField';
 import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
 import DownloadIcon from '@mui/icons-material/Download';
+import PictureAsPdfIcon from '@mui/icons-material/PictureAsPdf';
+import CheckCircleOutlineIcon from '@mui/icons-material/CheckCircleOutline';
+import DoneAllIcon from '@mui/icons-material/DoneAll';
+import ErrorOutlineIcon from '@mui/icons-material/ErrorOutline';
+import ScheduleIcon from '@mui/icons-material/Schedule';
 import SensorsIcon from '@mui/icons-material/Sensors';
 import VisibilityIcon from '@mui/icons-material/Visibility';
 import { useMemo, useState } from 'react';
@@ -36,17 +42,18 @@ import { useQuery } from '@tanstack/react-query';
 import { useNavigate, useParams } from 'react-router-dom';
 import toast from 'react-hot-toast';
 
-import { campaignsApi } from '@/api/endpoints';
+import { campaignsApi, reportsApi } from '@/api/endpoints';
 import { InteractionTimeline } from '@/components/InteractionTimeline';
 import { LoadingState } from '@/components/Feedback';
 import { PageHeader } from '@/components/PageHeader';
 import { RecipientDossierDialog } from '@/components/RecipientDossierDialog';
 import { CampaignStatusBadge, EngagementStatusBadge } from '@/components/StatusBadge';
+import { ThreatBadge } from '@/components/ThreatBadge';
 import { StatCard } from '@/components/StatCard';
 import { useAuth } from '@/hooks/useAuth';
 import { errorMessage } from '@/lib/errors';
 import { formatDateTime, formatPercent } from '@/lib/format';
-import type { BehavioralCategory, CampaignEmployeeResult } from '@/types';
+import type { BehavioralCategory, CampaignEmployeeResult, DeliveryStatus } from '@/types';
 
 const REFRESH_INTERVAL_MS = 5000;
 const ACTIVITY_REFRESH_INTERVAL_MS = 10000;
@@ -65,6 +72,78 @@ function CategoryChip({ category }: { category: BehavioralCategory | null }) {
   if (!category) return null;
   const meta = CATEGORY_META[category];
   return <Chip size="small" variant="outlined" label={meta.label} color={meta.color} />;
+}
+
+const DELIVERY_LABELS: Record<DeliveryStatus, string> = {
+  submitted: 'Submitted',
+  accepted: 'Accepted',
+  buffered: 'Buffered',
+  delivered: 'Delivered',
+  read: 'Read',
+  failed: 'Failed',
+  rejected: 'Rejected',
+};
+
+function DeliveryStatusBadge({
+  status,
+  error,
+  failedAt,
+}: {
+  status: DeliveryStatus | null;
+  error?: string | null;
+  failedAt?: string | null;
+}) {
+  if (!status) return <Typography variant="caption" color="text.secondary">—</Typography>;
+  if (status === 'read') {
+    return (
+      <Tooltip title={error || 'The recipient read the message on WhatsApp'}>
+        <Chip
+          size="small"
+          color="info"
+          variant="outlined"
+          icon={<DoneAllIcon />}
+          label={DELIVERY_LABELS[status]}
+        />
+      </Tooltip>
+    );
+  }
+  if (status === 'delivered') {
+    return (
+      <Tooltip title={error || 'Delivery confirmed by the provider webhook'}>
+        <Chip
+          size="small"
+          color="success"
+          variant="outlined"
+          icon={<CheckCircleOutlineIcon />}
+          label={DELIVERY_LABELS[status]}
+        />
+      </Tooltip>
+    );
+  }
+  if (status === 'failed' || status === 'rejected') {
+    const failureTitle = error || (failedAt ? `Failed at ${formatDateTime(failedAt)}` : 'The provider rejected the message');
+    return (
+      <Tooltip title={failureTitle}>
+        <Chip
+          size="small"
+          color="error"
+          icon={<ErrorOutlineIcon />}
+          label={DELIVERY_LABELS[status]}
+        />
+      </Tooltip>
+    );
+  }
+  return (
+    <Tooltip title="Waiting for the provider delivery receipt">
+      <Chip
+        size="small"
+        color="default"
+        variant="outlined"
+        icon={<ScheduleIcon />}
+        label={DELIVERY_LABELS[status]}
+      />
+    </Tooltip>
+  );
 }
 
 const STATUS_OPTIONS = [
@@ -86,6 +165,7 @@ export function CampaignDetailPage() {
   const [detailFor, setDetailFor] = useState<CampaignEmployeeResult | null>(null);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
+  const [reportBusy, setReportBusy] = useState(false);
 
   const resultsQuery = useQuery({
     queryKey: ['campaign-results', organizationId, campaignId],
@@ -110,6 +190,7 @@ export function CampaignDetailPage() {
       return (
         row.name.toLowerCase().includes(term) ||
         row.email.toLowerCase().includes(term) ||
+        (row.phone ?? '').toLowerCase().includes(term) ||
         (row.department ?? '').toLowerCase().includes(term)
       );
     });
@@ -132,12 +213,40 @@ export function CampaignDetailPage() {
     }
   }
 
+  async function handleExecutiveReport() {
+    if (!campaignId) return;
+    setReportBusy(true);
+    try {
+      const blob = await reportsApi.executivePdf(campaignId);
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = `executive_report_${campaignId}.pdf`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      document.body.removeChild(anchor);
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+      toast.success('Executive report downloaded');
+    } catch (error) {
+      toast.error(errorMessage(error));
+    } finally {
+      setReportBusy(false);
+    }
+  }
+
   if (resultsQuery.isLoading) return <LoadingState label="Loading campaign…" />;
   if (resultsQuery.error) return <Alert severity="error">{errorMessage(resultsQuery.error)}</Alert>;
   if (!resultsQuery.data) return null;
 
   const { campaign, stats } = resultsQuery.data;
   const allEmployees = resultsQuery.data.employees;
+  const isPhoneChannel = campaign.channel !== 'email';
+  const deliveredCount = allEmployees.filter(
+    (row) => row.delivery_status === 'delivered' || row.delivery_status === 'read',
+  ).length;
+  const readCount = allEmployees.filter((row) => row.delivery_status === 'read').length;
+  const deliveredRate = stats.sent > 0 ? (deliveredCount / stats.sent) * 100 : 0;
+  const readRate = stats.sent > 0 ? (readCount / stats.sent) * 100 : 0;
 
   return (
     <>
@@ -149,6 +258,17 @@ export function CampaignDetailPage() {
         actions={
           <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
             <CampaignStatusBadge status={campaign.status} />
+            <Chip
+              size="small"
+              variant="outlined"
+              label={
+                campaign.channel === 'email'
+                  ? 'Email'
+                  : campaign.channel === 'sms'
+                    ? 'SMS · Vonage'
+                    : 'WhatsApp · Vonage'
+              }
+            />
             {campaign.status !== 'draft' ? (
               <Button
                 variant="contained"
@@ -159,6 +279,22 @@ export function CampaignDetailPage() {
                 Live board
               </Button>
             ) : null}
+            <Button
+              variant="contained"
+              color="secondary"
+              startIcon={
+                reportBusy ? (
+                  <CircularProgress size={16} color="inherit" />
+                ) : (
+                  <PictureAsPdfIcon />
+                )
+              }
+              onClick={handleExecutiveReport}
+              disabled={reportBusy}
+              aria-busy={reportBusy}
+            >
+              {reportBusy ? 'Generating PDF…' : 'Download Executive Report'}
+            </Button>
             <Button variant="outlined" startIcon={<DownloadIcon />} onClick={handleExport}>
               Export CSV
             </Button>
@@ -173,9 +309,30 @@ export function CampaignDetailPage() {
         <Grid item xs={12} sm={6} md={2}>
           <StatCard label="Sent" value={stats.sent} helper={`${stats.failed} failed`} tone="primary" />
         </Grid>
-        <Grid item xs={12} sm={6} md={2}>
-          <StatCard label="Opened" value={stats.opened} helper={formatPercent(stats.open_rate)} tone="primary" />
-        </Grid>
+        {isPhoneChannel ? (
+          <>
+            <Grid item xs={12} sm={6} md={2}>
+              <StatCard
+                label="Delivered"
+                value={deliveredCount}
+                helper={formatPercent(deliveredRate)}
+                tone="success"
+              />
+            </Grid>
+            <Grid item xs={12} sm={6} md={2}>
+              <StatCard
+                label="Read"
+                value={readCount}
+                helper={formatPercent(readRate)}
+                tone="primary"
+              />
+            </Grid>
+          </>
+        ) : (
+          <Grid item xs={12} sm={6} md={2}>
+            <StatCard label="Opened" value={stats.opened} helper={formatPercent(stats.open_rate)} tone="primary" />
+          </Grid>
+        )}
         <Grid item xs={12} sm={6} md={2}>
           <StatCard label="Clicked" value={stats.clicked} helper={formatPercent(stats.click_rate)} tone="warning" />
         </Grid>
@@ -217,7 +374,7 @@ export function CampaignDetailPage() {
             >
               <TextField
                 size="small"
-                label="Search by name, email or department"
+                label="Search by name, email, phone or department"
                 value={search}
                 onChange={(event) => setSearch(event.target.value)}
                 sx={{ minWidth: 280 }}
@@ -245,7 +402,7 @@ export function CampaignDetailPage() {
             {employees.length === 0 ? (
               <Typography color="text.secondary" variant="body2">
                 {allEmployees.length === 0
-                  ? 'No tracking records yet. Launch the campaign to send emails.'
+                  ? 'No tracking records yet. Launch the campaign to send messages.'
                   : 'No recipient matches the current filters.'}
               </Typography>
             ) : (
@@ -255,13 +412,16 @@ export function CampaignDetailPage() {
                     <TableRow>
                       <TableCell>Name</TableCell>
                       <TableCell>Email</TableCell>
+                      {isPhoneChannel ? <TableCell>Phone</TableCell> : null}
                       <TableCell>Department</TableCell>
                       <TableCell align="center">Status</TableCell>
+                      {isPhoneChannel ? <TableCell align="center">Delivery</TableCell> : null}
                       <TableCell>Opened</TableCell>
                       <TableCell>Clicked</TableCell>
                       <TableCell>Form shown</TableCell>
                       <TableCell>Submitted</TableCell>
                       <TableCell align="center">Score</TableCell>
+                      <TableCell align="center">Threat</TableCell>
                       <TableCell align="center">Category</TableCell>
                       <TableCell align="center">Dossier</TableCell>
                     </TableRow>
@@ -276,10 +436,24 @@ export function CampaignDetailPage() {
                       >
                         <TableCell>{row.name}</TableCell>
                         <TableCell>{row.email}</TableCell>
+                        {isPhoneChannel ? (
+                          <TableCell sx={{ fontFamily: 'monospace', whiteSpace: 'nowrap' }}>
+                            {row.phone ?? '—'}
+                          </TableCell>
+                        ) : null}
                         <TableCell>{row.department ?? '—'}</TableCell>
                         <TableCell align="center">
                           <EngagementStatusBadge status={row.status} />
                         </TableCell>
+                        {isPhoneChannel ? (
+                          <TableCell align="center">
+                            <DeliveryStatusBadge
+                              status={row.delivery_status}
+                              error={row.delivery_error}
+                              failedAt={row.failed_at}
+                            />
+                          </TableCell>
+                        ) : null}
                         <TableCell sx={{ fontFamily: 'monospace', whiteSpace: 'nowrap' }}>
                           {formatDateTime(row.opened_at)}
                           {row.open_count > 1 ? ` (${row.open_count}×)` : ''}
@@ -297,6 +471,14 @@ export function CampaignDetailPage() {
                         </TableCell>
                         <TableCell align="center">
                           {row.immunity_score !== null ? row.immunity_score.toFixed(1) : '—'}
+                        </TableCell>
+                        <TableCell align="center">
+                          <Stack alignItems="center" spacing={0.3}>
+                            <ThreatBadge level={row.threat_level} />
+                            <Typography variant="caption" color="text.secondary">
+                              Elo {row.elo_score ?? '—'}
+                            </Typography>
+                          </Stack>
                         </TableCell>
                         <TableCell align="center">
                           <CategoryChip category={row.behavioral_category} />

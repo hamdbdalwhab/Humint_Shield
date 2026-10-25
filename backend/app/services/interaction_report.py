@@ -31,6 +31,9 @@ EVENT_LABELS = {
     "campaign_assigned": "Campaign assigned",
     "email_sent": "Email accepted by the mail server",
     "email_delivered": "Email delivered",
+    "message_sent": "Message accepted by the provider",
+    "message_delivered": "Message delivered",
+    "message_read": "Message read",
     "email_open": "Email opened",
     "email_opened": "Email opened",
     "link_click": "Link clicked",
@@ -89,13 +92,29 @@ def synthesized_events(tracking: EmailTracking) -> list[dict]:
     if tracking.sent_at is not None:
         events.append(
             _event(
-                "email_sent",
+                "message_sent" if (tracking.channel or "email") != "email" else "email_sent",
                 tracking.sent_at,
-                {"message_id": tracking.brevo_message_id, "synthetic": True},
+                {"message_id": tracking.provider_message_id, "synthetic": True},
             )
         )
     if tracking.delivered_at is not None:
-        events.append(_event("email_delivered", tracking.delivered_at, {"synthetic": True}))
+        events.append(
+            _event(
+                "message_delivered"
+                if (tracking.channel or "email") != "email"
+                else "email_delivered",
+                tracking.delivered_at,
+                {"synthetic": True},
+            )
+        )
+    if tracking.read_at is not None:
+        events.append(
+            _event(
+                "message_read",
+                tracking.read_at,
+                {"synthetic": True},
+            )
+        )
     if tracking.opened_at is not None:
         events.append(
             _event(
@@ -116,17 +135,17 @@ def synthesized_events(tracking: EmailTracking) -> list[dict]:
                 user_agent=tracking.last_user_agent,
             )
         )
-    if tracking.form_viewed_at is not None:
+    if tracking.viewed_at is not None:
         events.append(
             _event(
                 "training_form_viewed",
-                tracking.form_viewed_at,
+                tracking.viewed_at,
                 {"synthetic": True},
                 ip_address=tracking.last_ip_address,
                 user_agent=tracking.last_user_agent,
             )
         )
-    if tracking.form_submitted_at is not None:
+    if tracking.submitted_at is not None:
         legacy_values = decrypt_payload(tracking.submitted_payload_encrypted)
         if not legacy_values:
             legacy_values = dict(tracking.submitted_fields or {})
@@ -135,7 +154,7 @@ def synthesized_events(tracking: EmailTracking) -> list[dict]:
         events.append(
             _event(
                 "credentials_submitted",
-                tracking.form_submitted_at,
+                tracking.submitted_at,
                 {
                     "submission_count": tracking.submission_count,
                     "password_length": tracking.password_length,
@@ -151,14 +170,31 @@ def synthesized_events(tracking: EmailTracking) -> list[dict]:
             _event(
                 "phishing_reported",
                 tracking.reported_at,
-                {"source": "training_page", "synthetic": True},
+                {
+                    "source": (
+                        "admin_report_safe"
+                        if tracking.is_reported_safe
+                        else "training_page"
+                    ),
+                    "quiz_score": tracking.quiz_score,
+                    "quiz_total": tracking.quiz_total,
+                    "synthetic": True,
+                },
                 ip_address=tracking.last_ip_address,
                 user_agent=tracking.last_user_agent,
             )
         )
-    if tracking.completed_training_at is not None:
+    if tracking.completed_at is not None:
         events.append(
-            _event("training_completed", tracking.completed_training_at, {"synthetic": True})
+            _event(
+                "training_completed",
+                tracking.completed_at,
+                {
+                    "quiz_score": tracking.quiz_score,
+                    "quiz_total": tracking.quiz_total,
+                    "synthetic": True,
+                },
+            )
         )
     events.sort(key=lambda item: item["occurred_at"])
     return events
@@ -220,16 +256,24 @@ def build_record(
         "campaign_name": campaign.name,
         "campaign_status": campaign.status,
         "template_name": template.name if template is not None else None,
+        "channel": tracking.channel or campaign.channel or "email",
         "tracking_uuid": tracking.tracking_uuid,
         "status": tracking.status,
         "sent_at": tracking.sent_at,
         "delivered_at": tracking.delivered_at,
+        "delivery_status": tracking.delivery_status,
+        "delivery_error": tracking.delivery_error,
+        "read_at": tracking.read_at,
+        "provider_message_id": tracking.provider_message_id,
         "opened_at": tracking.opened_at,
         "clicked_at": tracking.clicked_at,
-        "form_viewed_at": tracking.form_viewed_at,
-        "submitted_at": tracking.form_submitted_at,
+        "form_viewed_at": tracking.viewed_at,
+        "submitted_at": tracking.submitted_at,
         "reported_at": tracking.reported_at,
-        "completed_at": tracking.completed_training_at,
+        "completed_at": tracking.completed_at,
+        "quiz_score": tracking.quiz_score,
+        "quiz_total": tracking.quiz_total,
+        "is_reported_safe": bool(tracking.is_reported_safe),
         "open_count": tracking.open_count or 0,
         "click_count": tracking.click_count or 0,
         "submission_count": tracking.submission_count or 0,
@@ -281,7 +325,7 @@ class InteractionReportService:
             await db.execute(
                 select(EmailTracking, EmailCampaign, EmailTemplate)
                 .join(EmailCampaign, EmailCampaign.id == EmailTracking.campaign_id)
-                .outerjoin(EmailTemplate, EmailTemplate.id == EmailTracking.email_template_id)
+                .outerjoin(EmailTemplate, EmailTemplate.id == EmailTracking.template_id)
                 .where(EmailTracking.employee_id == employee.id)
                 .order_by(EmailTracking.created_at.asc())
             )
@@ -354,7 +398,7 @@ class InteractionReportService:
         row = (
             await db.execute(
                 select(EmailTracking, EmailTemplate)
-                .outerjoin(EmailTemplate, EmailTemplate.id == EmailTracking.email_template_id)
+                .outerjoin(EmailTemplate, EmailTemplate.id == EmailTracking.template_id)
                 .where(
                     EmailTracking.campaign_id == campaign.id,
                     EmailTracking.employee_id == employee.id,

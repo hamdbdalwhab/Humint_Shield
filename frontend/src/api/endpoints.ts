@@ -5,6 +5,8 @@
 import { http } from '@/api/client';
 import type {
   AccessTokenResponse,
+  AIGeneratedTemplate,
+  AIGenerateTemplateRequest,
   Assignment,
   BrevoVerification,
   BulkImportResult,
@@ -27,14 +29,17 @@ import type {
   Paginated,
   PhishingReport,
   RuntimeConfig,
+  ReportSafeResponse,
   TemplatePreview,
   TimelineEvent,
   TokenResponse,
+  TrackingCompletePayload,
   TrackingCompleteResponse,
   TrackingContext,
   TrackingSubmission,
   TrainingModule,
   User,
+  VonageVerification,
 } from '@/types';
 
 export interface EmployeeListParams {
@@ -119,7 +124,7 @@ export const employeesApi = {
 };
 
 export const templatesApi = {
-  async list(orgId: string, params: { search?: string; is_active?: boolean } = {}) {
+  async list(orgId: string, params: { search?: string; is_active?: boolean; channel?: string } = {}) {
     const { data } = await http.get<EmailTemplate[]>(
       `/api/v1/organizations/${orgId}/email-templates`,
       { params },
@@ -147,6 +152,16 @@ export const templatesApi = {
     const { data } = await http.post<TemplatePreview>(
       `/api/v1/organizations/${orgId}/email-templates/${id}/preview`,
       { employee_id: employeeId },
+    );
+    return data;
+  },
+};
+
+export const aiApi = {
+  async generateTemplate(payload: AIGenerateTemplateRequest): Promise<AIGeneratedTemplate> {
+    const { data } = await http.post<AIGeneratedTemplate>(
+      '/api/v1/ai/generate-template',
+      payload,
     );
     return data;
   },
@@ -234,6 +249,16 @@ export const campaignsApi = {
   },
 };
 
+export const reportsApi = {
+  async executivePdf(campaignId: string): Promise<Blob> {
+    const { data } = await http.get('/api/v1/reports/executive-pdf', {
+      params: { campaign_id: campaignId },
+      responseType: 'blob',
+    });
+    return data as Blob;
+  },
+};
+
 export const lmsApi = {
   async dashboard(orgId: string): Promise<DashboardSummary> {
     const { data } = await http.get<DashboardSummary>(
@@ -307,15 +332,25 @@ export const trackingApi = {
     );
     return data;
   },
-  async complete(trackingUuid: string): Promise<TrackingCompleteResponse> {
+  async complete(
+    trackingUuid: string,
+    payload: TrackingCompletePayload,
+  ): Promise<TrackingCompleteResponse> {
     const { data } = await http.post<TrackingCompleteResponse>(
       `/api/v1/track/complete/${trackingUuid}`,
+      payload,
     );
     return data;
   },
   async report(trackingUuid: string) {
     const { data } = await http.post<{ success: boolean; message: string }>(
       `/api/v1/track/report/${trackingUuid}`,
+    );
+    return data;
+  },
+  async reportSafe(trackingUuid: string): Promise<ReportSafeResponse> {
+    const { data } = await http.post<ReportSafeResponse>(
+      `/api/v1/track/report-safe/${trackingUuid}`,
     );
     return data;
   },
@@ -336,6 +371,12 @@ export const diagnosticsApi = {
   },
   async verifyBrevo(): Promise<BrevoVerification> {
     const { data } = await http.get<BrevoVerification>('/api/v1/test/brevo/verify');
+    return data;
+  },
+  async verifyVonage(channel: 'sms' | 'whatsapp'): Promise<VonageVerification> {
+    const { data } = await http.get<VonageVerification>('/api/v1/test/vonage/verify', {
+      params: { channel },
+    });
     return data;
   },
 };

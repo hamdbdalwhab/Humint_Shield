@@ -95,9 +95,10 @@ def _mount_frontend(app: FastAPI, dist: Path) -> None:
     """Serve the built SPA and its hashed assets from the API process.
 
     The catch-all route is registered last, so every API, tracking, docs and
-    health route keeps precedence.  Unknown ``/api`` or ``/training`` paths are
-    answered with 404 instead of the SPA shell so clients never receive HTML
-    where they expect JSON.
+    health route keeps precedence.  Unknown ``/api`` paths are answered with 404
+    instead of the SPA shell so clients never receive HTML where they expect
+    JSON. Public training links are handled by the SPA and therefore fall
+    through to ``index.html`` like any other application route.
 
     Args:
         app: The FastAPI application.
@@ -108,7 +109,7 @@ def _mount_frontend(app: FastAPI, dist: Path) -> None:
         app.mount("/assets", StaticFiles(directory=assets), name="assets")
 
     index_file = dist / "index.html"
-    reserved = {"api", "training", "metrics", "healthz"}
+    reserved = {"api", "metrics", "healthz"}
 
     @app.get("/{full_path:path}", include_in_schema=False)
     async def spa(full_path: str) -> FileResponse:
@@ -183,10 +184,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # --- exception handlers ---------------------------------------------- #
     @app.exception_handler(RequestValidationError)
     async def validation_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
-        """Return a normalised 422 payload."""
+        """Return a normalised 422 payload.
+
+        Pydantic puts the original exception object in ``ctx`` for custom field
+        validators.  That object is not JSON serialisable, so the payload is
+        cleaned here instead of returning a misleading 500.
+        """
+        def json_safe(value: object) -> object:
+            if isinstance(value, (str, int, float, bool)) or value is None:
+                return value
+            if isinstance(value, dict):
+                return {str(key): json_safe(item) for key, item in value.items()}
+            if isinstance(value, (list, tuple)):
+                return [json_safe(item) for item in value]
+            return str(value)
+
+        errors = [json_safe(error) for error in exc.errors()]
         return JSONResponse(
             status_code=422,
-            content={"detail": "Validation error", "errors": exc.errors()},
+            content={"detail": "Validation error", "errors": errors},
         )
 
     @app.exception_handler(IntegrityError)

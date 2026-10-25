@@ -8,17 +8,31 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Depends, Query, Request, Response, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, Response, status
 from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.database import get_db
-from app.deps import rate_limit
+from app.deps import rate_limit, require_roles
 from app.logging_config import get_logger
-from app.models import EmailCampaign, EmailTemplate, EmailTracking, HumanAsset, Organization
-from app.schemas import TrackingCompleteResponse, TrainingInteractionResponse, TrainingSubmission
+from app.models import (
+    EmailCampaign,
+    EmailTemplate,
+    EmailTracking,
+    HumanAsset,
+    Organization,
+    User,
+)
+from app.schemas import (
+    ReportSafeResponse,
+    TrackingCompleteResponse,
+    TrainingCompleteRequest,
+    TrainingInteractionResponse,
+    TrainingSubmission,
+)
+from app.services.attack_chain import build_compromised_assets
 from app.services.template_service import TRANSPARENT_GIF
 from app.services.tracking_service import TrackingService
 
@@ -67,7 +81,7 @@ async def track_context(
             .join(HumanAsset, HumanAsset.id == EmailTracking.employee_id)
             .join(Organization, Organization.id == HumanAsset.organization_id)
             .join(EmailCampaign, EmailCampaign.id == EmailTracking.campaign_id)
-            .outerjoin(EmailTemplate, EmailTemplate.id == EmailTracking.email_template_id)
+            .outerjoin(EmailTemplate, EmailTemplate.id == EmailTracking.template_id)
             .where(EmailTracking.tracking_uuid == uid)
         )
     ).first()
@@ -99,9 +113,14 @@ async def track_context(
         "subject": (template.subject if template is not None else "Security notification"),
         "sender_name": sender_name,
         "campaign_name": campaign.name,
+        "channel": tracking.channel or "email",
         "skin": skin,
-        "form_submitted": tracking.form_submitted_at is not None,
-        "already_completed": tracking.completed_training_at is not None,
+        "form_submitted": tracking.submitted_at is not None,
+        "already_completed": tracking.completed_at is not None,
+        "quiz_score": tracking.quiz_score,
+        "quiz_total": tracking.quiz_total,
+        "is_reported_safe": bool(tracking.is_reported_safe),
+        "compromised_assets": build_compromised_assets(tracking, template, campaign),
     }
 
 
@@ -171,18 +190,26 @@ async def track_open(
     return Response(content=TRANSPARENT_GIF, media_type="image/gif", headers=NO_CACHE_HEADERS)
 
 
-@router.get("/click/{tracking_uuid}", summary="Click tracker (302 to the training page)")
+@router.get(
+    "/click/{tracking_uuid}",
+    summary="Click tracker (302 to the simulation landing page)",
+)
 async def track_click(
     tracking_uuid: str,
     request: Request,
     url: str | None = Query(None, max_length=2048, description="Original link target"),
     db: AsyncSession = Depends(get_db),
 ) -> RedirectResponse:
-    """Log a click then redirect the recipient to the training page.
+    """Log a click then redirect the recipient to the correct experience.
+
+    Email recipients must see the simulated sign-in form that matches the
+    campaign before the awareness reveal. SMS and WhatsApp links keep their
+    existing direct-to-training behaviour because those channels do not carry
+    credential forms.
 
     The original ``url`` is recorded in the logs for red-flag analysis; the
-    recipient is always sent to the education page (never to the original
-    target) because the message is an authorized training simulation.
+    recipient is never sent to the original target because the message is an
+    authorized training simulation.
 
     Args:
         tracking_uuid: Per-recipient tracking UUID.
@@ -191,20 +218,36 @@ async def track_click(
         db: Active session.
 
     Returns:
-        A 302 redirect to ``{base_url}/training/{tracking_uuid}``.
+        A 302 redirect to ``{base_url}/phish/{tracking_uuid}`` for email, or
+        ``{base_url}/training/{tracking_uuid}`` for SMS/WhatsApp.
     """
     settings = get_settings()
+    channel = "email"
     if _valid_uuid(tracking_uuid):
         try:
-            await TrackingService().log_click(
+            row = await TrackingService().log_click(
                 tracking_uuid, _client_ip(request), request.headers.get("user-agent"), db
             )
+            # Capture the channel before commit expires the ORM instance.
+            if row is not None:
+                channel = (getattr(row, "channel", None) or "email").strip().lower()
             await db.commit()
         except Exception as exc:  # noqa: BLE001 - redirect regardless
             await db.rollback()
             logger.error("track_click_failed", tracking_uuid=tracking_uuid, error=str(exc))
-    target = f"{settings.base_url.rstrip('/')}/phish/{tracking_uuid}"
-    logger.info("click_redirect", tracking_uuid=tracking_uuid, original_url=url, target=target)
+    base_url = settings.base_url.rstrip("/")
+    target = (
+        f"{base_url}/phish/{tracking_uuid}"
+        if channel == "email"
+        else f"{base_url}/training/{tracking_uuid}"
+    )
+    logger.info(
+        "click_redirect",
+        tracking_uuid=tracking_uuid,
+        channel=channel,
+        original_url=url,
+        target=target,
+    )
     return RedirectResponse(url=target, status_code=status.HTTP_302_FOUND, headers=NO_CACHE_HEADERS)
 
 
@@ -215,35 +258,66 @@ async def track_click(
 )
 async def track_complete(
     tracking_uuid: str,
+    payload: TrainingCompleteRequest | None = Body(default=None),
     db: AsyncSession = Depends(get_db),
 ) -> TrackingCompleteResponse:
-    """Record training completion.
+    """Record training completion and the interactive quiz result.
 
     Args:
         tracking_uuid: Per-recipient tracking UUID.
+        payload: ``{"score": 4, "total": 5}`` from the training page. The body
+            is optional for backwards compatibility; when omitted the quiz
+            result is not overwritten.
         db: Active session.
 
     Returns:
-        ``{"success", "already_completed", "message"}``.  Unknown UUIDs return
-        ``success=False`` with a 200 status so the page can display a message.
+        The completion status, quiz result and refreshed immunity score.
     """
     if not _valid_uuid(tracking_uuid):
         return TrackingCompleteResponse(
             success=False, message="Invalid tracking identifier"
         )
+    prior_completion = await db.scalar(
+        select(EmailTracking.completed_at).where(
+            EmailTracking.tracking_uuid == uuid.UUID(tracking_uuid)
+        )
+    )
     try:
-        row = await TrackingService().log_completion(tracking_uuid, db)
+        row = await TrackingService().log_completion(
+            tracking_uuid,
+            db,
+            score=payload.score if payload else None,
+            total=payload.total if payload else None,
+        )
+        if row is None:
+            await db.rollback()
+            return TrackingCompleteResponse(
+                success=False, message="Tracking record not found"
+            )
+        employee = await db.get(HumanAsset, row.employee_id)
         await db.commit()
     except Exception as exc:  # noqa: BLE001
         await db.rollback()
         logger.error("track_complete_failed", tracking_uuid=tracking_uuid, error=str(exc))
         return TrackingCompleteResponse(success=False, message="Unable to record completion")
-    if row is None:
-        return TrackingCompleteResponse(success=False, message="Tracking record not found")
+    score_text = (
+        f" Quiz: {row.quiz_score}/{row.quiz_total}."
+        if row.quiz_score is not None and row.quiz_total
+        else ""
+    )
+    already_completed = prior_completion is not None
     return TrackingCompleteResponse(
         success=True,
-        already_completed=False,
-        message="Training completed. Thank you — +5 awareness points.",
+        already_completed=already_completed,
+        message=(
+            f"Training already completed — no duplicate completion counted.{score_text}"
+            if already_completed
+            else f"Training completed. Thank you — +5 awareness points.{score_text}"
+        ),
+        quiz_score=row.quiz_score,
+        quiz_total=row.quiz_total,
+        immunity_score=float(employee.immunity_score) if employee and employee.immunity_score is not None else None,
+        behavioral_category=employee.behavioral_category if employee else None,
     )
 
 
@@ -363,6 +437,109 @@ async def track_report(
         success=True,
         first_time=True,
         message="Thank you — reporting suspicious mail is exactly the right behaviour.",
+    )
+
+
+@router.post(
+    "/report-safe/{tracking_uuid}",
+    response_model=ReportSafeResponse,
+    summary="Record an administrator-confirmed 'report safe' outcome",
+)
+async def track_report_safe(
+    tracking_uuid: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_roles("admin", "manager")),
+) -> ReportSafeResponse:
+    """Mark a recipient as safe after an out-of-band phishing report.
+
+    This is intentionally authenticated: the public training page can report a
+    simulation, but only an administrator can assert that an employee reported
+    the message through another channel. The action is idempotent, stores a real
+    audit event, fixes the quiz result at 5/5 and sets the employee's immunity
+    score to 100%.
+
+    Args:
+        tracking_uuid: Per-recipient tracking UUID.
+        request: Admin request (for IP/User-Agent evidence).
+        db: Active session.
+        user: Authenticated admin or manager.
+
+    Returns:
+        The resulting safe-report state.
+    """
+    if not _valid_uuid(tracking_uuid):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid tracking identifier",
+        )
+
+    row = await db.scalar(
+        select(EmailTracking).where(
+            EmailTracking.tracking_uuid == uuid.UUID(tracking_uuid)
+        )
+    )
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Tracking record not found",
+        )
+    employee = await db.get(HumanAsset, row.employee_id)
+    if employee is None:  # pragma: no cover - FK guarantees existence
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Employee not found",
+        )
+    if user.organization_id is not None and user.organization_id != employee.organization_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Tracking record belongs to another organization",
+        )
+
+    try:
+        result = await TrackingService().mark_reported_safe(
+            tracking_uuid,
+            db,
+            ip_address=_client_ip(request),
+            user_agent=request.headers.get("user-agent"),
+            actor=user.username,
+        )
+        if result is None:
+            await db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Tracking record not found",
+            )
+        _, updated_employee, already = result
+        await db.commit()
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        await db.rollback()
+        logger.error(
+            "track_report_safe_failed",
+            tracking_uuid=tracking_uuid,
+            error=str(exc),
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Unable to record the safe report",
+        ) from exc
+
+    return ReportSafeResponse(
+        success=True,
+        message=(
+            "Already recorded as reported safe."
+            if already
+            else "Reported safe: quiz 5/5 and immunity set to 100%."
+        ),
+        quiz_score=5,
+        quiz_total=5,
+        immunity_score=float(updated_employee.immunity_score)
+        if updated_employee.immunity_score is not None
+        else None,
+        behavioral_category=updated_employee.behavioral_category,
+        already_reported_safe=already,
     )
 
 

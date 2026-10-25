@@ -8,7 +8,13 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
-from app.models import EmailCampaign, EmailTracking, HumanAsset, Organization
+from app.models import (
+    EmailCampaign,
+    EmailTemplate,
+    EmailTracking,
+    HumanAsset,
+    Organization,
+)
 from app.services.campaign_launcher import CampaignLaunchError, CampaignLauncher
 from app.services.template_service import TemplatePersonalizer
 
@@ -16,8 +22,13 @@ from app.services.template_service import TemplatePersonalizer
 class FakeEmailService:
     """Deterministic email transport used in place of Brevo."""
 
-    def __init__(self, fail_for: set[str] | None = None) -> None:
+    def __init__(
+        self,
+        fail_for: set[str] | None = None,
+        raise_for: set[str] | None = None,
+    ) -> None:
         self.fail_for = fail_for or set()
+        self.raise_for = raise_for or set()
         self.sent: list[dict] = []
 
     async def send_training_email(
@@ -33,6 +44,8 @@ class FakeEmailService:
                 "correlation_id": correlation_id,
             }
         )
+        if to_email in self.raise_for:
+            raise RuntimeError("transport exploded")
         if to_email in self.fail_for:
             return {"success": False, "message_id": None, "error": "simulated bounce"}
         return {"success": True, "message_id": f"<fake-{len(self.sent)}@brevo>", "error": None}
@@ -172,6 +185,30 @@ async def test_failed_send_is_not_reported_as_sent(
     statuses = {row["email"]: row["status"] for row in data["employees"]}
     assert statuses[employees[1].email] == "failed"
     assert statuses[employees[0].email] == "sent"
+
+
+async def test_transport_exception_is_isolated_and_recorded(
+    db: AsyncSession, organization, employees, custom_template
+) -> None:
+    """A raised provider error is isolated and leaves a failed tracking row."""
+    campaign = await _make_campaign(db, organization, custom_template.id, employees[:3])
+    service = FakeEmailService(raise_for={employees[1].email})
+
+    result = await _launcher(service).launch_campaign(campaign.id, db)
+
+    assert result["total"] == 3
+    assert result["sent"] == 2
+    assert result["failed"] == 1
+    assert "transport exploded" in result["failures"][0]["error"]
+
+    rows = (
+        await db.execute(select(EmailTracking).where(EmailTracking.campaign_id == campaign.id))
+    ).scalars().all()
+    by_employee = {row.employee_id: row for row in rows}
+    assert len(rows) == 3
+    assert by_employee[employees[1].id].sent_at is None
+    assert by_employee[employees[0].id].sent_at is not None
+    assert by_employee[employees[2].id].sent_at is not None
 
 
 async def test_launch_rejects_non_draft(
@@ -350,3 +387,174 @@ async def test_launch_tolerates_duplicate_target_ids(
     # The second pass finds the existing tracking row and does not resend.
     assert result["sent"] == 2
     assert len(service.sent) == 1
+
+
+async def _adaptive_template(
+    db: AsyncSession,
+    organization: Organization,
+    *,
+    name: str,
+    subject: str,
+    difficulty: int,
+) -> EmailTemplate:
+    """Create one active email template for adaptive-selection tests."""
+    template = EmailTemplate(
+        organization_id=organization.id,
+        name=name,
+        subject=subject,
+        body_html='<p>{{first_name}}</p><a href="{{tracking_url}}">Open</a>',
+        difficulty_level=difficulty,
+        channel="email",
+        is_active=True,
+        available_variables=["first_name", "tracking_url"],
+    )
+    db.add(template)
+    await db.commit()
+    await db.refresh(template)
+    return template
+
+
+async def test_adaptive_selection_uses_easy_band_for_low_elo(
+    db: AsyncSession, organization, employees
+) -> None:
+    """An employee below 900 receives an easy (1-3) template, not the campaign's medium one."""
+    easy = await _adaptive_template(
+        db, organization, name="Easy", subject="Easy {{first_name}}", difficulty=2
+    )
+    medium = await _adaptive_template(
+        db, organization, name="Medium", subject="Medium {{first_name}}", difficulty=5
+    )
+    hard = await _adaptive_template(
+        db, organization, name="Hard", subject="Hard {{first_name}}", difficulty=9
+    )
+    employee = employees[0]
+    employee.elo_score = 850
+    await db.commit()
+    campaign = await _make_campaign(db, organization, medium.id, [employee])
+    service = FakeEmailService()
+
+    await _launcher(service).launch_campaign(campaign.id, db)
+
+    assert len(service.sent) == 1
+    assert "Easy" in service.sent[0]["subject"]
+    tracking = await db.scalar(
+        select(EmailTracking).where(EmailTracking.campaign_id == campaign.id)
+    )
+    assert tracking is not None
+    assert tracking.template_id == easy.id
+    assert tracking.template_id != medium.id
+    assert hard.id != tracking.template_id
+
+
+async def test_adaptive_selection_uses_hard_band_for_high_elo(
+    db: AsyncSession, organization, employees
+) -> None:
+    """An employee above 1100 receives a hard (8-10) template."""
+    await _adaptive_template(
+        db, organization, name="Easy", subject="Easy {{first_name}}", difficulty=2
+    )
+    medium = await _adaptive_template(
+        db, organization, name="Medium", subject="Medium {{first_name}}", difficulty=5
+    )
+    hard = await _adaptive_template(
+        db, organization, name="Hard", subject="Hard {{first_name}}", difficulty=9
+    )
+    employee = employees[0]
+    employee.elo_score = 1200
+    await db.commit()
+    campaign = await _make_campaign(db, organization, medium.id, [employee])
+    service = FakeEmailService()
+
+    await _launcher(service).launch_campaign(campaign.id, db)
+
+    assert "Hard" in service.sent[0]["subject"]
+    tracking = await db.scalar(
+        select(EmailTracking).where(EmailTracking.campaign_id == campaign.id)
+    )
+    assert tracking is not None
+    assert tracking.template_id == hard.id
+
+
+async def test_adaptive_selection_falls_back_when_band_is_empty(
+    db: AsyncSession, organization, employees
+) -> None:
+    """With no easy template, the campaign's medium template is used explicitly."""
+    medium = await _adaptive_template(
+        db, organization, name="Medium only", subject="Medium only {{first_name}}", difficulty=5
+    )
+    employee = employees[0]
+    employee.elo_score = 850
+    await db.commit()
+    campaign = await _make_campaign(db, organization, medium.id, [employee])
+    service = FakeEmailService()
+
+    await _launcher(service).launch_campaign(campaign.id, db)
+
+    assert "Medium only" in service.sent[0]["subject"]
+    tracking = await db.scalar(
+        select(EmailTracking).where(EmailTracking.campaign_id == campaign.id)
+    )
+    assert tracking is not None
+    assert tracking.template_id == medium.id
+
+
+async def test_adaptive_selection_rotates_between_equally_suitable_templates(
+    db: AsyncSession, organization, employees
+) -> None:
+    """``total_tests_received`` advances the rotation within a band."""
+    easy_a = await _adaptive_template(
+        db, organization, name="Easy A", subject="Easy A {{first_name}}", difficulty=2
+    )
+    easy_b = await _adaptive_template(
+        db, organization, name="Easy B", subject="Easy B {{first_name}}", difficulty=2
+    )
+    employee = employees[0]
+    employee.elo_score = 850
+    await db.commit()
+
+    first_campaign = await _make_campaign(db, organization, easy_a.id, [employee])
+    first_service = FakeEmailService()
+    await _launcher(first_service).launch_campaign(first_campaign.id, db)
+    first_subject = first_service.sent[0]["subject"]
+
+    second_campaign = await _make_campaign(db, organization, easy_a.id, [employee])
+    second_service = FakeEmailService()
+    await _launcher(second_service).launch_campaign(second_campaign.id, db)
+    second_subject = second_service.sent[0]["subject"]
+
+    assert first_subject != second_subject
+    assert {first_subject, second_subject} == {
+        "Easy A Employee1",
+        "Easy B Employee1",
+    }
+    delivered_template_ids = []
+    for campaign in (first_campaign, second_campaign):
+        delivered_template_ids.append(
+            await db.scalar(
+                select(EmailTracking.template_id).where(
+                    EmailTracking.campaign_id == campaign.id
+                )
+            )
+        )
+    assert set(delivered_template_ids) == {easy_a.id, easy_b.id}
+
+
+async def test_campaign_results_expose_elo_and_delivered_template(
+    db: AsyncSession, organization, employees
+) -> None:
+    """The results payload proves which template was delivered and the current Elo."""
+    easy = await _adaptive_template(
+        db, organization, name="Easy result", subject="Easy result {{first_name}}", difficulty=2
+    )
+    employee = employees[0]
+    employee.elo_score = 850
+    await db.commit()
+    campaign = await _make_campaign(db, organization, easy.id, [employee])
+    launcher = _launcher(FakeEmailService())
+    await launcher.launch_campaign(campaign.id, db)
+
+    data = await launcher.get_campaign_results(campaign.id, db)
+    assert data["employees"][0]["elo_score"] == 850
+    assert data["employees"][0]["threat_level"] == "high"
+    assert data["employees"][0]["template_name"] == "Easy result"
+    assert data["employees"][0]["template_difficulty"] == 2

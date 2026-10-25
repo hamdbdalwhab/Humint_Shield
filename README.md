@@ -1,11 +1,12 @@
 # HUMINT Shield
 
-**Consent-based security awareness training platform with an integrated, real-email phishing simulation engine.**
+**Consent-based security awareness training platform with a real multi-channel phishing simulation engine.**
 
 HUMINT Shield combines a complete learning-management backend (training library,
-assignments, report inbox, behavioural scoring) with an additive **email campaign
-module** that sends real authorized simulation emails through
-[Brevo](https://www.brevo.com/), tracks opening, clicking and training completion,
+assignments, report inbox, behavioural scoring) with an additive **campaign
+module** that sends real authorized simulation messages through
+[Brevo](https://www.brevo.com/) for email and [Vonage](https://www.vonage.com/)
+for SMS and WhatsApp, tracks delivery, opening, clicking and training completion,
 and delivers immediate micro-learning to anyone who takes the bait.
 
 Everything runs on company-owned addresses under an explicit, auditable
@@ -43,6 +44,14 @@ site — a click always lands on the training page.
   live preview against real employee data, per-template difficulty level.
 - **Real email delivery through Brevo** — transactional send API, exponential
   backoff retries, per-recipient commit so one failure never loses a batch.
+- **Real SMS and WhatsApp delivery through Vonage** — the SMS API uses the
+  `unicode` message type so Arabic content is encoded correctly, while WhatsApp
+  uses the Messages API. Every message embeds the same click-tracking link and
+  is accepted only after Vonage returns a provider message id.
+- **Delivery receipts, not assumptions** — Vonage SMS DLR and WhatsApp status
+  webhooks update `delivered`, `read` and failure states with idempotent,
+  channel-scoped writes. A launch records `submitted`; delivered/read are only
+  set by a real provider callback.
 - **Deterministic tracking** — a transparent 1×1 pixel for opens, rewritten links
   for clicks, and a server-rendered training page that captures what the recipient
   typed and awards awareness points.
@@ -128,6 +137,7 @@ site — a click always lands on the training page.
 | Backend  | FastAPI, SQLAlchemy 2 (async), Alembic, Pydantic v2, python-jose, bcrypt   |
 | Jobs     | Celery + Redis (broker/result backend)                                     |
 | Email    | Brevo (`sib-api-v3-sdk`)                                                   |
+| SMS / WhatsApp | Vonage (`vonage` SDK, SMS API + Messages API)                        |
 | Crypto   | AES-256-GCM (`cryptography`), SHA-256 key stretching for passphrases       |
 | Frontend | React 18, TypeScript (strict), Vite, MUI 5, Redux Toolkit, React Query 5   |
 | Forms    | React Hook Form + Zod                                                      |
@@ -277,7 +287,7 @@ npm run dev        # http://localhost:5173, /api proxied to :8000
 ### Quality gates
 
 ```bash
-# backend (266 tests, >=80% coverage enforced; currently ~92%)
+# backend (309 tests, >=80% coverage enforced; currently ~89%)
 cd backend && python -m pytest -q
 # frontend unit tests, types and lint
 cd frontend && npm run typecheck && npm run lint && npm test
@@ -304,19 +314,40 @@ All settings are environment variables (see `backend/app/config.py` and
 | `SECRET_KEY`                | random per process     | **Must** be set in production (JWT signing).                  |
 | `ENCRYPTION_KEY`            | random per process     | **Must** be set (AES-256-GCM). 64 hex chars or a passphrase.  |
 | `AUTO_CREATE_SCHEMA`        | `true`                 | Set `false` in production; Alembic owns the schema.           |
-| `AUTO_SEED`                 | `true`                 | Seeds org, admin, 8 templates, training catalogue.            |
+| `AUTO_SEED`                 | `true`                 | Seeds org, admin, 13 templates, training catalogue.           |
 | `BREVO_API_KEY`             | empty                  | When empty/placeholder, sending is disabled.                  |
 | `EMAIL_DRY_RUN`             | `false`                | `true` validates and logs without dispatching.                |
 | `EMAIL_MAX_RETRIES`         | `3`                    | Exponential backoff attempts per recipient.                   |
+| `VONAGE_API_KEY`            | empty                  | Vonage API key; empty disables SMS and WhatsApp.              |
+| `VONAGE_API_SECRET`         | empty                  | Vonage API secret (never log or commit it).                   |
+| `VONAGE_SMS_FROM`           | `Vonage APIs`          | Approved SMS sender ID or virtual number.                     |
+| `VONAGE_WHATSAPP_FROM`      | empty                  | WhatsApp business/sandbox sender number (E.164 digits).       |
+| `VONAGE_APPLICATION_ID`     | empty                  | Optional application ID for JWT-authenticated WhatsApp.       |
+| `VONAGE_PRIVATE_KEY`        | empty                  | Optional PEM path/content; must be paired with the app ID.    |
+| `VONAGE_MESSAGES_BASE_URL`  | empty                  | Set to `https://messages-sandbox.nexmo.com` for Sandbox tests.|
+| `VONAGE_WEBHOOK_TOKEN`      | empty                  | Shared secret required on delivery/read webhooks.             |
+
+For WhatsApp, create or select a Vonage application with the Messages
+capability, link the WhatsApp sender, and configure its **Status URL** to
+`https://YOUR_HOST/api/v1/webhooks/vonage/whatsapp-status`. The Sandbox also
+requires the destination phone to join the Sandbox before a free-form text can
+be delivered. Set `VONAGE_APPLICATION_ID` and `VONAGE_PRIVATE_KEY` to send with
+JWT; leaving both blank uses API key/secret authentication. A private key may be
+a path to the downloaded PEM file or the PEM content itself.
 | `BASE_URL`                  | `http://localhost:8000`| Public base URL embedded in tracking links.                   |
 | `SERVE_FRONTEND`            | `true`                 | Serve `frontend/dist` from the API process (one public URL).  |
 | `FRONTEND_DIST`             | empty                  | Absolute path override; empty means `<repo>/frontend/dist`.    |
 | `RATE_LIMIT_ENABLED`        | `true`                 | Per-scope request limiting (tracking is more permissive).     |
 | `DATA_RETENTION_DAYS`       | `365`                  | Retention window surfaced to the housekeeping task.           |
 
-> **Note on `BASE_URL`:** it is the address written into every tracking link and
-> the training-page redirect. If it is not reachable from a recipient's mail
-> client, opens/clicks cannot be recorded.
+> **Note on `BASE_URL`:** it is the address written into every tracking link,
+> the training-page redirect, and the Vonage SMS delivery-receipt callback. It
+> must be publicly reachable by recipients and by Vonage, or opens/clicks and
+> delivery receipts cannot be recorded. Configure the Vonage dashboard (or the
+> per-message callback written by the service) with:
+>
+> - `https://YOUR_HOST/api/v1/webhooks/vonage/dlr?token=YOUR_TOKEN`
+> - `https://YOUR_HOST/api/v1/webhooks/vonage/whatsapp-status?token=YOUR_TOKEN`
 
 ---
 
@@ -324,19 +355,22 @@ All settings are environment variables (see `backend/app/config.py` and
 
 ### Data model
 
-Three additive tables (existing LMS tables are untouched):
+Three campaign tables (existing LMS tables are untouched):
 
-- **`email_templates`** — `id`, `organization_id`, `name`, `subject`, `body_html`,
-  `difficulty_level`, `available_variables`, `is_built_in`, `is_active`, timestamps.
-- **`email_campaigns`** — `id`, `organization_id`, `template_id`, `name`, `status`,
-  `target_employee_ids`, `total_targets`, `sent_count`, `failed_count`,
+- **`templates`** — `id`, `organization_id`, `name`, `subject`, `body_html`,
+  `channel`, `difficulty_level`, `available_variables`, `is_built_in`,
+  `is_active`, timestamps.
+- **`campaigns`** — `id`, `organization_id`, `template_id`, `name`, `channel`,
+  `status`, `target_employee_ids`, `total_targets`, `sent_count`, `failed_count`,
   `opened_count`, `clicked_count`, `completed_count`, `launched_at`,
   `completed_at`, `created_by`, timestamps.
-- **`email_tracking`** — one row per (campaign, employee) with a unique
-  `tracking_uuid`, delivery metadata (`sent_at`, `opened_at`, `clicked_at`,
-  `completed_training_at`), repeat counters (`open_count`, `click_count`),
+- **`tracking_events`** — one row per (campaign, employee) with a unique
+  `tracking_uuid`, channel/provider metadata (`channel`, `provider`,
+  `provider_message_id`), delivery metadata (`sent_at`, `delivered_at`,
+  `delivery_status`, `delivery_error`, `failed_at`, `read_at`, `opened_at`,
+  `clicked_at`, `completed_at`), repeat counters (`open_count`, `click_count`),
   client context (IP, user agent) and the training-page interaction
-  (`form_viewed_at`, `form_submitted_at`, `submission_count`,
+  (`viewed_at`, `submitted_at`, `submission_count`,
   `submitted_identifier`, `submitted_fields`, `password_length`, `reported_at`,
   `submitted_password_encrypted`, `submitted_payload_encrypted`,
   `client_context`).
@@ -346,19 +380,23 @@ Three additive tables (existing LMS tables are untouched):
   optional `payload_encrypted` for submissions.
 
 Indexes cover organization scoping, campaign lookups, the unique tracking UUID,
-and `(campaign_id, occurred_at)` / `(employee_id, occurred_at)` for the dossiers.
+`provider_message_id` (delivery-webhook lookup), and
+`(campaign_id, occurred_at)` / `(employee_id, occurred_at)` for the dossiers.
 
 Rows created before the ledger existed are **not lost**: the dossier service
-reconstructs their history from the timestamps already on `email_tracking` and
+reconstructs their history from the timestamps already on `tracking_events` and
 marks those entries `"synthetic": true`.
 
 ### Campaign lifecycle
 
 1. **Create** a template (or use a built-in one).
-2. **Create** a campaign (`draft`) with `template_id` and `target_employee_ids`.
+2. **Create** a campaign (`draft`) with `template_id`, `channel` and
+   `target_employee_ids`. SMS/WhatsApp targets must have an E.164 phone number.
 3. **Launch** — the launcher renders each message, rewrites links/pixel, sends via
-   Brevo with retries, and commits per recipient. A recipient is only marked as
-   sent after Brevo accepts the message.
+   Brevo (email) or Vonage (SMS/WhatsApp) with retries, and commits per
+   recipient. An email recipient is marked `sent` after Brevo accepts it; a
+   phone recipient is marked `submitted` after Vonage returns a message id.
+   Delivered/read states only follow a real Vonage webhook.
 4. **Track** — opens, clicks, form interaction and completions increment counters
    exactly once where appropriate (repeat opens/clicks are counted but
    de-duplicated for timestamps).
@@ -594,7 +632,13 @@ Interactive documentation: `http://<host>/api/docs` (OpenAPI at `/api/openapi.js
 
 `/api/v1/organizations/{org_id}/dashboard`, `/employees` (+`/bulk`,
 `/{id}/timeline`), `/training-modules`, `/assignments` (+`/{id}/complete`),
-`/reports` (+`/{id}`), and `/api/v1/test/{health,config,brevo,brevo/verify}`.
+`/reports` (+`/{id}`), `/api/v1/test/{health,config,brevo,brevo/verify,
+vonage/verify}`, and the provider receipt endpoints
+`POST /api/v1/webhooks/vonage/dlr` and
+`POST /api/v1/webhooks/vonage/whatsapp-status` (GET is also accepted for
+dashboard-compatible SMS callbacks). Webhook URLs can carry
+`?token=VONAGE_WEBHOOK_TOKEN`, or present the token in
+`X-Vonage-Webhook-Token` / `Authorization: Bearer …`.
 
 ---
 
@@ -721,6 +765,9 @@ Applied revisions:
 | `0002_email_campaigns` | `email_templates`, `email_campaigns`, `email_tracking` |
 | `0003_training_interactions` | training-page interaction columns on `email_tracking` |
 | `0004_interaction_ledger` | encrypted submission payloads + `training_interactions` ledger |
+| `0005_unified_channels` | channel-neutral `templates`, `campaigns`, `tracking_events`, phone support |
+| `0006_vonage_delivery` | delivery/read receipt columns + `provider_message_id` index |
+| `0007_delivery_failed_at` | provider failure timestamp for audit exports |
 
 ### Observability
 

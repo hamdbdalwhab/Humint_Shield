@@ -112,15 +112,15 @@ def test_pixel_not_duplicated() -> None:
 
 
 def test_tracking_url_variable() -> None:
-    """``{{tracking_url}}`` resolves to the training page URL."""
+    """``{{tracking_url}}`` resolves to the simulation landing page URL."""
     from urllib.parse import unquote
 
     tracking_uuid = uuid.uuid4()
-    template = _template(body_html='<p><a href="{{tracking_url}}">Training</a></p>')
+    template = _template(body_html='<p><a href="{{tracking_url}}">Open portal</a></p>')
     body = _personalizer().personalize(template, _employee(), _org(), tracking_uuid)["html_content"]
-    # The training link is itself wrapped in the click tracker, so the rendered
-    # href URL-encodes the training URL. Decode to assert the target.
-    assert f"http://testserver/training/{tracking_uuid}" in unquote(body)
+    # The landing link is itself wrapped in the click tracker, so the rendered
+    # href URL-encodes the landing URL. Decode to assert the target.
+    assert f"http://testserver/phish/{tracking_uuid}" in unquote(body)
 
 
 def test_unknown_variable_is_left_intact() -> None:
@@ -216,7 +216,7 @@ def test_invoice_and_meeting_time_generated() -> None:
 def test_helper_url_builders() -> None:
     """URL helpers produce the documented shapes."""
     uid = str(uuid.uuid4())
-    assert build_tracking_url("http://x/", uid) == f"http://x/training/{uid}"
+    assert build_tracking_url("http://x/", uid) == f"http://x/phish/{uid}"
     assert build_click_url("http://x", uid, "https://y.example").startswith(
         f"http://x/api/v1/track/click/{uid}?url="
     )

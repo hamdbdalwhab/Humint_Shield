@@ -106,7 +106,7 @@ async def dashboard(
         .join(EmailCampaign, EmailCampaign.id == EmailTracking.campaign_id)
         .where(
             EmailCampaign.organization_id == org_id,
-            EmailTracking.form_submitted_at.is_not(None),
+            EmailTracking.submitted_at.is_not(None),
         )
     ) or 0
 

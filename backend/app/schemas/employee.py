@@ -1,13 +1,30 @@
 """Pydantic v2 schemas: employees (human assets)."""
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import date, datetime
 from typing import Generic, TypeVar
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, computed_field, field_validator
+
+from app.services.elo_engine import threat_level_for_elo
 
 T = TypeVar("T")
+
+E164_PATTERN = re.compile(r"^\+[1-9]\d{7,14}$")
+
+
+def _normalize_phone(value: object) -> object:
+    """Accept only E.164 numbers, treating blank input as "no phone"."""
+    if value is None or not isinstance(value, str):
+        return value
+    phone = value.strip()
+    if not phone:
+        return None
+    if not E164_PATTERN.fullmatch(phone):
+        raise ValueError("phone must be in E.164 format, for example +966500000000")
+    return phone
 
 
 class Paginated(BaseModel, Generic[T]):
@@ -33,6 +50,11 @@ class EmployeeBase(BaseModel):
     is_active: bool = True
     is_on_leave: bool = False
 
+    @field_validator("phone", mode="before")
+    @classmethod
+    def _validate_phone(cls, value: object) -> object:
+        return _normalize_phone(value)
+
 
 class EmployeeCreate(EmployeeBase):
     """Payload for creating an employee."""
@@ -50,6 +72,11 @@ class EmployeeUpdate(BaseModel):
     access_level: int | None = Field(default=None, ge=1, le=5)
     is_active: bool | None = None
     is_on_leave: bool | None = None
+
+    @field_validator("phone", mode="before")
+    @classmethod
+    def _validate_phone(cls, value: object) -> object:
+        return _normalize_phone(value)
 
 
 class EmployeePublic(BaseModel):
@@ -71,6 +98,7 @@ class EmployeePublic(BaseModel):
     job_title: str | None = None
     access_level: int
     immunity_score: float
+    elo_score: int = 1000
     behavioral_category: str | None = None
     total_tests_received: int
     total_clicks: int
@@ -93,6 +121,12 @@ class EmployeePublic(BaseModel):
         if value is None:
             return 0.0
         return float(value)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def threat_level(self) -> str:
+        """Return the human-facing threat badge derived from ``elo_score``."""
+        return threat_level_for_elo(self.elo_score)
 
 
 class TimelineEvent(BaseModel):

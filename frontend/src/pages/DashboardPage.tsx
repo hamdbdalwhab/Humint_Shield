@@ -145,7 +145,8 @@ export function DashboardPage() {
     queryKey: ['dashboard', organizationId],
     queryFn: () => lmsApi.dashboard(organizationId as string),
     enabled: Boolean(organizationId),
-    refetchInterval: 20_000,
+    refetchInterval: 3_000,
+    refetchIntervalInBackground: true,
   });
 
   if (!organizationId) {

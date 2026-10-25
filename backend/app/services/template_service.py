@@ -72,6 +72,38 @@ def extract_links(html: str) -> list[str]:
     return parser.links
 
 
+def html_to_text(html: str) -> str:
+    """Convert an HTML template body into readable plain text.
+
+    SMS and WhatsApp are text channels, but the template library stores rich
+    email HTML.  This helper keeps the human-readable copy, preserves paragraph
+    breaks and strips scripts/styles/tags without requiring a second template
+    format.
+
+    Args:
+        html: HTML (or already plain text) template body.
+
+    Returns:
+        Normalised plain text with entities decoded.
+    """
+    if not html:
+        return ""
+    text = re.sub(
+        r"(?is)<(script|style|head)\b[^>]*>.*?</\1>",
+        " ",
+        str(html),
+    )
+    text = re.sub(r"(?i)<br\s*/?>", "\n", text)
+    text = re.sub(r"(?i)</(p|div|li|tr|h[1-6]|blockquote|section|article)>", "\n", text)
+    text = re.sub(r"(?i)<li\b[^>]*>", "• ", text)
+    text = re.sub(r"(?s)<[^>]+>", " ", text)
+    text = html_lib.unescape(text).replace("\xa0", " ")
+    text = re.sub(r"[ \t\f\v]+", " ", text)
+    text = re.sub(r"\n[ \t]+", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
 class TemplatePersonalizer:
     """Render an email template for a specific employee."""
 
@@ -121,7 +153,7 @@ class TemplatePersonalizer:
             "company_name": getattr(organization, "name", "") or "Our Company",
             "manager_name": manager_name,
             "job_title": getattr(employee, "job_title", "") or "Employee",
-            "tracking_url": f"{base_url}/training/{uid}",
+            "tracking_url": f"{base_url}/phish/{uid}",
             "tracking_uuid": uid,
             "base_url": base_url,
             "invoice_number": self._generate_invoice_number(),
@@ -168,6 +200,55 @@ class TemplatePersonalizer:
         body = self.append_tracking_pixel(body, str(tracking_uuid), base_url)
 
         return {"subject": subject, "html_content": body}
+
+    def personalize_text(
+        self,
+        template: Any,
+        employee: Any,
+        organization: Any,
+        tracking_uuid: uuid.UUID | str,
+        base_url: str | None = None,
+        extra_vars: dict[str, str] | None = None,
+    ) -> dict[str, str]:
+        """Render subject and plain-text content for SMS or WhatsApp.
+
+        The tracking URL is always the click endpoint, so one tap records the
+        engagement and then redirects to the training experience.  When the
+        template does not already contain that URL it is appended explicitly.
+
+        Args:
+            template: The template to render.
+            employee: Recipient employee.
+            organization: Owning organization.
+            tracking_uuid: Per-recipient tracking UUID.
+            base_url: Optional base URL override.
+            extra_vars: Optional variable overrides.
+
+        Returns:
+            ``{"subject", "text_content", "tracking_url"}``.
+        """
+        base_url = (base_url or self.settings.base_url).rstrip("/")
+        uid = str(tracking_uuid)
+        click_url = f"{base_url}/api/v1/track/click/{uid}"
+        overrides = {"tracking_url": click_url}
+        if extra_vars:
+            overrides.update({key: str(value) for key, value in extra_vars.items()})
+        variables = self.build_variables(
+            template, employee, organization, tracking_uuid, base_url, overrides
+        )
+
+        subject = self._render_text(
+            getattr(template, "subject", "") or "", variables, escape=False
+        ).strip()
+        body = self._render_text(
+            getattr(template, "body_html", "") or "", variables, escape=False
+        )
+        text = html_to_text(body)
+        if not text:
+            text = subject
+        if click_url not in text:
+            text = f"{text}\n\n{click_url}".strip()
+        return {"subject": subject, "text_content": text, "tracking_url": click_url}
 
     def rewrite_links(self, html: str, tracking_uuid: str, base_url: str) -> str:
         """Wrap every anchor target in the click-tracking redirect.
@@ -324,8 +405,8 @@ class TemplatePersonalizer:
 
 
 def build_tracking_url(base_url: str, tracking_uuid: str) -> str:
-    """Build the canonical training-page URL for a tracking UUID."""
-    return f"{base_url.rstrip('/')}/training/{tracking_uuid}"
+    """Build the canonical simulation-landing URL for a tracking UUID."""
+    return f"{base_url.rstrip('/')}/phish/{tracking_uuid}"
 
 
 def build_click_url(base_url: str, tracking_uuid: str, target: str) -> str:

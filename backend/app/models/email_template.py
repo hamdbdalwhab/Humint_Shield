@@ -18,6 +18,12 @@ DEFAULT_VARIABLES = [
     "manager_name",
 ]
 
+#: Channels supported by the unified campaign schema. ``sms`` and ``whatsapp``
+#: are reserved for the Vonage transport; sending is intentionally blocked until
+#: that provider is configured.
+CHANNELS = ("email", "sms", "whatsapp")
+DEFAULT_CHANNEL = "email"
+
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
@@ -26,11 +32,14 @@ def _utcnow() -> datetime:
 class EmailTemplate(Base):
     """A reusable, personalised phishing-simulation email template."""
 
-    __tablename__ = "email_templates"
+    __tablename__ = "templates"
 
     id: Mapped[uuid.UUID] = mapped_column(UUIDType, primary_key=True, default=generate_uuid)
     organization_id: Mapped[uuid.UUID] = mapped_column(
         UUIDType, ForeignKey("organizations.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    channel: Mapped[str] = mapped_column(
+        String(20), default=DEFAULT_CHANNEL, server_default=DEFAULT_CHANNEL, index=True, nullable=False
     )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     subject: Mapped[str] = mapped_column(String(500), nullable=False)

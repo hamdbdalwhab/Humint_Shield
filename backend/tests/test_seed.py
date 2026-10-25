@@ -15,14 +15,14 @@ from app.services.seed import (
 
 
 async def test_eight_builtin_templates_defined() -> None:
-    """Exactly eight built-in templates are defined."""
-    assert len(BUILT_IN_TEMPLATES) == 8
+    """Exactly thirteen built-in templates are defined."""
+    assert len(BUILT_IN_TEMPLATES) == 13
 
 
 async def test_required_templates_present() -> None:
     """The eight required template names are present."""
     names = {template["name"] for template in BUILT_IN_TEMPLATES}
-    assert names == {
+    required = {
         "Urgent Password Change",
         "Message from Direct Manager",
         "Suspicious Login Alert",
@@ -32,6 +32,8 @@ async def test_required_templates_present() -> None:
         "Emergency Meeting Notice",
         "Mandatory Software Update",
     }
+    assert required <= names
+    assert len(names) == 13
 
 
 async def test_every_template_has_tracking_link() -> None:
@@ -50,12 +52,12 @@ async def test_seed_builtin_templates_is_idempotent(
     await db.commit()
     second = await seed_builtin_templates(db, organization.id)
     await db.commit()
-    assert first == 8
+    assert first == 13
     assert second == 0
     count = await db.scalar(
         select(func.count(EmailTemplate.id)).where(EmailTemplate.organization_id == organization.id)
     )
-    assert count == 8
+    assert count == 13
 
 
 async def test_seed_training_modules_idempotent(
@@ -106,7 +108,7 @@ async def test_phone_is_encrypted_at_rest(
 async def test_ensure_bootstrap_data_creates_everything(db: AsyncSession) -> None:
     """Bootstrap creates the org, admin, templates and modules."""
     summary = await ensure_bootstrap_data(db)
-    assert summary["templates_created"] == 8
+    assert summary["templates_created"] == 13
     assert summary["modules_created"] == 4
 
     org_count = await db.scalar(select(func.count(Organization.id)))
@@ -115,7 +117,7 @@ async def test_ensure_bootstrap_data_creates_everything(db: AsyncSession) -> Non
     module_count = await db.scalar(select(func.count(TrainingModule.id)))
     assert org_count == 1
     assert user_count == 1
-    assert template_count == 8
+    assert template_count == 13
     assert module_count == 4
 
 

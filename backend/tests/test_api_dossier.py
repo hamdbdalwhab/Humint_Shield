@@ -54,7 +54,7 @@ async def _full_interaction(client, tracking: EmailTracking) -> None:
     assert (await client.get(f"/api/v1/track/open/{uid}")).status_code == 200
     redirect = await client.get(f"/api/v1/track/click/{uid}", follow_redirects=False)
     assert redirect.status_code == 302
-    page = await client.get(f"/training/{uid}")
+    page = await client.get(f"/training-legacy/{uid}")
     assert page.status_code == 200
     assert "Verify your identity" in page.text
     submit = await client.post(

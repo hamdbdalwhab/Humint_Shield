@@ -58,6 +58,9 @@ const TIMELINE_LABELS: Record<string, string> = {
   campaign_assigned: 'Campaign assigned',
   email_sent: 'Email accepted by the mail server',
   email_delivered: 'Email delivered',
+  message_sent: 'SMS/WhatsApp accepted by the provider',
+  message_delivered: 'SMS/WhatsApp delivered',
+  message_read: 'SMS/WhatsApp read',
   email_opened: 'Email opened',
   link_clicked: 'Link clicked',
   training_form_viewed: 'Training form shown',
@@ -65,6 +68,9 @@ const TIMELINE_LABELS: Record<string, string> = {
   phishing_reported: 'Reported as phishing',
   training_completed: 'Micro-training completed',
 };
+
+/** Strict E.164: country code plus 8-15 digits, no separators. */
+const E164_PATTERN = /^\+[1-9]\d{7,14}$/;
 
 /** Colour of the timeline rail for each event type. */
 function timelineColor(eventType: string): string {
@@ -88,6 +94,7 @@ interface EmployeeFormValues extends EmployeeCreate {
 
 const EMPTY_FORM: EmployeeFormValues = {
   email: '',
+  phone: '',
   first_name: '',
   last_name: '',
   department: '',
@@ -139,6 +146,7 @@ export function EmployeesPage() {
       if (!organizationId) throw new Error('No organization');
       const payload: EmployeeCreate = {
         ...values,
+        phone: values.phone?.trim() || null,
         department: values.department || null,
         job_title: values.job_title || null,
       };
@@ -202,6 +210,7 @@ export function EmployeesPage() {
     setEditing(employee);
     form.reset({
       email: employee.email,
+      phone: employee.phone ?? '',
       first_name: employee.first_name,
       last_name: employee.last_name,
       department: employee.department ?? '',
@@ -309,6 +318,7 @@ export function EmployeesPage() {
                 <TableRow>
                   <TableCell>Name</TableCell>
                   <TableCell>Email</TableCell>
+                  <TableCell>Phone (E.164)</TableCell>
                   <TableCell>Department</TableCell>
                   <TableCell align="center">Access</TableCell>
                   <TableCell align="center">Score</TableCell>
@@ -324,6 +334,9 @@ export function EmployeesPage() {
                   <TableRow key={employee.id} hover>
                     <TableCell>{`${employee.first_name} ${employee.last_name}`.trim()}</TableCell>
                     <TableCell>{employee.email}</TableCell>
+                    <TableCell sx={{ fontFamily: 'monospace', whiteSpace: 'nowrap' }}>
+                      {employee.phone?.trim() || '—'}
+                    </TableCell>
                     <TableCell>{employee.department ?? '—'}</TableCell>
                     <TableCell align="center">{employee.access_level}</TableCell>
                     <TableCell align="center">{employee.immunity_score.toFixed(1)}</TableCell>
@@ -349,10 +362,10 @@ export function EmployeesPage() {
                       />
                     </TableCell>
                     <TableCell align="right">
-                      <Tooltip title="Send simulation email">
+                      <Tooltip title="Send simulation">
                         <IconButton
                           size="small"
-                          aria-label="Send simulation email"
+                          aria-label="Send simulation"
                           onClick={() => navigate(`/campaigns/new?employeeId=${employee.id}`)}
                         >
                           <SendIcon fontSize="small" />
@@ -414,6 +427,22 @@ export function EmployeesPage() {
                 required
                 fullWidth
                 {...form.register('email', { required: true })}
+              />
+              <TextField
+                label="Phone (E.164)"
+                placeholder="+966500000000"
+                fullWidth
+                {...form.register('phone', {
+                  validate: (value) =>
+                    !value?.trim() ||
+                    E164_PATTERN.test(value.trim()) ||
+                    'Use international format without spaces, e.g. +966500000000',
+                })}
+                error={Boolean(form.formState.errors.phone)}
+                helperText={
+                  form.formState.errors.phone?.message ??
+                  'Required to target this employee with SMS or WhatsApp.'
+                }
               />
               <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2}>
                 <TextField label="First name" required fullWidth {...form.register('first_name', { required: true })} />

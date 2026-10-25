@@ -53,10 +53,11 @@ def _describe_failure(message: str) -> dict[str, Any]:
             "blocked_ip": blocked_ip,
             "action_url": AUTHORISED_IPS_URL,
             "hint": (
-                f"Brevo is rejecting this server because its public IP ({blocked_ip}) is "
-                "not on the account allowlist. Open Brevo → Security → Authorised IPs, add "
-                "that address, or deactivate the IP restriction. Nothing else is blocking "
-                "delivery."
+                "Your server IP is blocked by the email provider. Please allowlist it "
+                "in your Brevo dashboard. "
+                f"Brevo reports the public IP as {blocked_ip}. Open Brevo → Security → "
+                "Authorised IPs, add that address, or deactivate the IP restriction. "
+                "Nothing else is blocking delivery."
             ),
         }
     lowered = message.lower()

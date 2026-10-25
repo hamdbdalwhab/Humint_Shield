@@ -53,7 +53,9 @@ export const API_BASE_URL: string = import.meta.env.VITE_API_BASE_URL ?? '/';
 
 export const http: AxiosInstance = axios.create({
   baseURL: API_BASE_URL,
-  timeout: 60000,
+  // AI generation can take ~90s with reasoning models; keep this above the
+  // backend's 120s provider timeout so the UI receives the real response.
+  timeout: 150000,
   headers: { 'Content-Type': 'application/json' },
 });
 

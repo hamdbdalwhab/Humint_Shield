@@ -1,4 +1,4 @@
-"""Server-rendered micro-learning page (``GET /training/{tracking_uuid}``).
+"""Server-rendered micro-learning page (``GET /training-legacy/{tracking_uuid}``).
 
 The page is fully self-contained (no admin chrome, no SPA dependency) so the
 educational landing page always renders, even if the frontend bundle is not
@@ -281,13 +281,13 @@ async def _load_context(tracking_uuid: uuid.UUID, db: AsyncSession):
             .join(HumanAsset, HumanAsset.id == EmailTracking.employee_id)
             .join(EmailCampaign, EmailCampaign.id == EmailTracking.campaign_id)
             .join(Organization, Organization.id == HumanAsset.organization_id)
-            .outerjoin(EmailTemplate, EmailTemplate.id == EmailTracking.email_template_id)
+            .outerjoin(EmailTemplate, EmailTemplate.id == EmailTracking.template_id)
             .where(EmailTracking.tracking_uuid == tracking_uuid)
         )
     ).first()
 
 
-@router.get("/training/{tracking_uuid}", response_class=HTMLResponse, include_in_schema=False)
+@router.get("/training-legacy/{tracking_uuid}", response_class=HTMLResponse, include_in_schema=False)
 async def training_page(
     tracking_uuid: str, request: Request, db: AsyncSession = Depends(get_db)
 ) -> HTMLResponse:
@@ -314,13 +314,13 @@ async def training_page(
 
     # The form is the landing experience until the recipient interacts.
     interactive = (
-        tracking.form_submitted_at is not None
+        tracking.submitted_at is not None
         or tracking.reported_at is not None
-        or tracking.completed_training_at is not None
+        or tracking.completed_at is not None
     )
     if not interactive:
         # Every render is logged, so a recipient who keeps reloading the page
-        # leaves a complete trail; ``form_viewed_at`` still keeps the first view.
+        # leaves a complete trail; ``viewed_at`` still keeps the first view.
         await TrackingService().mark_form_viewed(
             uid, db, _client_ip(request), request.headers.get("user-agent")
         )
@@ -563,7 +563,7 @@ def _reveal_page(
     company = html.escape(organization.name)
     first_name = html.escape(employee.first_name or "there")
     template_name = html.escape(template.name) if template else "security awareness"
-    already_complete = tracking.completed_training_at is not None
+    already_complete = tracking.completed_at is not None
     completion_block = _completion_block(tracking_uuid, already_complete)
     body = f"""
 <div class="banner">
@@ -658,13 +658,13 @@ def _recorded_card(tracking: EmailTracking) -> str:
     from app.services.tracking_service import decrypt_payload
 
     rows: list[str] = []
-    if tracking.form_viewed_at is not None:
+    if tracking.viewed_at is not None:
         rows.append(
-            f"<li>Form shown: <strong>{_fmt_time(tracking.form_viewed_at)}</strong></li>"
+            f"<li>Form shown: <strong>{_fmt_time(tracking.viewed_at)}</strong></li>"
         )
-    if tracking.form_submitted_at is not None:
+    if tracking.submitted_at is not None:
         rows.append(
-            f"<li>Form submitted: <strong>{_fmt_time(tracking.form_submitted_at)}</strong>"
+            f"<li>Form submitted: <strong>{_fmt_time(tracking.submitted_at)}</strong>"
             f"{' (again later)' if (tracking.submission_count or 0) > 1 else ''}</li>"
         )
     values = decrypt_payload(tracking.submitted_payload_encrypted)

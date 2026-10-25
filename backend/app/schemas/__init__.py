@@ -9,6 +9,7 @@ from app.schemas.auth import (
     TokenResponse,
     UserPublic,
 )
+from app.schemas.ai import AIGeneratedTemplate, AIGenerateTemplateRequest
 from app.schemas.campaign import (
     CampaignActivity,
     CampaignCreate,
@@ -24,9 +25,11 @@ from app.schemas.campaign import (
     InteractionPublic,
     LaunchFailure,
     LaunchResult,
+    ReportSafeResponse,
     SubmissionPublic,
     TestEmailRequest,
     TrackingCompleteResponse,
+    TrainingCompleteRequest,
     TrainingInteractionResponse,
     TrainingSubmission,
 )
@@ -65,6 +68,8 @@ from app.schemas.lms import (
 
 __all__ = [
     "AccessTokenResponse",
+    "AIGeneratedTemplate",
+    "AIGenerateTemplateRequest",
     "AssignmentCreate",
     "AssignmentPublic",
     "BulkImportResult",
@@ -96,6 +101,7 @@ __all__ = [
     "PhishingReportUpdate",
     "RefreshRequest",
     "RegisterRequest",
+    "ReportSafeResponse",
     "SubmissionPublic",
     "TemplatePreviewRequest",
     "TemplatePreviewResponse",
@@ -103,6 +109,7 @@ __all__ = [
     "TimelineEvent",
     "TokenResponse",
     "TrackingCompleteResponse",
+    "TrainingCompleteRequest",
     "TrainingInteractionResponse",
     "TrainingModuleCreate",
     "TrainingModulePublic",

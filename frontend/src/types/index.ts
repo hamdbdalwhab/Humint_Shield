@@ -13,9 +13,23 @@ export type EngagementStatus =
   | 'clicked'
   | 'submitted'
   | 'completed'
+  | 'reported_safe'
   | 'failed';
 
+/** Provider delivery receipt state for SMS/WhatsApp. */
+export type DeliveryStatus =
+  | 'submitted'
+  | 'accepted'
+  | 'buffered'
+  | 'delivered'
+  | 'read'
+  | 'failed'
+  | 'rejected';
+
 export type BehavioralCategory = 'unaware' | 'hesitant' | 'competent' | 'critical_risk';
+
+/** Four-level badge derived from the independent Elo score. */
+export type ThreatLevel = 'low' | 'medium' | 'high' | 'critical';
 
 export interface User {
   id: string;
@@ -50,6 +64,9 @@ export interface Employee {
   job_title: string | null;
   access_level: number;
   immunity_score: number;
+  /** Independent adaptive-difficulty rating; starts at 1000. */
+  elo_score: number;
+  threat_level: ThreatLevel;
   behavioral_category: BehavioralCategory | null;
   total_tests_received: number;
   total_clicks: number;
@@ -118,6 +135,7 @@ export interface EmailTemplate {
   name: string;
   subject: string;
   body_html: string;
+  channel: 'email' | 'sms' | 'whatsapp';
   difficulty_level: number;
   available_variables: string[];
   is_built_in: boolean;
@@ -130,6 +148,7 @@ export interface EmailTemplateCreate {
   name: string;
   subject: string;
   body_html: string;
+  channel?: 'email' | 'sms' | 'whatsapp';
   difficulty_level: number;
   is_active?: boolean;
   available_variables?: string[];
@@ -139,6 +158,7 @@ export interface EmailTemplateUpdate {
   name?: string;
   subject?: string;
   body_html?: string;
+  channel?: 'email' | 'sms' | 'whatsapp';
   difficulty_level?: number;
   is_active?: boolean;
   available_variables?: string[];
@@ -147,7 +167,23 @@ export interface EmailTemplateUpdate {
 export interface TemplatePreview {
   subject: string;
   html_content: string;
+  /** Plain text rendered for SMS/WhatsApp previews. */
+  text_content?: string | null;
   missing_variables: string[];
+}
+
+export interface AIGenerateTemplateRequest {
+  target_department: string;
+  scenario: string;
+  channel?: 'email' | 'sms' | 'whatsapp';
+}
+
+export interface AIGeneratedTemplate {
+  subject: string;
+  body_html: string;
+  difficulty_level: number;
+  provider?: string;
+  model?: string;
 }
 
 export interface Campaign {
@@ -155,6 +191,7 @@ export interface Campaign {
   organization_id: string;
   template_id: string | null;
   name: string;
+  channel: 'email' | 'sms' | 'whatsapp';
   status: CampaignStatus;
   target_employee_ids: string[];
   total_targets: number;
@@ -173,6 +210,7 @@ export interface Campaign {
 export interface CampaignCreate {
   name: string;
   template_id: string;
+  channel?: 'email' | 'sms' | 'whatsapp';
   difficulty_level: number;
   target_employee_ids: string[];
 }
@@ -209,16 +247,27 @@ export interface CampaignEmployeeResult {
   employee_id: string;
   name: string;
   email: string;
+  phone: string | null;
+  channel: 'email' | 'sms' | 'whatsapp';
   department: string | null;
   job_title: string | null;
   status: EngagementStatus;
   sent_at: string | null;
+  delivered_at: string | null;
+  delivery_status: DeliveryStatus | null;
+  delivery_error: string | null;
+  read_at: string | null;
+  failed_at: string | null;
+  provider_message_id: string | null;
   opened_at: string | null;
   clicked_at: string | null;
   submitted_at: string | null;
   completed_at: string | null;
   form_viewed_at: string | null;
   reported_at: string | null;
+  quiz_score: number | null;
+  quiz_total: number | null;
+  is_reported_safe: boolean;
   open_count: number;
   click_count: number;
   submission_count: number;
@@ -228,6 +277,10 @@ export interface CampaignEmployeeResult {
   submitted_values: Record<string, string> | null;
   password_length: number | null;
   immunity_score: number | null;
+  elo_score: number | null;
+  threat_level: ThreatLevel | null;
+  template_name: string | null;
+  template_difficulty: number | null;
   behavioral_category: BehavioralCategory | null;
   error: string | null;
 }
@@ -244,6 +297,7 @@ export type LiveStatus = EngagementStatus | 'form_viewed';
 export interface LiveCampaign {
   id: string;
   name: string;
+  channel: 'email' | 'sms' | 'whatsapp';
   status: CampaignStatus;
   template_name: string | null;
   difficulty_level: number | null;
@@ -296,6 +350,9 @@ export interface LiveRecipient {
   submitted_at: string | null;
   reported_at: string | null;
   completed_at: string | null;
+  quiz_score: number | null;
+  quiz_total: number | null;
+  is_reported_safe: boolean;
   open_count: number;
   click_count: number;
   submission_count: number;
@@ -372,16 +429,25 @@ export interface EmployeeCampaignRecord {
   campaign_name: string;
   campaign_status: CampaignStatus;
   template_name: string | null;
+  channel: 'email' | 'sms' | 'whatsapp';
   tracking_uuid: string;
   status: EngagementStatus;
   sent_at: string | null;
   delivered_at: string | null;
+  delivery_status: DeliveryStatus | null;
+  delivery_error: string | null;
+  read_at: string | null;
+  failed_at: string | null;
+  provider_message_id: string | null;
   opened_at: string | null;
   clicked_at: string | null;
   form_viewed_at: string | null;
   submitted_at: string | null;
   reported_at: string | null;
   completed_at: string | null;
+  quiz_score: number | null;
+  quiz_total: number | null;
+  is_reported_safe: boolean;
   open_count: number;
   click_count: number;
   submission_count: number;
@@ -519,6 +585,9 @@ export interface HealthReport {
   redis: { ok: boolean; error: string | null };
   brevo_configured: boolean;
   email_dry_run: boolean;
+  vonage_configured?: boolean;
+  vonage_sms_configured?: boolean;
+  vonage_whatsapp_configured?: boolean;
 }
 
 export interface BrevoVerification {
@@ -532,10 +601,47 @@ export interface BrevoVerification {
   hint?: string | null;
 }
 
+export interface VonageVerification extends BrevoVerification {
+  configured?: boolean;
+  channel?: 'sms' | 'whatsapp';
+  from?: string;
+  missing?: string[];
+  sms_ready?: boolean;
+  whatsapp_ready?: boolean;
+  vonage_configured?: boolean;
+  vonage_application_configured?: boolean;
+  application_configured?: boolean;
+  messages_base_url?: string;
+  webhook_urls?: {
+    sms_dlr: string;
+    whatsapp_status: string;
+  };
+  webhook_token_required?: boolean;
+}
+
 export interface TrackingCompleteResponse {
   success: boolean;
   already_completed: boolean;
   message: string;
+  quiz_score?: number | null;
+  quiz_total?: number | null;
+  immunity_score?: number | null;
+  behavioral_category?: BehavioralCategory | null;
+}
+
+export interface TrackingCompletePayload {
+  score: number;
+  total: number;
+}
+
+export interface ReportSafeResponse {
+  success: boolean;
+  message: string;
+  quiz_score?: number | null;
+  quiz_total?: number | null;
+  immunity_score?: number | null;
+  behavioral_category?: BehavioralCategory | null;
+  already_reported_safe?: boolean;
 }
 
 export interface TrackingContext {
@@ -548,9 +654,15 @@ export interface TrackingContext {
   subject?: string;
   sender_name?: string;
   campaign_name?: string;
+  channel?: 'email' | 'sms' | 'whatsapp';
   skin?: 'microsoft' | 'hr';
   form_submitted?: boolean;
   already_completed?: boolean;
+  quiz_score?: number | null;
+  quiz_total?: number | null;
+  is_reported_safe?: boolean;
+  /** Safe, human-readable assets shown on the post-submit reveal. */
+  compromised_assets?: string[];
 }
 
 export interface TrackingSubmission {
@@ -570,6 +682,16 @@ export interface RuntimeConfig {
   brevo_configured: boolean;
   smtp_configured: boolean;
   email_dry_run: boolean;
+  vonage_configured?: boolean;
+  vonage_sms_configured?: boolean;
+  vonage_whatsapp_configured?: boolean;
+  vonage_application_configured?: boolean;
+  vonage_sms_from?: string;
+  vonage_whatsapp_from?: string;
+  vonage_webhook_paths?: {
+    sms_dlr: string;
+    whatsapp_status: string;
+  };
   rate_limit_enabled: boolean;
   environment: string;
 }

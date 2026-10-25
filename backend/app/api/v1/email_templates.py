@@ -47,6 +47,7 @@ async def list_templates(
     org_id: uuid.UUID,
     search: str | None = Query(None, max_length=200),
     is_active: bool | None = Query(None),
+    channel: str | None = Query(None, pattern="^(email|sms|whatsapp)$"),
     db: AsyncSession = Depends(get_db),
     organization=Depends(get_organization_or_404),
     user: User = Depends(get_current_user),
@@ -57,6 +58,7 @@ async def list_templates(
         org_id: Organization id.
         search: Optional case-insensitive filter on name/subject.
         is_active: Optional active-flag filter.
+        channel: Optional channel filter (email/sms/whatsapp).
         db: Active session.
         organization: Resolved organization.
         user: Authenticated user.
@@ -75,6 +77,8 @@ async def list_templates(
         )
     if is_active is not None:
         filters.append(EmailTemplate.is_active.is_(is_active))
+    if channel:
+        filters.append(EmailTemplate.channel == channel)
     rows = (
         await db.execute(
             select(EmailTemplate)
@@ -104,6 +108,7 @@ async def create_template(
         name=payload.name,
         subject=payload.subject,
         body_html=payload.body_html,
+        channel=payload.channel,
         difficulty_level=payload.difficulty_level,
         is_active=payload.is_active,
         is_built_in=False,
@@ -207,13 +212,23 @@ async def preview_template(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
 
     personalizer = TemplatePersonalizer()
+    tracking_uuid = uuid.uuid4()
     rendered = personalizer.personalize(
         template=template,
         employee=employee,
         organization=organization,
-        tracking_uuid=uuid.uuid4(),
+        tracking_uuid=tracking_uuid,
+    )
+    text_rendered = personalizer.personalize_text(
+        template=template,
+        employee=employee,
+        organization=organization,
+        tracking_uuid=tracking_uuid,
     )
     missing = personalizer.validate_variables(template, employee)
     return TemplatePreviewResponse(
-        subject=rendered["subject"], html_content=rendered["html_content"], missing_variables=missing
+        subject=rendered["subject"],
+        html_content=rendered["html_content"],
+        text_content=text_rendered["text_content"],
+        missing_variables=missing,
     )

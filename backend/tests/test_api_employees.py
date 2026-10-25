@@ -82,14 +82,14 @@ async def test_create_employee(client, auth_headers, organization) -> None:
             "last_name": "Person",
             "department": "Sales",
             "access_level": 2,
-            "phone": "+1-555-0199",
+            "phone": "+15550199000",
         },
         headers=auth_headers,
     )
     assert response.status_code == 201
     body = response.json()
     # The API returns the decrypted phone.
-    assert body["phone"] == "+1-555-0199"
+    assert body["phone"] == "+15550199000"
 
 
 async def test_create_employee_duplicate_email(client, auth_headers, organization, employee) -> None:
@@ -115,12 +115,38 @@ async def test_create_employee_requires_privilege(
 
 
 async def test_get_employee(client, auth_headers, organization, employee) -> None:
-    """A single employee can be fetched."""
+    """A single employee can be fetched with Elo and threat data."""
     response = await client.get(
         f"/api/v1/organizations/{organization.id}/employees/{employee.id}", headers=auth_headers
     )
     assert response.status_code == 200
-    assert response.json()["email"] == employee.email
+    body = response.json()
+    assert body["email"] == employee.email
+    assert body["elo_score"] == 1000
+    assert body["threat_level"] == "medium"
+
+
+async def test_employee_threat_badge_reflects_elo(
+    client, auth_headers, organization, employee, db
+) -> None:
+    """A low Elo is exposed as a high/critical threat badge."""
+    employee.elo_score = 850
+    await db.commit()
+    response = await client.get(
+        f"/api/v1/organizations/{organization.id}/employees/{employee.id}", headers=auth_headers
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["elo_score"] == 850
+    assert body["threat_level"] == "high"
+
+    employee.elo_score = 700
+    await db.commit()
+    response = await client.get(
+        f"/api/v1/organizations/{organization.id}/employees/{employee.id}", headers=auth_headers
+    )
+    assert response.json()["threat_level"] == "critical"
+
 
 
 async def test_get_unknown_employee(client, auth_headers, organization) -> None:
@@ -247,7 +273,7 @@ async def test_timeline(client, auth_headers, organization, employees, custom_te
     ).scalar_one()
     await client.get(f"/api/v1/track/open/{row.tracking_uuid}")
     await client.get(f"/api/v1/track/click/{row.tracking_uuid}")
-    page = await client.get(f"/training/{row.tracking_uuid}")
+    page = await client.get(f"/training-legacy/{row.tracking_uuid}")
     assert page.status_code == 200
     submit = await client.post(
         f"/api/v1/track/submit/{row.tracking_uuid}",

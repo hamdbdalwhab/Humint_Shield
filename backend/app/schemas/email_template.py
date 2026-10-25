@@ -13,6 +13,7 @@ class EmailTemplateBase(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     subject: str = Field(min_length=1, max_length=500)
     body_html: str = Field(min_length=1)
+    channel: str = Field(default="email", pattern="^(email|sms|whatsapp)$")
     difficulty_level: int = Field(default=5, ge=1, le=10)
     is_active: bool = True
 
@@ -29,6 +30,7 @@ class EmailTemplateUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=255)
     subject: str | None = Field(default=None, min_length=1, max_length=500)
     body_html: str | None = Field(default=None, min_length=1)
+    channel: str | None = Field(default=None, pattern="^(email|sms|whatsapp)$")
     difficulty_level: int | None = Field(default=None, ge=1, le=10)
     is_active: bool | None = None
     available_variables: list[str] | None = None
@@ -44,6 +46,7 @@ class EmailTemplatePublic(BaseModel):
     name: str
     subject: str
     body_html: str
+    channel: str = "email"
     difficulty_level: int
     available_variables: list[str]
     is_built_in: bool
@@ -71,4 +74,5 @@ class TemplatePreviewResponse(BaseModel):
 
     subject: str
     html_content: str
+    text_content: str | None = None
     missing_variables: list[str] = Field(default_factory=list)

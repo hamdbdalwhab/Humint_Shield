@@ -557,3 +557,104 @@ def test_sanitize_submitted_fields_drops_secrets() -> None:
     assert clean == {"office": "Cairo"}
     assert sanitize_submitted_fields(None) == {}
     assert sanitize_submitted_fields("nope") == {}
+
+
+# --------------------------------------------------------------------------- #
+# Elo adaptive difficulty
+# --------------------------------------------------------------------------- #
+async def test_elo_click_penalty_applies_once(
+    db: AsyncSession, organization, employee, builtin_templates
+) -> None:
+    """The first click costs 32 Elo; repeated clicks do not double-charge."""
+    tracking = await _make_tracking(db, organization, employee, builtin_templates[0])
+    service = TrackingService()
+
+    for _ in range(3):
+        await service.log_click(str(tracking.tracking_uuid), "198.51.100.9", "UA", db)
+        await db.commit()
+
+    await db.refresh(employee)
+    assert employee.elo_score == 968
+
+
+async def test_elo_report_reward_applies_once(
+    db: AsyncSession, organization, employee, builtin_templates
+) -> None:
+    """A click (-32) followed by one report (+32) returns the employee to 1000."""
+    tracking = await _make_tracking(db, organization, employee, builtin_templates[0])
+    service = TrackingService()
+
+    await service.log_click(str(tracking.tracking_uuid), "198.51.100.9", "UA", db)
+    await db.commit()
+    await service.log_simulation_report(
+        str(tracking.tracking_uuid), "198.51.100.9", "UA", db
+    )
+    await db.commit()
+    # The second report is a no-op and must not grant another +32.
+    await service.log_simulation_report(
+        str(tracking.tracking_uuid), "198.51.100.9", "UA", db
+    )
+    await db.commit()
+
+    await db.refresh(employee)
+    assert employee.elo_score == 1000
+
+
+async def test_elo_direct_submission_backfills_click_once(
+    db: AsyncSession, organization, employee, builtin_templates
+) -> None:
+    """A form submission without the click endpoint still applies one -32."""
+    tracking = await _make_tracking(db, organization, employee, builtin_templates[0])
+    service = TrackingService()
+    await service.mark_form_viewed(
+        str(tracking.tracking_uuid), db, "198.51.100.9", "UA"
+    )
+    await db.commit()
+
+    await service.log_submission(
+        str(tracking.tracking_uuid),
+        "jane@acmetest.example",
+        "secret",
+        6,
+        {"office": "Cairo"},
+        "198.51.100.9",
+        "UA",
+        db,
+    )
+    await db.commit()
+    await service.log_submission(
+        str(tracking.tracking_uuid),
+        "jane@acmetest.example",
+        "secret2",
+        7,
+        {"office": "Cairo"},
+        "198.51.100.9",
+        "UA",
+        db,
+    )
+    await db.commit()
+
+    await db.refresh(employee)
+    assert employee.elo_score == 968
+
+
+async def test_elo_admin_report_safe_does_not_double_reward(
+    db: AsyncSession, organization, employee, builtin_templates
+) -> None:
+    """An admin report-safe after the public report does not add another +32."""
+    tracking = await _make_tracking(db, organization, employee, builtin_templates[0])
+    service = TrackingService()
+    await service.log_simulation_report(
+        str(tracking.tracking_uuid), "198.51.100.9", "UA", db
+    )
+    await db.commit()
+    await db.refresh(employee)
+    assert employee.elo_score == 1032
+
+    result = await service.mark_reported_safe(
+        str(tracking.tracking_uuid), db, actor="tester"
+    )
+    await db.commit()
+    assert result is not None
+    await db.refresh(employee)
+    assert employee.elo_score == 1032

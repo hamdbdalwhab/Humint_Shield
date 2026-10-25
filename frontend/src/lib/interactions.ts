@@ -25,6 +25,13 @@ const META: Record<string, EventMeta> = {
     description: 'Handed to Brevo for delivery.',
   },
   email_delivered: { label: 'Email delivered', tone: 'default' },
+  message_sent: {
+    label: 'SMS/WhatsApp accepted by the provider',
+    tone: 'default',
+    description: 'Handed to Vonage for delivery.',
+  },
+  message_delivered: { label: 'SMS/WhatsApp delivered', tone: 'success' },
+  message_read: { label: 'SMS/WhatsApp read', tone: 'success' },
   email_open: { label: 'Email opened', tone: 'info' },
   email_opened: { label: 'Email opened', tone: 'info' },
   link_click: { label: 'Link clicked', tone: 'warning' },

@@ -26,6 +26,7 @@ from app.schemas import (
 )
 from app.services.interaction_report import InteractionReportService
 from app.services.tracking_service import decrypt_payload
+from app.services.vonage_service import is_e164_phone
 
 logger = get_logger(__name__)
 router = APIRouter(
@@ -237,6 +238,14 @@ async def bulk_import(
             errors.append(f"Line {line_no}: missing/invalid email or first_name")
             skipped += 1
             continue
+        phone = normalized.get("phone", "")
+        if phone and not is_e164_phone(phone):
+            errors.append(
+                f"Line {line_no}: phone '{phone}' is not in E.164 format "
+                "(for example +966500000000)"
+            )
+            skipped += 1
+            continue
         email = email.lower()
         try:
             access_level = int(normalized.get("access_level") or 1)
@@ -419,18 +428,26 @@ async def employee_timeline(
         )
 
     for tracking, campaign in rows:
-        _add("campaign_assigned", tracking.created_at, campaign, {})
-        _add("email_sent", tracking.sent_at, campaign, {"message_id": tracking.brevo_message_id})
-        _add("email_delivered", tracking.delivered_at, campaign, {})
-        _add("email_opened", tracking.opened_at, campaign, {"open_count": tracking.open_count})
-        _add("link_clicked", tracking.clicked_at, campaign, {"click_count": tracking.click_count})
-        _add("training_form_viewed", tracking.form_viewed_at, campaign, {})
-        if tracking.form_submitted_at is not None:
+        channel = (tracking.channel or campaign.channel or "email").strip().lower()
+        details = {"channel": channel}
+        _add("campaign_assigned", tracking.created_at, campaign, details)
+        if channel == "email":
+            _add("email_sent", tracking.sent_at, campaign, {**details, "message_id": tracking.provider_message_id})
+            _add("email_delivered", tracking.delivered_at, campaign, details)
+        else:
+            _add("message_sent", tracking.sent_at, campaign, {**details, "message_id": tracking.provider_message_id})
+            _add("message_delivered", tracking.delivered_at, campaign, details)
+            _add("message_read", tracking.read_at, campaign, details)
+        _add("email_opened", tracking.opened_at, campaign, {**details, "open_count": tracking.open_count})
+        _add("link_clicked", tracking.clicked_at, campaign, {**details, "click_count": tracking.click_count})
+        _add("training_form_viewed", tracking.viewed_at, campaign, details)
+        if tracking.submitted_at is not None:
             _add(
                 "credentials_submitted",
-                tracking.form_submitted_at,
+                tracking.submitted_at,
                 campaign,
                 {
+                    **details,
                     "identifier": tracking.submitted_identifier,
                     "password_length": tracking.password_length,
                     # Verbatim, decrypted evidence of what was typed.
@@ -443,9 +460,9 @@ async def employee_timeline(
             "phishing_reported",
             tracking.reported_at,
             campaign,
-            {"source": "training_page"},
+            {**details, "source": "training_page"},
         )
-        _add("training_completed", tracking.completed_training_at, campaign, {})
+        _add("training_completed", tracking.completed_at, campaign, details)
 
     events.sort(key=lambda event: event.timestamp)
     return events

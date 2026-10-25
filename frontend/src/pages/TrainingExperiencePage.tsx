@@ -4,8 +4,10 @@
  *
  * The page is public (the tracking UUID is the only credential), fully RTL and
  * built around three moments: a cinematic disclosure, an interactive red-flag
- * teardown of the actual email, and a timed one-question challenge that unlocks
- * a glowing certificate. Completion is recorded through the real backend.
+ * teardown of the actual email, and a timed five-question challenge with
+ * immediate +1/-1 feedback that unlocks a glowing certificate. Completion is
+ * recorded through the real backend; the public page never links to the admin
+ * application.
  */
 import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
@@ -27,9 +29,12 @@ import {
   BadgeCheck,
   CheckCircle2,
   Clock3,
+  Database,
   ExternalLink,
   Flag,
+  FolderLock,
   GraduationCap,
+  KeyRound,
   Link2,
   LockKeyhole,
   MailWarning,
@@ -41,13 +46,34 @@ import {
   XCircle,
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 
 import { trackingApi } from '@/api/endpoints';
 import type { TrackingCompleteResponse, TrackingContext } from '@/types';
 
 const COUNTDOWN_SECONDS = 60;
+
+/** English labels displayed beneath the Arabic asset names for clarity. */
+const ASSET_ENGLISH: Record<string, string> = {
+  'بيانات حساب بريدك الإلكتروني': 'Your Email Account',
+  'كلمة مرور بريدك الإلكتروني': 'Your Email Password',
+  'الوصول إلى ملفات الموارد البشرية': 'Access to HR Files',
+  'الوصول إلى نظام الفواتير والبيانات المالية': 'Access to Billing & Financial Data',
+  'الوصول إلى بريد الإدارة التنفيذية': 'Access to Executive Email',
+  'الوصول إلى الملفات المشتركة': 'Access to Shared Files',
+  'الوصول إلى شبكة الشركة عبر VPN': 'Access to Corporate VPN',
+  'الوصول إلى الأنظمة الداخلية المتاحة من حسابك': 'Access to Internal Systems',
+  'جلسة دخول دائمة (تذكرني)': 'Persistent Login Session',
+  'بيانات القسم ومكان العمل': 'Department & Office Details',
+};
+
+function assetIcon(asset: string) {
+  if (asset.includes('كلمة مرور')) return KeyRound;
+  if (asset.includes('ملفات') || asset.includes('الملفات')) return FolderLock;
+  if (asset.includes('بريد')) return MailWarning;
+  return Database;
+}
 
 interface RedFlag {
   id: string;
@@ -102,24 +128,87 @@ const RED_FLAGS: RedFlag[] = [
   },
 ];
 
-const QUIZ_OPTIONS = [
+interface QuizOption {
+  id: string;
+  text: string;
+}
+
+interface QuizQuestion {
+  id: string;
+  prompt: string;
+  options: QuizOption[];
+  correct: string;
+  explanation: string;
+  wrongHint: string;
+}
+
+const QUIZ_QUESTIONS: QuizQuestion[] = [
   {
-    id: 'logo',
-    text: 'وجود شعار الشركة الصحيح داخل الرسالة',
-    feedback: 'الشعار سهل جداً في النسخ. وجوده لا يثبت أن المرسل شرعي.',
-  },
-  {
-    id: 'domain',
-    text: 'الرابط والمرسل يستخدمان نطاقاً مختلفاً عن نطاق الشركة',
-    feedback:
+    id: 'sender',
+    prompt: 'ما أقوى مؤشر على أن هذه الرسالة مشبوهة؟',
+    options: [
+      { id: 'logo', text: 'وجود شعار الشركة الصحيح داخل الرسالة' },
+      { id: 'domain', text: 'الرابط والمرسل يستخدمان نطاقاً مختلفاً عن نطاق الشركة' },
+      { id: 'language', text: 'الرسالة مكتوبة باللغة الإنجليزية' },
+    ],
+    correct: 'domain',
+    explanation:
       'صحيح. التحقق من النطاق الفعلي — لا من النص الظاهر — هو أقوى مؤشر واحد على التصيّد.',
+    wrongHint: 'الشعار واللغة قابلان للتقليد بسهولة. ابحث عن النطاق الفعلي للمرسل والرابط.',
   },
   {
-    id: 'language',
-    text: 'الرسالة مكتوبة باللغة الإنجليزية',
-    feedback: 'اللغة وحدها ليست مؤشراً. كثير من الرسائل الشرعية تُكتب بالإنجليزية.',
+    id: 'urgency',
+    prompt: 'رسالة من «الدعم الفني» تهدد بإغلاق حسابك خلال 24 ساعة. ما الذي يجب أن تلاحظه؟',
+    options: [
+      { id: 'deadline', text: 'أن المهلة قصيرة جداً وتخلق ضغطاً نفسياً' },
+      { id: 'signature', text: 'أن الرسالة تحتوي على توقيع إلكتروني' },
+      { id: 'format', text: 'أن الرسالة تستخدم خطاً رسمياً' },
+    ],
+    correct: 'deadline',
+    explanation:
+      'صحيح. الاستعجال والتهديد بالإغلاق أسلوب ضغط شائع لدفعك إلى التصرف قبل التفكير.',
+    wrongHint: 'التوقيع والخط ليسا دليلاً على الشرعية. لاحظ الضغط الزمني غير الطبيعي.',
   },
-] as const;
+  {
+    id: 'credentials',
+    prompt: 'أي طلب داخل بريد إلكتروني يجب أن يجعلك تتوقف فوراً؟',
+    options: [
+      { id: 'meeting', text: 'دعوة لحضور اجتماع فريق الأسبوع القادم' },
+      { id: 'newsletter', text: 'إشعار بإصدار نشرة داخلية جديدة' },
+      { id: 'password', text: 'إعادة إدخال كلمة المرور عبر رابط داخل الرسالة' },
+    ],
+    correct: 'password',
+    explanation:
+      'صحيح. الخدمات الشرعية لا تطلب كلمة المرور عبر رابط في بريد. افتح الموقع الرسمي مباشرة.',
+    wrongHint: 'الاجتماعات والنشرات لا تحتاج بيانات دخول. ركّز على طلبات كلمة المرور أو البيانات الحساسة.',
+  },
+  {
+    id: 'link',
+    prompt: 'قبل النقر على أي رابط في رسالة، ما الإجراء الصحيح؟',
+    options: [
+      { id: 'text', text: 'الاعتماد على النص الظاهر للرابط فقط' },
+      { id: 'destination', text: 'فحص الوجهة الفعلية للرابط بعد تمرير المؤشر فوقه' },
+      { id: 'color', text: 'التأكد من أن لون الزر أزرق مثل المواقع الرسمية' },
+    ],
+    correct: 'destination',
+    explanation:
+      'صحيح. النص الظاهر يمكن تزويره؛ الوجهة الفعلية هي ما يهم. والأفضل فتح الموقع مباشرة من المتصفح.',
+    wrongHint: 'النص واللون يمكن تقليدهما. مرّر المؤشر واقرأ العنوان الكامل، أو افتح الموقع يدوياً.',
+  },
+  {
+    id: 'report',
+    prompt: 'إذا شككت في رسالة، ما أفضل تصرف؟',
+    options: [
+      { id: 'forward', text: 'إعادة توجيهها إلى زميل ليسأل عنها' },
+      { id: 'report', text: 'الإبلاغ عنها لفريق الأمن عبر القناة الرسمية دون النقر' },
+      { id: 'delete', text: 'حذفها فقط دون إخبار أحد' },
+    ],
+    correct: 'report',
+    explanation:
+      'صحيح. الإبلاغ عبر القناة الرسمية يحمي زملاءك ويمنح فريق الأمن فرصة الاحتواء السريع.',
+    wrongHint: 'إعادة التوجيه قد تنشر الرسالة، والحذف وحده لا يحمي الآخرين. أبلغ فريق الأمن.',
+  },
+];
 
 function fireConfetti() {
   const colors = ['#00F0FF', '#7000FF', '#00E676', '#FFB020', '#E2E8F0'];
@@ -480,20 +569,60 @@ function CountdownRing({ remaining }: { remaining: number }) {
   );
 }
 
+function SessionEnded({ displayName }: { displayName: string }) {
+  return (
+    <Box sx={{ minHeight: '100vh', display: 'grid', placeItems: 'center', p: 2 }}>
+      <Box
+        sx={{
+          width: '100%',
+          maxWidth: 560,
+          p: { xs: 3, sm: 5 },
+          borderRadius: 5,
+          textAlign: 'center',
+          bgcolor: 'rgba(21,30,50,.88)',
+          border: '1px solid rgba(0,230,118,.26)',
+          boxShadow: '0 30px 90px rgba(0,0,0,.55), 0 0 40px rgba(0,230,118,.08)',
+        }}
+      >
+        <Box
+          sx={{
+            width: 72,
+            height: 72,
+            mx: 'auto',
+            borderRadius: '50%',
+            display: 'grid',
+            placeItems: 'center',
+            color: '#031018',
+            background: 'linear-gradient(135deg, #00F0FF, #7CFFB2)',
+            boxShadow: '0 0 44px rgba(0,240,255,.32)',
+          }}
+        >
+          <ShieldCheck size={36} />
+        </Box>
+        <Typography sx={{ fontSize: '1.5rem', fontWeight: 800, mt: 2.5, mb: 1 }}>
+          شكراً لك، {displayName}
+        </Typography>
+        <Typography sx={{ color: 'text.secondary', lineHeight: 1.9 }}>
+          تم إنهاء جلسة التدريب بنجاح. لم يعد لهذه الصفحة أي وصول إلى لوحة الإدارة.
+          يمكنك إغلاق التبويب الآن والعودة إلى عملك بأمان.
+        </Typography>
+      </Box>
+    </Box>
+  );
+}
+
 export function TrainingExperiencePage() {
   const { trackingUuid } = useParams<{ trackingUuid: string }>();
-  const navigate = useNavigate();
   const [remaining, setRemaining] = useState(COUNTDOWN_SECONDS);
   const [activeFlag, setActiveFlag] = useState<string | null>(null);
   const [discovered, setDiscovered] = useState<string[]>([]);
-  const [selectedAnswer, setSelectedAnswer] = useState<number | null>(null);
-  const [quizSolved, setQuizSolved] = useState(false);
-  const [quizError, setQuizError] = useState(false);
+  const [answers, setAnswers] = useState<Record<string, string>>({});
   const [completion, setCompletion] = useState<TrackingCompleteResponse | null>(null);
   const [completing, setCompleting] = useState(false);
   const [completeError, setCompleteError] = useState<string | null>(null);
   const [reported, setReported] = useState(false);
   const [reportBusy, setReportBusy] = useState(false);
+  const [sessionEnded, setSessionEnded] = useState(false);
   const certificateRef = useRef<HTMLDivElement | null>(null);
   const confettiFired = useRef(false);
 
@@ -506,6 +635,7 @@ export function TrainingExperiencePage() {
   });
 
   const context = contextQuery.data;
+  const compromisedAssets = context?.compromised_assets ?? [];
   const alreadyComplete = Boolean(context?.already_completed);
   const completed = alreadyComplete || Boolean(completion?.success);
   const ready = remaining <= 0;
@@ -536,23 +666,37 @@ export function TrainingExperiencePage() {
     setDiscovered((current) => (current.includes(id) ? current : [...current, id]));
   }, []);
 
-  const selectAnswer = useCallback((index: number) => {
-    if (quizSolved) return;
-    setSelectedAnswer(index);
-    if (QUIZ_OPTIONS[index].id === 'domain') {
-      setQuizSolved(true);
-      setQuizError(false);
-    } else {
-      setQuizError(true);
-    }
-  }, [quizSolved]);
+  const selectAnswer = useCallback(
+    (questionId: string, optionId: string) => {
+      if (!ready) return;
+      setAnswers((current) =>
+        current[questionId] ? current : { ...current, [questionId]: optionId },
+      );
+    },
+    [ready],
+  );
+
+  const answeredCount = Object.keys(answers).length;
+  const quizComplete = answeredCount === QUIZ_QUESTIONS.length;
+  const quizScore = useMemo(
+    () =>
+      QUIZ_QUESTIONS.reduce(
+        (total, question) =>
+          total + (answers[question.id] === question.correct ? 1 : 0),
+        0,
+      ),
+    [answers],
+  );
 
   const completeTraining = useCallback(async () => {
-    if (!trackingUuid || completing || !ready || !quizSolved) return;
+    if (!trackingUuid || completing || !ready || !quizComplete) return;
     setCompleting(true);
     setCompleteError(null);
     try {
-      const result = await trackingApi.complete(trackingUuid);
+      const result = await trackingApi.complete(trackingUuid, {
+        score: quizScore,
+        total: QUIZ_QUESTIONS.length,
+      });
       setCompletion(result);
       if (!result.success) {
         setCompleteError(result.message || 'تعذّر تسجيل الإكمال. حاول مرة أخرى.');
@@ -562,7 +706,7 @@ export function TrainingExperiencePage() {
     } finally {
       setCompleting(false);
     }
-  }, [completing, quizSolved, ready, trackingUuid]);
+  }, [completing, quizComplete, quizScore, ready, trackingUuid]);
 
   const reportPhishing = useCallback(async () => {
     if (!trackingUuid || reportBusy) return;
@@ -595,7 +739,10 @@ export function TrainingExperiencePage() {
   if (!trackingUuid || contextQuery.error || !context) return <InvalidTraining />;
 
   const displayName = [context.first_name, context.last_name].filter(Boolean).join(' ') || context.email || 'الموظف';
-  const chosenOption = selectedAnswer === null ? null : QUIZ_OPTIONS[selectedAnswer];
+  const finalScore = completion?.quiz_score ?? context.quiz_score ?? (alreadyComplete ? null : quizScore);
+  const finalTotal = completion?.quiz_total ?? context.quiz_total ?? QUIZ_QUESTIONS.length;
+
+  if (sessionEnded) return <SessionEnded displayName={displayName} />;
 
   return (
     <Box sx={{ minHeight: '100vh', position: 'relative', overflow: 'hidden', pb: 8 }}>
@@ -667,6 +814,121 @@ export function TrainingExperiencePage() {
             </Stack>
           </Stack>
         </motion.div>
+
+        {/* --------------------- compromised assets --------------------- */}
+        {compromisedAssets.length > 0 ? (
+          <motion.div
+            initial={{ opacity: 0, y: 18 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.5, delay: 0.12 }}
+          >
+            <Box
+              sx={{
+                mb: { xs: 3, md: 4 },
+                p: { xs: 2, sm: 2.6 },
+                borderRadius: 4,
+                border: '1px solid rgba(255,23,68,.28)',
+                background:
+                  'radial-gradient(circle at 100% 0%, rgba(255,23,68,.12), transparent 44%), linear-gradient(150deg, rgba(38,20,31,.9), rgba(12,15,26,.9))',
+                boxShadow: '0 24px 70px rgba(0,0,0,.36)',
+              }}
+            >
+              <Stack
+                direction={{ xs: 'column', sm: 'row' }}
+                justifyContent="space-between"
+                alignItems={{ xs: 'flex-start', sm: 'center' }}
+                spacing={1}
+                sx={{ mb: 1.2 }}
+              >
+                <Stack direction="row" spacing={1} alignItems="center">
+                  <Box
+                    sx={{
+                      width: 38,
+                      height: 38,
+                      borderRadius: 2,
+                      display: 'grid',
+                      placeItems: 'center',
+                      bgcolor: 'rgba(255,23,68,.1)',
+                      border: '1px solid rgba(255,23,68,.25)',
+                      color: '#FF6B81',
+                    }}
+                  >
+                    <ShieldAlert size={20} />
+                  </Box>
+                  <Box>
+                    <Typography sx={{ fontWeight: 900, fontSize: { xs: '1rem', sm: '1.12rem' } }}>
+                      ما الذي حصل عليه المهاجم؟
+                    </Typography>
+                    <Typography variant="caption" sx={{ color: 'text.secondary' }}>
+                      هذه هي الأصول التي كانت بياناتك ستفتحها في هجوم حقيقي.
+                    </Typography>
+                  </Box>
+                </Stack>
+                <Chip
+                  size="small"
+                  label="محاكاة — لا ضرر فعلي"
+                  color="error"
+                  variant="outlined"
+                  sx={{ fontWeight: 800 }}
+                />
+              </Stack>
+              <Box
+                sx={{
+                  display: 'grid',
+                  gridTemplateColumns: { xs: '1fr', sm: 'repeat(2, minmax(0, 1fr))' },
+                  gap: 1,
+                  mt: 1.5,
+                }}
+              >
+                {compromisedAssets.map((asset) => {
+                  const AssetIcon = assetIcon(asset);
+                  return (
+                    <Stack
+                      key={asset}
+                      direction="row"
+                      spacing={1.1}
+                      alignItems="center"
+                      sx={{
+                        p: 1.25,
+                        borderRadius: 2.5,
+                        border: '1px solid rgba(255,255,255,.08)',
+                        bgcolor: 'rgba(255,255,255,.025)',
+                      }}
+                    >
+                      <Box
+                        sx={{
+                          width: 34,
+                          height: 34,
+                          borderRadius: 2,
+                          display: 'grid',
+                          placeItems: 'center',
+                          color: '#FF8A9A',
+                          bgcolor: 'rgba(255,23,68,.08)',
+                          flex: '0 0 auto',
+                        }}
+                      >
+                        <AssetIcon size={17} />
+                      </Box>
+                      <Box sx={{ minWidth: 0 }}>
+                        <Typography sx={{ fontWeight: 800, fontSize: '0.84rem', lineHeight: 1.5 }}>
+                          {asset}
+                        </Typography>
+                        {ASSET_ENGLISH[asset] ? (
+                          <Typography
+                            variant="caption"
+                            sx={{ display: 'block', color: 'text.secondary', fontSize: '0.66rem' }}
+                          >
+                            {ASSET_ENGLISH[asset]}
+                          </Typography>
+                        ) : null}
+                      </Box>
+                    </Stack>
+                  );
+                })}
+              </Box>
+            </Box>
+          </motion.div>
+        ) : null}
 
         {/* ------------------- email teardown + countdown ------------------- */}
         <Box
@@ -856,124 +1118,188 @@ export function TrainingExperiencePage() {
           <Stack direction={{ xs: 'column', md: 'row' }} justifyContent="space-between" alignItems={{ xs: 'flex-start', md: 'center' }} spacing={1.5} sx={{ mb: 2, position: 'relative', zIndex: 1 }}>
             <Box>
               <Typography variant="overline" sx={{ color: 'primary.main', fontSize: '0.62rem', letterSpacing: '.14em' }}>
-                KNOWLEDGE CHECK
+                KNOWLEDGE CHECK · 5 QUESTIONS
               </Typography>
               <Typography sx={{ fontSize: { xs: '1.1rem', md: '1.3rem' }, fontWeight: 800, lineHeight: 1.5 }}>
-                ما هو المؤشر الأكبر على أن هذه الرسالة مشبوهة؟
+                اختبر ما تعلمته من تفكيك الرسالة
+              </Typography>
+              <Typography variant="body2" sx={{ color: 'text.secondary', mt: 0.5 }}>
+                لكل إجابة صحيحة +1، ولكل إجابة خاطئة -1. لا يمكن تغيير الإجابة بعد اختيارها.
               </Typography>
             </Box>
-            <Chip
-              icon={ready ? <Sparkles size={13} /> : <Clock3 size={13} />}
-              label={ready ? 'الاختبار مفتوح' : `يفتح بعد ${remaining} ثانية`}
-              color={ready ? 'success' : 'default'}
-              variant="outlined"
-            />
+            <Stack direction="row" spacing={1} alignItems="center">
+              <Chip
+                icon={ready ? <Sparkles size={13} /> : <Clock3 size={13} />}
+                label={ready ? `${answeredCount} / ${QUIZ_QUESTIONS.length} answered` : `يفتح بعد ${remaining} ثانية`}
+                color={ready ? 'success' : 'default'}
+                variant="outlined"
+              />
+              <Chip
+                label={`${quizScore} / ${QUIZ_QUESTIONS.length}`}
+                color={quizScore === QUIZ_QUESTIONS.length ? 'success' : 'primary'}
+                variant="filled"
+              />
+            </Stack>
           </Stack>
 
           {!ready ? (
             <Box sx={{ py: 3, textAlign: 'center', position: 'relative', zIndex: 1 }}>
               <LockKeyhole size={26} color="#8B9BB4" />
               <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-                اقرأ المؤشرات أولاً. سيُفتح السؤال تلقائياً بعد انتهاء العد.
+                اقرأ المؤشرات أولاً. ستُفتح الأسئلة الخمسة تلقائياً بعد انتهاء العد.
               </Typography>
             </Box>
           ) : (
             <Box sx={{ position: 'relative', zIndex: 1 }}>
-              <Stack spacing={1.2}>
-                {QUIZ_OPTIONS.map((option, index) => {
-                  const selected = selectedAnswer === index;
-                  const correct = quizSolved && option.id === 'domain';
-                  const wrong = quizError && selected && option.id !== 'domain';
+              <Stack spacing={1.5}>
+                {QUIZ_QUESTIONS.map((question, questionIndex) => {
+                  const selected = answers[question.id];
+                  const answered = Boolean(selected);
+                  const isCorrect = selected === question.correct;
+                  const correctOption = question.options.find((option) => option.id === question.correct);
                   return (
-                    <motion.div key={option.id} whileHover={{ x: -3 }} whileTap={{ scale: 0.995 }}>
-                      <Box
-                        component="button"
-                        type="button"
-                        onClick={() => selectAnswer(index)}
-                        disabled={quizSolved}
-                        sx={{
-                          width: '100%',
-                          textAlign: 'start',
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: 1.4,
-                          p: 1.5,
-                          borderRadius: 2.5,
-                          border: correct
-                            ? '1px solid rgba(0,230,118,.5)'
-                            : wrong
-                              ? '1px solid rgba(255,23,68,.5)'
-                              : selected
-                                ? '1px solid rgba(0,240,255,.45)'
-                                : '1px solid rgba(255,255,255,.09)',
-                          bgcolor: correct
-                            ? 'rgba(0,230,118,.06)'
-                            : wrong
-                              ? 'rgba(255,23,68,.06)'
-                              : selected
-                                ? 'rgba(0,240,255,.05)'
-                                : 'rgba(255,255,255,.02)',
-                          color: 'text.primary',
-                          cursor: quizSolved ? 'default' : 'pointer',
-                          transition: 'all .2s ease',
-                          '&:hover': quizSolved ? {} : { borderColor: 'rgba(0,240,255,.35)', bgcolor: 'rgba(0,240,255,.04)' },
-                        }}
-                      >
-                        <Box
-                          sx={{
-                            width: 34,
-                            height: 34,
-                            borderRadius: 2,
-                            display: 'grid',
-                            placeItems: 'center',
-                            fontWeight: 800,
-                            fontSize: '0.8rem',
-                            color: correct ? 'success.main' : wrong ? '#FF6B81' : 'primary.main',
-                            bgcolor: correct ? 'rgba(0,230,118,.1)' : wrong ? 'rgba(255,23,68,.1)' : 'rgba(0,240,255,.07)',
-                            border: '1px solid rgba(255,255,255,.08)',
-                            flex: '0 0 auto',
-                          }}
+                    <Box
+                      key={question.id}
+                      sx={{
+                        p: { xs: 1.5, sm: 2 },
+                        borderRadius: 3,
+                        border: answered
+                          ? isCorrect
+                            ? '1px solid rgba(0,230,118,.35)'
+                            : '1px solid rgba(255,23,68,.35)'
+                          : '1px solid rgba(255,255,255,.08)',
+                        bgcolor: answered
+                          ? isCorrect
+                            ? 'rgba(0,230,118,.035)'
+                            : 'rgba(255,23,68,.035)'
+                          : 'rgba(255,255,255,.015)',
+                      }}
+                    >
+                      <Stack direction="row" spacing={1.2} alignItems="flex-start" sx={{ mb: 1.2 }}>
+                        <Chip size="small" label={`سؤال ${questionIndex + 1}`} color="primary" variant="outlined" />
+                        <Typography sx={{ fontSize: '0.88rem', fontWeight: 700, lineHeight: 1.65 }}>
+                          {question.prompt}
+                        </Typography>
+                      </Stack>
+                      <Stack spacing={0.9}>
+                        {question.options.map((option, optionIndex) => {
+                          const optionSelected = selected === option.id;
+                          const revealedCorrect = answered && option.id === question.correct;
+                          const revealedWrong = answered && optionSelected && option.id !== question.correct;
+                          return (
+                            <motion.div key={option.id} whileHover={answered ? undefined : { x: -3 }} whileTap={answered ? undefined : { scale: 0.995 }}>
+                              <Box
+                                component="button"
+                                type="button"
+                                onClick={() => selectAnswer(question.id, option.id)}
+                                disabled={answered}
+                                sx={{
+                                  width: '100%',
+                                  textAlign: 'start',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: 1.2,
+                                  p: 1.2,
+                                  borderRadius: 2,
+                                  border: revealedCorrect
+                                    ? '1px solid rgba(0,230,118,.5)'
+                                    : revealedWrong
+                                      ? '1px solid rgba(255,23,68,.5)'
+                                      : optionSelected
+                                        ? '1px solid rgba(0,240,255,.45)'
+                                        : '1px solid rgba(255,255,255,.08)',
+                                  bgcolor: revealedCorrect
+                                    ? 'rgba(0,230,118,.06)'
+                                    : revealedWrong
+                                      ? 'rgba(255,23,68,.06)'
+                                      : optionSelected
+                                        ? 'rgba(0,240,255,.05)'
+                                        : 'rgba(255,255,255,.018)',
+                                  color: 'text.primary',
+                                  cursor: answered ? 'default' : 'pointer',
+                                  transition: 'all .2s ease',
+                                  '&:hover': answered ? {} : { borderColor: 'rgba(0,240,255,.35)', bgcolor: 'rgba(0,240,255,.04)' },
+                                }}
+                              >
+                                <Box
+                                  sx={{
+                                    width: 32,
+                                    height: 32,
+                                    borderRadius: 1.5,
+                                    display: 'grid',
+                                    placeItems: 'center',
+                                    fontWeight: 800,
+                                    fontSize: '0.76rem',
+                                    color: revealedCorrect ? 'success.main' : revealedWrong ? '#FF6B81' : 'primary.main',
+                                    bgcolor: revealedCorrect ? 'rgba(0,230,118,.1)' : revealedWrong ? 'rgba(255,23,68,.1)' : 'rgba(0,240,255,.07)',
+                                    border: '1px solid rgba(255,255,255,.08)',
+                                    flex: '0 0 auto',
+                                  }}
+                                >
+                                  {revealedCorrect ? <CheckCircle2 size={16} /> : revealedWrong ? <XCircle size={16} /> : String.fromCharCode(65 + optionIndex)}
+                                </Box>
+                                <Typography sx={{ fontSize: '0.8rem', fontWeight: 600, lineHeight: 1.55, flex: 1 }}>
+                                  {option.text}
+                                </Typography>
+                                {optionSelected ? (
+                                  <Chip
+                                    size="small"
+                                    label={isCorrect ? '+1' : '-1'}
+                                    color={isCorrect ? 'success' : 'error'}
+                                    sx={{ fontWeight: 900, minWidth: 44 }}
+                                  />
+                                ) : null}
+                              </Box>
+                            </motion.div>
+                          );
+                        })}
+                      </Stack>
+                      {answered ? (
+                        <Alert
+                          severity={isCorrect ? 'success' : 'error'}
+                          sx={{ mt: 1.2, py: 0.35 }}
+                          icon={isCorrect ? <CheckCircle2 size={18} /> : <XCircle size={18} />}
                         >
-                          {correct ? <CheckCircle2 size={17} /> : wrong ? <XCircle size={17} /> : String.fromCharCode(65 + index)}
-                        </Box>
-                        <Typography sx={{ fontSize: '0.82rem', fontWeight: 600, lineHeight: 1.6 }}>{option.text}</Typography>
-                      </Box>
-                    </motion.div>
+                          <Typography sx={{ fontSize: '0.76rem', fontWeight: 700, lineHeight: 1.7 }}>
+                            {isCorrect
+                              ? `+1 — ${question.explanation}`
+                              : `-1 — ${question.wrongHint} الإجابة الصحيحة: ${correctOption?.text ?? ''}`}
+                          </Typography>
+                        </Alert>
+                      ) : null}
+                    </Box>
                   );
                 })}
               </Stack>
 
-              {quizSolved ? (
-                <Alert severity="success" sx={{ mt: 1.5 }}>
-                  إجابة صحيحة. التحقق من النطاق الفعلي هو أقوى خط دفاع واحد أمام التصيّد.
-                </Alert>
-              ) : quizError && chosenOption ? (
-                <Alert severity="error" sx={{ mt: 1.5 }}>
-                  {chosenOption.feedback} حاول مرة أخرى.
-                </Alert>
-              ) : null}
+              <Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" alignItems={{ xs: 'stretch', sm: 'center' }} spacing={1.25} sx={{ mt: 2 }}>
+                <Box>
+                  <Typography sx={{ fontWeight: 800, fontSize: '0.82rem' }}>
+                    النتيجة الحالية: {quizScore} من {QUIZ_QUESTIONS.length}
+                  </Typography>
+                  <Typography variant="caption" sx={{ color: 'text.secondary' }}>
+                    {quizComplete
+                      ? 'أجبت على جميع الأسئلة. أرسل النتيجة لإكمال التدريب.'
+                      : `أكمل ${QUIZ_QUESTIONS.length - answeredCount} سؤالاً متبقياً.`}
+                  </Typography>
+                </Box>
+                <Button
+                  variant="contained"
+                  size="large"
+                  disabled={!ready || !quizComplete || completing || completed}
+                  onClick={() => void completeTraining()}
+                  startIcon={completing ? undefined : <ShieldCheck size={18} />}
+                  sx={{ minWidth: 250 }}
+                >
+                  {completing ? 'جارٍ تسجيل الإكمال…' : completed ? 'تم إكمال التدريب' : 'أرسل النتيجة وأكمل التدريب'}
+                </Button>
+              </Stack>
 
               {completeError ? (
                 <Alert severity="error" sx={{ mt: 1.5 }}>
                   {completeError}
                 </Alert>
               ) : null}
-
-              <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.25} alignItems={{ xs: 'stretch', sm: 'center' }} sx={{ mt: 2 }}>
-                <Button
-                  variant="contained"
-                  size="large"
-                  disabled={!ready || !quizSolved || completing || completed}
-                  onClick={() => void completeTraining()}
-                  startIcon={completing ? undefined : <ShieldCheck size={18} />}
-                  sx={{ minWidth: 220 }}
-                >
-                  {completing ? 'جارٍ تسجيل الإكمال…' : completed ? 'تم إكمال التدريب' : 'أكملت التدريب'}
-                </Button>
-                <Typography variant="caption" sx={{ color: 'text.secondary' }}>
-                  {quizSolved ? 'سيُضاف +5 إلى نقاط مناعتك الأمنية.' : 'أجب على السؤال أولاً لفتح زر الإكمال.'}
-                </Typography>
-              </Stack>
             </Box>
           )}
         </Box>
@@ -1027,8 +1353,17 @@ export function TrainingExperiencePage() {
                       textShadow: '0 0 26px rgba(0,230,118,.32)',
                     }}
                   >
-                    تهانينا! لقد أضفت +5 نقاط إلى مناعتك الأمنية.
+                    {finalScore !== null
+                      ? `تهانينا! نتيجتك في الاختبار: ${finalScore} من ${finalTotal}.`
+                      : 'تهانينا! تم تسجيل إكمالك للتدريب بنجاح.'}
                   </Typography>
+                  <Chip
+                    icon={<Award size={14} />}
+                    label="شكراً لك — انتهت الجلسة التدريبية"
+                    color="success"
+                    variant="outlined"
+                    sx={{ fontWeight: 800 }}
+                  />
 
                   <Stack direction={{ xs: 'column', sm: 'row' }} spacing={{ xs: 0.5, sm: 3 }} sx={{ pt: 2, color: 'text.secondary' }}>
                     <Typography variant="caption">المؤسسة: {context.company_name ?? '—'}</Typography>
@@ -1041,22 +1376,26 @@ export function TrainingExperiencePage() {
                   </Stack>
 
                   <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.2} sx={{ pt: 1.5 }}>
-                    <Button variant="contained" startIcon={<ShieldCheck size={17} />} onClick={() => navigate('/login')}>
-                      العودة إلى صفحة آمنة
+                    <Button
+                      variant="contained"
+                      startIcon={<ShieldCheck size={17} />}
+                      onClick={() => setSessionEnded(true)}
+                    >
+                      إنهاء الجلسة
                     </Button>
                     <Button
                       variant="outlined"
                       startIcon={<ExternalLink size={16} />}
                       onClick={() => {
+                        setSessionEnded(true);
                         window.close();
-                        navigate('/login');
                       }}
                     >
                       إغلاق النافذة
                     </Button>
                   </Stack>
                   <Typography variant="caption" sx={{ color: 'text.disabled', fontSize: '0.62rem', pt: 1 }}>
-                    محاكاة تدريبية مصرّح بها · لا تُستخدم هذه الشهادة كدليل امتثال خارجي
+                    شكراً لمشاركتك. لا تحتوي هذه الصفحة على أي رابط إلى لوحة الإدارة.
                   </Typography>
                 </Stack>
               </Box>
