@@ -158,8 +158,8 @@ npm run test
 - [ ] **Stable domain:** replace the ephemeral quick tunnel with a permanent domain before production.
 - [ ] **Font license:** add the Amiri OFL license file if the bundled fonts will be distributed.
 - [x] **Commit:** previous production-readiness work committed as `76c2d86`.
-- [ ] **Commit this fix:** stage and commit the AI fallback / Cloudflare fix.
-- [ ] **Push:** push the commits to the remote when confirmed.
+- [x] **Commit this fix:** `b6ab0ba` — AI fallback / Cloudflare fix.
+- [ ] **Push:** `main` is ahead of `origin/main` by 2 commits (`76c2d86`, `b6ab0ba`); push when confirmed.
 
 ---
 
