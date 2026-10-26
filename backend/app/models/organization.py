@@ -4,7 +4,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, DateTime, Integer, String, func
+from sqlalchemy import Boolean, DateTime, Integer, LargeBinary, String, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base, JSONBType, UUIDType, generate_uuid
@@ -28,6 +28,14 @@ class Organization(Base):
     adaptive_mode: Mapped[bool] = mapped_column(Boolean, default=True)
     max_tests_per_day: Mapped[int] = mapped_column(Integer, default=10)
     data_retention_days: Mapped[int] = mapped_column(Integer, default=365)
+    # --- Branding (Pillar 2) ------------------------------------------------
+    brand_primary_color: Mapped[str] = mapped_column(
+        String(7), default="#0F6CBD", server_default="#0F6CBD", nullable=False
+    )
+    brand_support_email: Mapped[str | None] = mapped_column(String(255))
+    brand_logo_data: Mapped[bytes | None] = mapped_column(LargeBinary)
+    brand_logo_mime: Mapped[str | None] = mapped_column(String(80))
+    brand_logo_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, server_default=func.now()
     )

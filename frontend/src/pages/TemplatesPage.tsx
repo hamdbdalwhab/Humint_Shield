@@ -6,6 +6,9 @@
  * email inside a sandboxed iframe, and the preview dialog renders the
  * personalised email produced by the backend for a real employee.
  */
+import Accordion from '@mui/material/Accordion';
+import AccordionDetails from '@mui/material/AccordionDetails';
+import AccordionSummary from '@mui/material/AccordionSummary';
 import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
@@ -27,6 +30,7 @@ import Typography from '@mui/material/Typography';
 import { alpha } from '@mui/material/styles';
 import { motion } from 'framer-motion';
 import {
+  ChevronDown,
   Code2,
   Eye,
   FileText,
@@ -41,18 +45,26 @@ import {
   Trash2,
   Wand2,
 } from 'lucide-react';
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Controller, useForm } from 'react-hook-form';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
 
-import { aiApi, employeesApi, templatesApi } from '@/api/endpoints';
+import { aiApi, brandingApi, employeesApi, templatesApi } from '@/api/endpoints';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
+import { EmailVisualEditor } from '@/components/email-editor/EmailVisualEditor';
+import { renderEmailDesignHtml } from '@/components/email-editor/renderEmail';
+import { createDefaultDesign, legacyDesign } from '@/components/email-editor/types';
 import { EmptyState, LoadingState } from '@/components/Feedback';
 import { PageHeader } from '@/components/PageHeader';
 import { useAuth } from '@/hooks/useAuth';
 import { errorMessage } from '@/lib/errors';
-import type { EmailTemplate, EmailTemplateCreate } from '@/types';
+import type {
+  EmailDesign,
+  EmailTemplate,
+  EmailTemplateCreate,
+  TemplateTestSendResult,
+} from '@/types';
 
 const VARIABLES = [
   'first_name',
@@ -231,10 +243,12 @@ function TemplateThumbnail({ template }: { template: EmailTemplate }) {
 }
 
 export function TemplatesPage() {
-  const { organizationId } = useAuth();
+  const { organizationId, user } = useAuth();
   const queryClient = useQueryClient();
   const [editorOpen, setEditorOpen] = useState(false);
   const [editing, setEditing] = useState<EmailTemplate | null>(null);
+  const [design, setDesign] = useState<EmailDesign | null>(null);
+  const [testResult, setTestResult] = useState<TemplateTestSendResult | null>(null);
   const [previewTemplate, setPreviewTemplate] = useState<EmailTemplate | null>(null);
   const [previewEmployeeId, setPreviewEmployeeId] = useState('');
   const [pendingDelete, setPendingDelete] = useState<EmailTemplate | null>(null);
@@ -254,6 +268,39 @@ export function TemplatesPage() {
     enabled: Boolean(organizationId),
   });
 
+  const brandingQuery = useQuery({
+    queryKey: ['branding', organizationId],
+    queryFn: () => brandingApi.get(organizationId as string),
+    enabled: Boolean(organizationId),
+  });
+  const branding = brandingQuery.data ?? null;
+
+  const designQuery = useQuery({
+    queryKey: ['template-design', organizationId, editing?.id],
+    queryFn: () => templatesApi.design(organizationId as string, editing?.id as string),
+    enabled: Boolean(editorOpen && editing && !editing.design_json && organizationId),
+  });
+
+  useEffect(() => {
+    if (!editorOpen || !editing) return;
+    if (editing.design_json) {
+      setDesign(editing.design_json);
+    } else if (designQuery.data) {
+      setDesign(designQuery.data);
+    }
+  }, [designQuery.data, editing, editorOpen]);
+
+  useEffect(() => {
+    if (!editorOpen || !design || editorChannel !== 'email') return;
+    const nextBody =
+      design.mode === 'legacy'
+        ? design.legacy_html || ''
+        : renderEmailDesignHtml(design, branding, { forEditor: false });
+    if (nextBody !== form.getValues('body_html')) {
+      form.setValue('body_html', nextBody, { shouldDirty: true });
+    }
+  }, [branding, design, editorChannel, editorOpen, form]);
+
   const employeesQuery = useQuery({
     queryKey: ['employees', organizationId, 'preview-picker'],
     queryFn: () => employeesApi.list(organizationId as string, { per_page: 200 }),
@@ -263,16 +310,56 @@ export function TemplatesPage() {
   const saveMutation = useMutation({
     mutationFn: async (values: TemplateFormValues) => {
       if (!organizationId) throw new Error('No organization');
-      if (editing) return templatesApi.update(organizationId, editing.id, values);
-      return templatesApi.create(organizationId, values as EmailTemplateCreate);
+      const payload = {
+        ...values,
+        design_json: editorChannel === 'email' && design ? design : undefined,
+      };
+      if (editing) return templatesApi.update(organizationId, editing.id, payload);
+      return templatesApi.create(organizationId, payload as EmailTemplateCreate);
     },
     onSuccess: () => {
       toast.success(editing ? 'تم تحديث القالب' : 'تم إنشاء القالب');
       setEditorOpen(false);
       setEditing(null);
+      setDesign(null);
+      setTestResult(null);
       void queryClient.invalidateQueries({ queryKey: ['templates'] });
+      void queryClient.invalidateQueries({ queryKey: ['template-design'] });
     },
     onError: (error) => toast.error(errorMessage(error)),
+  });
+
+  const testSendMutation = useMutation({
+    mutationFn: async () => {
+      if (!organizationId) throw new Error('No organization');
+      const subject = form.getValues('subject').trim();
+      if (!subject) throw new Error('أضف موضوع الرسالة أولاً');
+      return templatesApi.sendTest(organizationId, {
+        subject,
+        body_html: form.getValues('body_html'),
+        design_json: design ?? undefined,
+        channel: 'email',
+      });
+    },
+    onSuccess: (result) => {
+      setTestResult(result);
+      if (result.success) {
+        toast.success(`تم إرسال نسخة تجريبية إلى ${result.to_email}`);
+      } else {
+        toast.error(result.error || 'تعذّر إرسال النسخة التجريبية');
+      }
+    },
+    onError: (error) => {
+      const message = errorMessage(error);
+      setTestResult({
+        success: false,
+        message_id: null,
+        error: message,
+        to_email: user?.email ?? '',
+        preview_html: null,
+      });
+      toast.error(message);
+    },
   });
 
   const aiMutation = useMutation({
@@ -289,6 +376,7 @@ export function TemplatesPage() {
       if (!form.getValues('name').trim()) {
         form.setValue('name', generated.subject.slice(0, 120), { shouldDirty: true });
       }
+      setDesign(legacyDesign(generated.body_html, branding?.primary_color));
       setAiError(null);
       toast.success(`تم توليد القالب بالذكاء الاصطناعي (${generated.provider ?? 'AI'})`);
     },
@@ -377,7 +465,13 @@ export function TemplatesPage() {
     setAiDepartment('');
     setAiScenario('');
     setAiError(null);
-    form.reset(EMPTY_TEMPLATE);
+    setTestResult(null);
+    const initialDesign = createDefaultDesign(branding);
+    setDesign(initialDesign);
+    form.reset({
+      ...EMPTY_TEMPLATE,
+      body_html: renderEmailDesignHtml(initialDesign, branding, { forEditor: false }),
+    });
     setEditorOpen(true);
   }
 
@@ -386,6 +480,8 @@ export function TemplatesPage() {
     setAiDepartment('');
     setAiScenario('');
     setAiError(null);
+    setTestResult(null);
+    setDesign(template.design_json ?? null);
     form.reset({
       name: template.name,
       subject: template.subject,
@@ -646,221 +742,216 @@ export function TemplatesPage() {
       )}
 
       {/* ------------------------------ editor ------------------------------ */}
-      <Dialog open={editorOpen} onClose={() => setEditorOpen(false)} maxWidth="lg" fullWidth>
-        <form onSubmit={form.handleSubmit((values) => saveMutation.mutate(values))}>
-          <DialogTitle sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+      <Dialog
+        open={editorOpen}
+        onClose={() => {
+          setEditorOpen(false);
+          setEditing(null);
+          setDesign(null);
+          setTestResult(null);
+        }}
+        fullScreen
+        PaperProps={{ sx: { bgcolor: '#070D18' } }}
+      >
+        <form
+          onSubmit={form.handleSubmit((values) => saveMutation.mutate(values))}
+          style={{ display: 'flex', flexDirection: 'column', height: '100%' }}
+        >
+          <DialogTitle sx={{ display: 'flex', alignItems: 'center', gap: 1, py: 1.5 }}>
             <FileText size={18} />
             {editing ? `تعديل القالب — ${editing.name}` : 'قالب جديد'}
-          </DialogTitle>
-          <DialogContent dividers>
-            <Box
+            <Chip
+              size="small"
+              label="Visual Builder"
               sx={{
-                mb: 2.5,
-                p: { xs: 1.75, sm: 2 },
-                borderRadius: 3,
-                border: '1px solid rgba(0,240,255,.22)',
-                background:
-                  'radial-gradient(circle at 92% 0%, rgba(0,240,255,.13), transparent 44%), linear-gradient(145deg, rgba(20,35,58,.92), rgba(8,14,26,.9))',
+                ml: 0.5,
+                height: 21,
+                fontSize: '0.6rem',
+                fontWeight: 900,
+                color: '#00F0FF',
+                bgcolor: 'rgba(0,240,255,.08)',
+                border: '1px solid rgba(0,240,255,.24)',
               }}
-            >
-              <Stack direction="row" alignItems="center" spacing={0.8} sx={{ mb: 0.4 }}>
-                <Sparkles size={17} color="#00F0FF" />
-                <Typography sx={{ fontWeight: 800, fontSize: '0.92rem' }}>
-                  توليد القالب بالذكاء الاصطناعي
-                </Typography>
-                <Chip
-                  size="small"
-                  label="AI"
-                  sx={{
-                    height: 20,
-                    fontSize: '0.58rem',
-                    fontWeight: 900,
-                    color: '#00F0FF',
-                    bgcolor: 'rgba(0,240,255,.1)',
-                    border: '1px solid rgba(0,240,255,.28)',
-                  }}
-                />
-              </Stack>
-              <Typography variant="caption" sx={{ display: 'block', color: 'text.secondary', mb: 1.4 }}>
-                يُستخدم قطاع مؤسستك تلقائياً في الطلب. راجع الناتج قبل الحفظ؛ لن يُنشأ القالب
-                تلقائياً.
-              </Typography>
-              <Grid container spacing={1.5}>
-                <Grid item xs={12} sm={5}>
-                  <TextField
-                    size="small"
-                    fullWidth
-                    label="القسم المستهدف"
-                    placeholder="مثال: الموارد البشرية أو المالية"
-                    value={aiDepartment}
-                    onChange={(event) => setAiDepartment(event.target.value)}
-                    disabled={aiMutation.isPending}
-                  />
-                </Grid>
-                <Grid item xs={12} sm={7}>
-                  <TextField
-                    size="small"
-                    fullWidth
-                    multiline
-                    minRows={2}
-                    label="السيناريو المطلوب"
-                    placeholder="مثال: رسالة داخلية عاجلة عن تحديث بيانات الموظفين"
-                    value={aiScenario}
-                    onChange={(event) => setAiScenario(event.target.value)}
-                    disabled={aiMutation.isPending}
-                  />
-                </Grid>
-              </Grid>
-              <Stack
-                direction={{ xs: 'column', sm: 'row' }}
-                spacing={1}
-                alignItems={{ xs: 'stretch', sm: 'center' }}
-                sx={{ mt: 1.5 }}
+            />
+            <Box sx={{ flex: 1 }} />
+            <Typography variant="caption" sx={{ color: 'text.secondary', display: { xs: 'none', md: 'block' } }}>
+              حفظ التصميم يُعيد توليد HTML الآمن تلقائياً
+            </Typography>
+          </DialogTitle>
+          <DialogContent dividers sx={{ p: { xs: 1.25, md: 2.5 }, bgcolor: '#070D18' }}>
+            <Box sx={{ maxWidth: 1500, mx: 'auto' }}>
+              <Box
+                sx={{
+                  mb: 2.5,
+                  p: { xs: 1.75, sm: 2 },
+                  borderRadius: 3,
+                  border: '1px solid rgba(0,240,255,.22)',
+                  background:
+                    'radial-gradient(circle at 92% 0%, rgba(0,240,255,.13), transparent 44%), linear-gradient(145deg, rgba(20,35,58,.92), rgba(8,14,26,.9))',
+                }}
               >
-                <Button
-                  type="button"
-                  variant="contained"
-                  startIcon={
-                    aiMutation.isPending ? (
-                      <CircularProgress size={14} color="inherit" />
-                    ) : undefined
-                  }
-                  disabled={
-                    aiMutation.isPending ||
-                    !aiDepartment.trim() ||
-                    !aiScenario.trim()
-                  }
-                  onClick={() => {
-                    setAiError(null);
-                    aiMutation.mutate();
-                  }}
-                  sx={{
-                    background: 'linear-gradient(135deg, #00F0FF 0%, #7C4DFF 100%)',
-                    color: '#04101C',
-                    fontWeight: 900,
-                    '&:hover': {
-                      background: 'linear-gradient(135deg, #5CF6FF 0%, #9B75FF 100%)',
-                    },
-                  }}
-                >
-                  {aiMutation.isPending ? 'جارٍ توليد القالب…' : '✨ Generate with AI'}
-                </Button>
-                <Typography variant="caption" sx={{ color: 'text.secondary' }}>
-                  يعبّئ الموضوع والجسم ومستوى الصعوبة تلقائياً.
+                <Stack direction="row" alignItems="center" spacing={0.8} sx={{ mb: 0.4 }}>
+                  <Sparkles size={17} color="#00F0FF" />
+                  <Typography sx={{ fontWeight: 800, fontSize: '0.92rem' }}>
+                    توليد القالب بالذكاء الاصطناعي
+                  </Typography>
+                  <Chip
+                    size="small"
+                    label="AI"
+                    sx={{
+                      height: 20,
+                      fontSize: '0.58rem',
+                      fontWeight: 900,
+                      color: '#00F0FF',
+                      bgcolor: 'rgba(0,240,255,.1)',
+                      border: '1px solid rgba(0,240,255,.28)',
+                    }}
+                  />
+                </Stack>
+                <Typography variant="caption" sx={{ display: 'block', color: 'text.secondary', mb: 1.4 }}>
+                  يُستخدم قطاع مؤسستك تلقائياً في الطلب. راجع الناتج قبل الحفظ؛ لن يُنشأ القالب
+                  تلقائياً.
                 </Typography>
-              </Stack>
-              {aiError ? (
-                <Alert severity="error" sx={{ mt: 1.5 }}>
-                  {aiError}
-                </Alert>
-              ) : null}
-            </Box>
-            <Grid container spacing={2.5} sx={{ mt: 0 }}>
-              <Grid item xs={12} md={7}>
-                <Stack spacing={2}>
+                <Grid container spacing={1.5}>
+                  <Grid item xs={12} sm={5}>
+                    <TextField
+                      size="small"
+                      fullWidth
+                      label="القسم المستهدف"
+                      placeholder="مثال: الموارد البشرية أو المالية"
+                      value={aiDepartment}
+                      onChange={(event) => setAiDepartment(event.target.value)}
+                      disabled={aiMutation.isPending}
+                    />
+                  </Grid>
+                  <Grid item xs={12} sm={7}>
+                    <TextField
+                      size="small"
+                      fullWidth
+                      multiline
+                      minRows={2}
+                      label="السيناريو المطلوب"
+                      placeholder="مثال: رسالة داخلية عاجلة عن تحديث بيانات الموظفين"
+                      value={aiScenario}
+                      onChange={(event) => setAiScenario(event.target.value)}
+                      disabled={aiMutation.isPending}
+                    />
+                  </Grid>
+                </Grid>
+                <Stack
+                  direction={{ xs: 'column', sm: 'row' }}
+                  spacing={1}
+                  alignItems={{ xs: 'stretch', sm: 'center' }}
+                  sx={{ mt: 1.5 }}
+                >
+                  <Button
+                    type="button"
+                    variant="contained"
+                    startIcon={
+                      aiMutation.isPending ? (
+                        <CircularProgress size={14} color="inherit" />
+                      ) : undefined
+                    }
+                    disabled={aiMutation.isPending || !aiDepartment.trim() || !aiScenario.trim()}
+                    onClick={() => {
+                      setAiError(null);
+                      aiMutation.mutate();
+                    }}
+                    sx={{
+                      background: 'linear-gradient(135deg, #00F0FF 0%, #7C4DFF 100%)',
+                      color: '#04101C',
+                      fontWeight: 900,
+                      '&:hover': {
+                        background: 'linear-gradient(135deg, #5CF6FF 0%, #9B75FF 100%)',
+                      },
+                    }}
+                  >
+                    {aiMutation.isPending ? 'جارٍ توليد القالب…' : '✨ Generate with AI'}
+                  </Button>
+                  <Typography variant="caption" sx={{ color: 'text.secondary' }}>
+                    يعبّئ الموضوع والجسم ومستوى الصعوبة تلقائياً.
+                  </Typography>
+                </Stack>
+                {aiError ? (
+                  <Alert severity="error" sx={{ mt: 1.5 }}>
+                    {aiError}
+                  </Alert>
+                ) : null}
+              </Box>
+
+              <Grid container spacing={2} sx={{ mb: 2 }}>
+                <Grid item xs={12} md={4}>
                   <TextField label="اسم القالب" required fullWidth {...form.register('name', { required: true })} />
+                </Grid>
+                <Grid item xs={12} md={2}>
                   <Controller
                     name="channel"
                     control={form.control}
                     render={({ field }) => (
                       <TextField
                         select
-                        label="قناة القالب"
+                        fullWidth
+                        label="القناة"
                         value={field.value}
                         onChange={(event) => {
                           const next = event.target.value as 'email' | 'sms' | 'whatsapp';
-                          const currentBody = form.getValues('body_html');
                           field.onChange(next);
-                          if (!editing) {
-                            if (next !== 'email' && currentBody.trim() === DEFAULT_BODY.trim()) {
-                              form.setValue('body_html', DEFAULT_TEXT);
-                            } else if (
-                              next === 'email' &&
-                              currentBody.trim() === DEFAULT_TEXT.trim()
-                            ) {
-                              form.setValue('body_html', DEFAULT_BODY);
+                          if (next !== 'email') {
+                            const current = form.getValues('body_html');
+                            const text = plainText(current);
+                            if (!text || /<[a-z][\s\S]*>/i.test(current)) {
+                              form.setValue('body_html', text || DEFAULT_TEXT, { shouldDirty: true });
                             }
+                          } else if (!design) {
+                            const initial = createDefaultDesign(branding);
+                            setDesign(initial);
+                            form.setValue(
+                              'body_html',
+                              renderEmailDesignHtml(initial, branding, { forEditor: false }),
+                              { shouldDirty: true },
+                            );
                           }
                         }}
-                        helperText="يجب أن تطابق قناة القالب قناة الحملة عند الإطلاق."
                       >
-                        <MenuItem value="email">بريد إلكتروني (HTML)</MenuItem>
-                        <MenuItem value="sms">SMS (نص عادي)</MenuItem>
-                        <MenuItem value="whatsapp">واتساب (نص عادي)</MenuItem>
+                        <MenuItem value="email">بريد إلكتروني</MenuItem>
+                        <MenuItem value="sms">SMS</MenuItem>
+                        <MenuItem value="whatsapp">واتساب</MenuItem>
                       </TextField>
                     )}
                   />
+                </Grid>
+                <Grid item xs={12} md={6}>
                   <TextField
                     label={editorChannel === 'email' ? 'موضوع الرسالة' : 'العنوان الداخلي / سطر أول'}
                     required
                     fullWidth
                     {...form.register('subject', { required: true })}
                   />
-                  <TextField
-                    label={
-                      editorChannel === 'email'
-                        ? 'جسم الرسالة (HTML)'
-                        : 'نص الرسالة (نص عادي — يُفضّل عدم تجاوز 1000 حرف)'
-                    }
-                    multiline
-                    minRows={12}
-                    fullWidth
-                    helperText={
-                      editorChannel === 'email'
-                        ? undefined
-                        : 'اكتب نصاً عادياً. يُضاف رابط التتبع تلقائياً إذا لم تضعه، ويُحوَّل أي HTML إلى نص عند الإرسال.'
-                    }
-                    inputRef={(node) => {
-                      bodyRef.current = node;
-                      form.register('body_html', { required: true }).ref(node);
-                    }}
-                    InputProps={{
-                      sx: {
-                        fontFamily: 'Consolas, monospace',
-                        fontSize: '0.78rem',
-                        direction: editorChannel === 'email' ? 'ltr' : 'rtl',
-                      },
-                    }}
+                </Grid>
+                <Grid item xs={12} md={7}>
+                  <Typography variant="caption" sx={{ color: 'text.secondary' }}>
+                    مستوى الصعوبة: {form.watch('difficulty_level')}
+                  </Typography>
+                  <Controller
+                    name="difficulty_level"
+                    control={form.control}
+                    render={({ field }) => (
+                      <Slider
+                        value={field.value}
+                        min={1}
+                        max={10}
+                        step={1}
+                        marks={[
+                          { value: 1, label: '1' },
+                          { value: 5, label: '5' },
+                          { value: 10, label: '10' },
+                        ]}
+                        onChange={(_event, value) => field.onChange(value as number)}
+                      />
+                    )}
                   />
-                  <Box>
-                    <Typography variant="caption" sx={{ color: 'text.secondary' }}>
-                      إدراج متغيّر
-                    </Typography>
-                    <Stack direction="row" spacing={0.5} sx={{ flexWrap: 'wrap', gap: 0.5, mt: 0.5 }}>
-                      {VARIABLES.map((variable) => (
-                        <Chip
-                          key={variable}
-                          size="small"
-                          label={`{{${variable}}}`}
-                          onClick={() => insertVariable(variable)}
-                          clickable
-                        />
-                      ))}
-                    </Stack>
-                  </Box>
-                  <Box>
-                    <Typography variant="caption" sx={{ color: 'text.secondary' }}>
-                      مستوى الصعوبة: {form.watch('difficulty_level')}
-                    </Typography>
-                    <Controller
-                      name="difficulty_level"
-                      control={form.control}
-                      render={({ field }) => (
-                        <Slider
-                          value={field.value}
-                          min={1}
-                          max={10}
-                          step={1}
-                          marks={[
-                            { value: 1, label: '1' },
-                            { value: 5, label: '5' },
-                            { value: 10, label: '10' },
-                          ]}
-                          onChange={(_event, value) => field.onChange(value as number)}
-                        />
-                      )}
-                    />
-                  </Box>
+                </Grid>
+                <Grid item xs={12} md={5} sx={{ display: 'flex', alignItems: 'center' }}>
                   <Controller
                     name="is_active"
                     control={form.control}
@@ -871,34 +962,67 @@ export function TemplatesPage() {
                       />
                     )}
                   />
-                </Stack>
+                </Grid>
               </Grid>
-              <Grid item xs={12} md={5}>
-                <Stack direction="row" alignItems="center" spacing={0.75} sx={{ mb: 1 }}>
-                  <Eye size={15} color="#00F0FF" />
-                  <Typography sx={{ fontWeight: 800, fontSize: '0.9rem' }}>معاينة مباشرة</Typography>
-                </Stack>
-                <Typography variant="caption" sx={{ display: 'block', color: 'text.secondary', mb: 1 }}>
-                  البيانات المعروضة تجريبية. استخدم «معاينة» لرؤية القالب ببيانات موظف حقيقي.
-                </Typography>
-                <Box
-                  sx={{
-                    border: '1px solid rgba(255,255,255,.10)',
-                    borderRadius: 2,
-                    overflow: 'hidden',
-                    bgcolor: editorChannel === 'email' ? '#fff' : 'rgba(3,8,18,.82)',
-                    height: 430,
-                  }}
-                >
-                  {editorChannel === 'email' ? (
-                    <iframe
-                      title="Live template preview"
-                      srcDoc={localPreview(form.watch('body_html'))}
-                      sandbox=""
-                      style={{ width: '100%', height: '100%', border: 0 }}
+
+              {editorChannel === 'email' ? (
+                design ? (
+                  <EmailVisualEditor
+                    design={design}
+                    branding={branding}
+                    onChange={setDesign}
+                    subject={form.watch('subject') ?? ''}
+                    onTestSend={() => {
+                      setTestResult(null);
+                      testSendMutation.mutate();
+                    }}
+                    testSending={testSendMutation.isPending}
+                    testResult={testResult}
+                    disabled={saveMutation.isPending}
+                  />
+                ) : designQuery.error ? (
+                  <Alert severity="error">{errorMessage(designQuery.error)}</Alert>
+                ) : (
+                  <LoadingState label="جارٍ تحميل محرر التصميم…" />
+                )
+              ) : (
+                <Grid container spacing={2}>
+                  <Grid item xs={12} md={7}>
+                    <Controller
+                      name="body_html"
+                      control={form.control}
+                      render={({ field }) => (
+                        <TextField
+                          label="نص الرسالة (نص عادي — يُفضّل عدم تجاوز 1000 حرف)"
+                          multiline
+                          minRows={14}
+                          fullWidth
+                          value={field.value}
+                          onChange={field.onChange}
+                          helperText="اكتب نصاً عادياً. يُضاف رابط التتبع تلقائياً إذا لم تضعه، ويُحوَّل أي HTML إلى نص عند الإرسال."
+                          inputRef={(node) => {
+                            bodyRef.current = node;
+                            field.ref(node);
+                          }}
+                          InputProps={{ sx: { direction: 'rtl', fontSize: '0.86rem' } }}
+                        />
+                      )}
                     />
-                  ) : (
-                    <Box sx={{ height: '100%', overflow: 'auto', p: 2.5 }}>
+                  </Grid>
+                  <Grid item xs={12} md={5}>
+                    <Typography variant="caption" sx={{ display: 'block', color: 'text.secondary', mb: 1 }}>
+                      معاينة نصية
+                    </Typography>
+                    <Box
+                      sx={{
+                        border: '1px solid rgba(255,255,255,.12)',
+                        borderRadius: 2,
+                        bgcolor: 'rgba(3,8,18,.82)',
+                        height: 360,
+                        overflow: 'auto',
+                        p: 2.5,
+                      }}
+                    >
                       <Typography
                         component="pre"
                         sx={{
@@ -915,14 +1039,102 @@ export function TemplatesPage() {
                         {plainText(applySampleVariables(form.watch('body_html')))}
                       </Typography>
                     </Box>
-                  )}
-                </Box>
-              </Grid>
-            </Grid>
+                  </Grid>
+                </Grid>
+              )}
+
+              {editorChannel === 'email' ? (
+                <Accordion
+                  disableGutters
+                  sx={{
+                    mt: 2,
+                    bgcolor: 'rgba(255,255,255,.018)',
+                    border: '1px solid rgba(255,255,255,.08)',
+                    borderRadius: 2,
+                    '&:before': { display: 'none' },
+                  }}
+                >
+                  <AccordionSummary expandIcon={<ChevronDown size={17} />}>
+                    <Stack direction="row" spacing={0.7} alignItems="center">
+                      <Code2 size={15} color="#94A3B8" />
+                      <Typography sx={{ fontSize: '0.8rem', fontWeight: 700 }}>
+                        HTML المتقدم (احتياطي للمطوّرين)
+                      </Typography>
+                    </Stack>
+                  </AccordionSummary>
+                  <AccordionDetails>
+                    <Typography variant="caption" sx={{ display: 'block', color: 'text.secondary', mb: 1 }}>
+                      تعديل HTML مباشرةً يحوّل القالب إلى وضع HTML القديم. التصميم المرئي هو
+                      المصدر الافتراضي، ويُعاد توليد HTML الآمن عند الحفظ.
+                    </Typography>
+                    <Controller
+                      name="body_html"
+                      control={form.control}
+                      render={({ field }) => (
+                        <TextField
+                          label="جسم الرسالة (HTML)"
+                          multiline
+                          minRows={10}
+                          fullWidth
+                          value={field.value}
+                          onChange={(event) => {
+                            field.onChange(event);
+                            setDesign(legacyDesign(event.target.value, branding?.primary_color));
+                          }}
+                          inputRef={(node) => {
+                            bodyRef.current = node;
+                            field.ref(node);
+                          }}
+                          InputProps={{
+                            sx: {
+                              fontFamily: 'Consolas, monospace',
+                              fontSize: '0.78rem',
+                              direction: 'ltr',
+                            },
+                          }}
+                        />
+                      )}
+                    />
+                    <Box sx={{ mt: 1.25 }}>
+                      <Typography variant="caption" sx={{ color: 'text.secondary' }}>
+                        إدراج متغيّر في موضع المؤشر
+                      </Typography>
+                      <Stack direction="row" spacing={0.5} sx={{ flexWrap: 'wrap', gap: 0.5, mt: 0.5 }}>
+                        {VARIABLES.map((variable) => (
+                          <Chip
+                            key={variable}
+                            size="small"
+                            label={`{{${variable}}}`}
+                            onClick={() => insertVariable(variable)}
+                            clickable
+                          />
+                        ))}
+                      </Stack>
+                    </Box>
+                  </AccordionDetails>
+                </Accordion>
+              ) : null}
+            </Box>
           </DialogContent>
-          <DialogActions sx={{ p: 2 }}>
-            <Button onClick={() => setEditorOpen(false)}>إلغاء</Button>
-            <Button type="submit" variant="contained" disabled={saveMutation.isPending}>
+          <DialogActions sx={{ p: 2, bgcolor: '#070D18' }}>
+            <Button
+              onClick={() => {
+                setEditorOpen(false);
+                setEditing(null);
+                setDesign(null);
+                setTestResult(null);
+              }}
+            >
+              إلغاء
+            </Button>
+            <Button
+              type="submit"
+              variant="contained"
+              disabled={
+                saveMutation.isPending ||
+                (editorChannel === 'email' && (!design || designQuery.isLoading))
+              }
+            >
               {editing ? 'حفظ التعديلات' : 'إنشاء القالب'}
             </Button>
           </DialogActions>

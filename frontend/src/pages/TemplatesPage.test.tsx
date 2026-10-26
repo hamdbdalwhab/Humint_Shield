@@ -7,12 +7,13 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 
-import { aiApi, employeesApi, templatesApi } from '@/api/endpoints';
+import { aiApi, brandingApi, employeesApi, templatesApi } from '@/api/endpoints';
 import { TemplatesPage } from '@/pages/TemplatesPage';
 import type { AIGeneratedTemplate } from '@/types';
 
 jest.mock('@/api/endpoints', () => ({
   aiApi: { generateTemplate: jest.fn() },
+  brandingApi: { get: jest.fn() },
   employeesApi: { list: jest.fn() },
   templatesApi: {
     list: jest.fn(),
@@ -20,6 +21,8 @@ jest.mock('@/api/endpoints', () => ({
     update: jest.fn(),
     remove: jest.fn(),
     preview: jest.fn(),
+    design: jest.fn(),
+    sendTest: jest.fn(),
   },
 }));
 
@@ -30,6 +33,7 @@ jest.mock('@/hooks/useAuth', () => ({
 const aiMock = aiApi.generateTemplate as jest.Mock;
 const templatesListMock = templatesApi.list as jest.Mock;
 const employeesListMock = employeesApi.list as jest.Mock;
+const brandingGetMock = brandingApi.get as jest.Mock;
 
 function renderPage() {
   const queryClient = new QueryClient({
@@ -48,6 +52,15 @@ describe('TemplatesPage AI generation', () => {
   beforeEach(() => {
     templatesListMock.mockResolvedValue([]);
     employeesListMock.mockResolvedValue({ items: [], total: 0, page: 1, per_page: 200 });
+    brandingGetMock.mockResolvedValue({
+      organization_id: 'org-1',
+      company_name: 'Acme',
+      primary_color: '#0F6CBD',
+      support_email: 'support@acme.test',
+      logo_url: null,
+      has_logo: false,
+      updated_at: null,
+    });
   });
 
   it('calls the AI endpoint, shows loading, and autofills the form', async () => {

@@ -20,6 +20,13 @@ from urllib.parse import quote, urlencode
 
 from app.config import get_settings
 from app.logging_config import get_logger
+from app.schemas.email_design import EmailDesign
+from app.services.email_design import (
+    apply_branding_placeholders,
+    branding_from_organization,
+    render_email_design,
+)
+from app.services.html_sanitizer import sanitize_email_html
 
 logger = get_logger(__name__)
 
@@ -144,13 +151,17 @@ class TemplatePersonalizer:
         uid = str(tracking_uuid)
         department = getattr(employee, "department", None) or "General"
         manager_name = self._resolve_manager_name(employee)
+        branding = branding_from_organization(organization, base_url)
 
         variables: dict[str, str] = {
             "first_name": getattr(employee, "first_name", "") or "there",
             "last_name": getattr(employee, "last_name", "") or "",
             "email": getattr(employee, "email", "") or "",
             "department": department,
-            "company_name": getattr(organization, "name", "") or "Our Company",
+            "company_name": branding.company_name,
+            "company_logo_url": branding.logo_url or "",
+            "primary_color": branding.primary_color,
+            "support_email": branding.support_email or "",
             "manager_name": manager_name,
             "job_title": getattr(employee, "job_title", "") or "Employee",
             "tracking_url": f"{base_url}/phish/{uid}",
@@ -193,13 +204,58 @@ class TemplatePersonalizer:
         variables = self.build_variables(
             template, employee, organization, tracking_uuid, base_url, extra_vars
         )
+        branding = branding_from_organization(organization, base_url)
 
         subject = self._render_text(getattr(template, "subject", "") or "", variables)
-        body = self._render_text(getattr(template, "body_html", "") or "", variables)
+        body = self._base_html(template, organization, base_url)
+        body = apply_branding_placeholders(body, branding)
+        body = self._render_text(body, variables)
         body = self.rewrite_links(body, str(tracking_uuid), base_url)
         body = self.append_tracking_pixel(body, str(tracking_uuid), base_url)
+        body = sanitize_email_html(body)
 
         return {"subject": subject, "html_content": body}
+
+    def personalize_test(
+        self,
+        template: Any,
+        employee: Any,
+        organization: Any,
+        base_url: str | None = None,
+    ) -> dict[str, str]:
+        """Render a test message without a tracking pixel or live redirects.
+
+        The administrator wants to see exactly how the current editor design
+        looks in Gmail/Outlook.  Tracking URLs are replaced with ``#`` so a test
+        message can never record an event or leak a real recipient UUID.
+
+        Args:
+            template: Template-like object with ``subject`` and design/body.
+            employee: Dummy recipient used for merge-tag preview values.
+            organization: Owning organization (for branding).
+            base_url: Optional base URL override.
+
+        Returns:
+            ``{"subject": str, "html_content": str}``.
+        """
+        base_url = (base_url or self.settings.base_url).rstrip("/")
+        preview_uuid = uuid.uuid4()
+        variables = self.build_variables(
+            template,
+            employee,
+            organization,
+            preview_uuid,
+            base_url,
+            {"tracking_url": "#", "tracking_uuid": "test-preview"},
+        )
+        branding = branding_from_organization(organization, base_url)
+        body = self._base_html(template, organization, base_url)
+        body = apply_branding_placeholders(body, branding)
+        body = self._render_text(body, variables)
+        return {
+            "subject": self._render_text(getattr(template, "subject", "") or "", variables),
+            "html_content": sanitize_email_html(body),
+        }
 
     def personalize_text(
         self,
@@ -240,9 +296,10 @@ class TemplatePersonalizer:
         subject = self._render_text(
             getattr(template, "subject", "") or "", variables, escape=False
         ).strip()
-        body = self._render_text(
-            getattr(template, "body_html", "") or "", variables, escape=False
-        )
+        branding = branding_from_organization(organization, base_url)
+        body = self._base_html(template, organization, base_url)
+        body = apply_branding_placeholders(body, branding)
+        body = self._render_text(body, variables, escape=False)
         text = html_to_text(body)
         if not text:
             text = subject
@@ -343,6 +400,31 @@ class TemplatePersonalizer:
     # ------------------------------------------------------------------ #
     # Internals
     # ------------------------------------------------------------------ #
+    def _base_html(self, template: Any, organization: Any, base_url: str) -> str:
+        """Return the design-rendered HTML, falling back to stored HTML.
+
+        Args:
+            template: Template-like object.
+            organization: Owning organization.
+            base_url: Public application base URL.
+
+        Returns:
+            Full or fragment HTML before personalisation.
+        """
+        raw_design = getattr(template, "design_json", None)
+        if isinstance(raw_design, dict):
+            try:
+                design = EmailDesign.model_validate(raw_design)
+                branding = branding_from_organization(organization, base_url)
+                return render_email_design(design, branding)
+            except Exception as exc:  # noqa: BLE001 - never break a send
+                logger.warning(
+                    "template_design_render_failed",
+                    template_id=str(getattr(template, "id", "")),
+                    error=str(exc),
+                )
+        return getattr(template, "body_html", "") or ""
+
     @staticmethod
     def _render_text(text: str, variables: dict[str, str], escape: bool = True) -> str:
         """Substitute ``{{var}}`` tokens in ``text``.

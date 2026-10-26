@@ -8,6 +8,8 @@ import type {
   AIGeneratedTemplate,
   AIGenerateTemplateRequest,
   Assignment,
+  Branding,
+  BrandingUpdate,
   BrevoVerification,
   BulkImportResult,
   Campaign,
@@ -16,6 +18,7 @@ import type {
   CampaignRecipientDetail,
   CampaignResults,
   DashboardSummary,
+  EmailDesign,
   EmailTemplate,
   EmailTemplateCreate,
   EmailTemplateUpdate,
@@ -31,6 +34,8 @@ import type {
   RuntimeConfig,
   ReportSafeResponse,
   TemplatePreview,
+  TemplateTestSendRequest,
+  TemplateTestSendResult,
   TimelineEvent,
   TokenResponse,
   TrackingCompletePayload,
@@ -152,6 +157,52 @@ export const templatesApi = {
     const { data } = await http.post<TemplatePreview>(
       `/api/v1/organizations/${orgId}/email-templates/${id}/preview`,
       { employee_id: employeeId },
+    );
+    return data;
+  },
+  async design(orgId: string, id: string): Promise<EmailDesign> {
+    const { data } = await http.get<EmailDesign>(
+      `/api/v1/organizations/${orgId}/email-templates/${id}/design`,
+    );
+    return data;
+  },
+  async sendTest(
+    orgId: string,
+    payload: TemplateTestSendRequest,
+  ): Promise<TemplateTestSendResult> {
+    const { data } = await http.post<TemplateTestSendResult>(
+      `/api/v1/organizations/${orgId}/email-templates/test-send`,
+      payload,
+    );
+    return data;
+  },
+};
+
+export const brandingApi = {
+  async get(orgId: string): Promise<Branding> {
+    const { data } = await http.get<Branding>(`/api/v1/organizations/${orgId}/branding`);
+    return data;
+  },
+  async update(orgId: string, payload: BrandingUpdate): Promise<Branding> {
+    const { data } = await http.put<Branding>(
+      `/api/v1/organizations/${orgId}/branding`,
+      payload,
+    );
+    return data;
+  },
+  async uploadLogo(orgId: string, file: File): Promise<Branding> {
+    const form = new FormData();
+    form.append('file', file);
+    const { data } = await http.post<Branding>(
+      `/api/v1/organizations/${orgId}/branding/logo`,
+      form,
+      { headers: { 'Content-Type': 'multipart/form-data' } },
+    );
+    return data;
+  },
+  async removeLogo(orgId: string): Promise<Branding> {
+    const { data } = await http.delete<Branding>(
+      `/api/v1/organizations/${orgId}/branding/logo`,
     );
     return data;
   },

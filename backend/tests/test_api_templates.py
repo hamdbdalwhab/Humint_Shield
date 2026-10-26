@@ -59,6 +59,32 @@ async def test_create_and_get_template(client, auth_headers, organization) -> No
     assert fetched.json()["name"] == "Custom Phish"
 
 
+async def test_create_legacy_template_sanitizes_html(
+    client, auth_headers, organization
+) -> None:
+    """Legacy body_html is sanitised before storage, not only at send time."""
+    response = await client.post(
+        f"/api/v1/organizations/{organization.id}/email-templates",
+        json={
+            "name": "Unsafe legacy",
+            "subject": "Hello",
+            "body_html": (
+                '<p>Hello</p><script>alert(1)</script>'
+                '<a href="javascript:alert(1)">click</a>'
+            ),
+            "difficulty_level": 5,
+        },
+        headers=auth_headers,
+    )
+    assert response.status_code == 201
+    payload = response.json()
+    assert "Hello" in payload["body_html"]
+    assert "<script" not in payload["body_html"].lower()
+    assert "javascript:" not in payload["body_html"].lower()
+    assert payload["design_json"]["mode"] == "legacy"
+    assert "javascript:" not in payload["design_json"]["legacy_html"].lower()
+
+
 async def test_create_template_validation(client, auth_headers, organization) -> None:
     """Difficulty outside 1..10 is rejected."""
     response = await client.post(

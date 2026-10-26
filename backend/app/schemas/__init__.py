@@ -33,13 +33,17 @@ from app.schemas.campaign import (
     TrainingInteractionResponse,
     TrainingSubmission,
 )
+from app.schemas.email_design import EmailDesign
 from app.schemas.email_template import (
     EmailTemplateCreate,
     EmailTemplatePublic,
     EmailTemplateUpdate,
     TemplatePreviewRequest,
     TemplatePreviewResponse,
+    TemplateTestSendRequest,
+    TemplateTestSendResponse,
 )
+from app.schemas.organization import BrandingPublic, BrandingUpdate
 from app.schemas.live import (
     LiveBoard,
     LiveCampaign,
@@ -72,6 +76,8 @@ __all__ = [
     "AIGenerateTemplateRequest",
     "AssignmentCreate",
     "AssignmentPublic",
+    "BrandingPublic",
+    "BrandingUpdate",
     "BulkImportResult",
     "CampaignActivity",
     "CampaignCreate",
@@ -82,6 +88,7 @@ __all__ = [
     "CampaignStats",
     "CampaignUpdate",
     "DashboardSummary",
+    "EmailDesign",
     "EmailTemplateCreate",
     "EmailTemplatePublic",
     "EmailTemplateUpdate",
@@ -105,6 +112,8 @@ __all__ = [
     "SubmissionPublic",
     "TemplatePreviewRequest",
     "TemplatePreviewResponse",
+    "TemplateTestSendRequest",
+    "TemplateTestSendResponse",
     "TestEmailRequest",
     "TimelineEvent",
     "TokenResponse",

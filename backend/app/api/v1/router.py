@@ -6,6 +6,7 @@ from fastapi import APIRouter
 from app.api.v1 import (
     ai,
     auth,
+    branding,
     campaigns,
     email_templates,
     employees,
@@ -19,6 +20,8 @@ from app.api.v1.webhooks import vonage as vonage_webhooks
 api_router = APIRouter(prefix="/api/v1")
 api_router.include_router(auth.router)
 api_router.include_router(ai.router)
+api_router.include_router(branding.public_router)
+api_router.include_router(branding.router)
 api_router.include_router(employees.router)
 api_router.include_router(email_templates.router)
 api_router.include_router(campaigns.router)

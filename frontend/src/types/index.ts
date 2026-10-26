@@ -129,12 +129,134 @@ export interface TimelineEvent {
   details: Record<string, unknown> | null;
 }
 
+export type EmailDesignMode = 'blocks' | 'legacy';
+
+export interface EmailDesignSettings {
+  background_color: string;
+  content_background_color: string;
+  font_family: string;
+  text_color: string;
+  link_color: string;
+  width: number;
+  content_padding: number;
+  border_radius: number;
+  preheader: string;
+}
+
+export interface EmailDesignBlockBase {
+  id: string;
+  type: string;
+  padding_top: number;
+  padding_bottom: number;
+  align: 'left' | 'center' | 'right';
+}
+
+export interface EmailTextBlock extends EmailDesignBlockBase {
+  type: 'text';
+  content: string;
+  font_size: number;
+  color: string | null;
+  font_weight: 'normal' | 'bold';
+  line_height: number;
+}
+
+export interface EmailImageBlock extends EmailDesignBlockBase {
+  type: 'image';
+  src: string;
+  alt: string;
+  link: string;
+  width: number;
+  border_radius: number;
+}
+
+export interface EmailButtonBlock extends EmailDesignBlockBase {
+  type: 'button';
+  label: string;
+  url: string;
+  background_color: string;
+  text_color: string;
+  border_radius: number;
+  font_size: number;
+  padding_x: number;
+  padding_y: number;
+}
+
+export interface EmailDividerBlock extends EmailDesignBlockBase {
+  type: 'divider';
+  color: string;
+  thickness: number;
+  width_percent: number;
+}
+
+export interface EmailSpacerBlock extends EmailDesignBlockBase {
+  type: 'spacer';
+  height: number;
+}
+
+export interface EmailLogoBlock extends EmailDesignBlockBase {
+  type: 'logo';
+  width: number;
+  link: string;
+  alt: string;
+  show_company_name: boolean;
+}
+
+export interface EmailFooterBlock extends EmailDesignBlockBase {
+  type: 'footer';
+  text: string;
+  show_company_name: boolean;
+  show_support_email: boolean;
+  show_logo: boolean;
+  font_size: number;
+  color: string;
+}
+
+export interface EmailHtmlBlock extends EmailDesignBlockBase {
+  type: 'html';
+  html: string;
+}
+
+export type EmailDesignBlock =
+  | EmailTextBlock
+  | EmailImageBlock
+  | EmailButtonBlock
+  | EmailDividerBlock
+  | EmailSpacerBlock
+  | EmailLogoBlock
+  | EmailFooterBlock
+  | EmailHtmlBlock;
+
+export interface EmailDesign {
+  version: number;
+  mode: EmailDesignMode;
+  settings: EmailDesignSettings;
+  blocks: EmailDesignBlock[];
+  legacy_html?: string | null;
+}
+
+export interface Branding {
+  organization_id: string;
+  company_name: string;
+  primary_color: string;
+  support_email: string | null;
+  logo_url: string | null;
+  has_logo: boolean;
+  updated_at: string | null;
+}
+
+export interface BrandingUpdate {
+  company_name?: string;
+  primary_color?: string;
+  support_email?: string | null;
+}
+
 export interface EmailTemplate {
   id: string;
   organization_id: string;
   name: string;
   subject: string;
   body_html: string;
+  design_json?: EmailDesign | null;
   channel: 'email' | 'sms' | 'whatsapp';
   difficulty_level: number;
   available_variables: string[];
@@ -147,7 +269,8 @@ export interface EmailTemplate {
 export interface EmailTemplateCreate {
   name: string;
   subject: string;
-  body_html: string;
+  body_html?: string;
+  design_json?: EmailDesign;
   channel?: 'email' | 'sms' | 'whatsapp';
   difficulty_level: number;
   is_active?: boolean;
@@ -158,10 +281,26 @@ export interface EmailTemplateUpdate {
   name?: string;
   subject?: string;
   body_html?: string;
+  design_json?: EmailDesign;
   channel?: 'email' | 'sms' | 'whatsapp';
   difficulty_level?: number;
   is_active?: boolean;
   available_variables?: string[];
+}
+
+export interface TemplateTestSendRequest {
+  subject: string;
+  body_html?: string;
+  design_json?: EmailDesign;
+  channel?: 'email' | 'sms' | 'whatsapp';
+}
+
+export interface TemplateTestSendResult {
+  success: boolean;
+  message_id: string | null;
+  error: string | null;
+  to_email: string;
+  preview_html?: string | null;
 }
 
 export interface TemplatePreview {

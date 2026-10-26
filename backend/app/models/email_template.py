@@ -44,6 +44,9 @@ class EmailTemplate(Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     subject: Mapped[str] = mapped_column(String(500), nullable=False)
     body_html: Mapped[str] = mapped_column(Text, nullable=False)
+    #: Visual-editor source document (Unlayer-style JSON).  ``body_html`` is the
+    #: compiled, sanitised output that is actually sent.
+    design_json: Mapped[dict | None] = mapped_column(JSONBType, nullable=True)
     difficulty_level: Mapped[int] = mapped_column(Integer, default=5)
     available_variables: Mapped[list] = mapped_column(
         JSONBType, default=lambda: list(DEFAULT_VARIABLES)

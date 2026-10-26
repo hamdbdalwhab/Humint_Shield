@@ -13,13 +13,16 @@ import Divider from '@mui/material/Divider';
 import Grid from '@mui/material/Grid';
 import Link from '@mui/material/Link';
 import Stack from '@mui/material/Stack';
+import Tab from '@mui/material/Tab';
+import Tabs from '@mui/material/Tabs';
 import TextField from '@mui/material/TextField';
 import Typography from '@mui/material/Typography';
-import { useState } from 'react';
-import { useMutation, useQuery } from '@tanstack/react-query';
+import { useEffect, useState } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useSearchParams } from 'react-router-dom';
 import toast from 'react-hot-toast';
 
-import { diagnosticsApi } from '@/api/endpoints';
+import { brandingApi, diagnosticsApi } from '@/api/endpoints';
 import { LoadingState } from '@/components/Feedback';
 import { PageHeader } from '@/components/PageHeader';
 import { useAuth } from '@/hooks/useAuth';
@@ -38,8 +41,264 @@ function StateChip({ ok, label }: { ok: boolean; label: string }) {
   return <Chip size="small" label={label} color={ok ? 'success' : 'error'} variant="outlined" />;
 }
 
+function BrandingSettings({ organizationId }: { organizationId: string | null }) {
+  const queryClient = useQueryClient();
+  const { user } = useAuth();
+  const [companyName, setCompanyName] = useState('');
+  const [primaryColor, setPrimaryColor] = useState('#0F6CBD');
+  const [supportEmail, setSupportEmail] = useState('');
+  const canEdit = user?.role === 'admin' || user?.role === 'manager';
+
+  const brandingQuery = useQuery({
+    queryKey: ['branding', organizationId],
+    queryFn: () => brandingApi.get(organizationId as string),
+    enabled: Boolean(organizationId),
+  });
+
+  useEffect(() => {
+    const data = brandingQuery.data;
+    if (!data) return;
+    setCompanyName(data.company_name);
+    setPrimaryColor(data.primary_color);
+    setSupportEmail(data.support_email ?? '');
+  }, [brandingQuery.data]);
+
+  const updateMutation = useMutation({
+    mutationFn: () =>
+      brandingApi.update(organizationId as string, {
+        company_name: companyName.trim(),
+        primary_color: primaryColor,
+        support_email: supportEmail.trim() || null,
+      }),
+    onSuccess: (data) => {
+      queryClient.setQueryData(['branding', organizationId], data);
+      toast.success('تم حفظ الهوية البصرية');
+    },
+    onError: (error) => toast.error(errorMessage(error)),
+  });
+
+  const logoMutation = useMutation({
+    mutationFn: (file: File) => brandingApi.uploadLogo(organizationId as string, file),
+    onSuccess: (data) => {
+      queryClient.setQueryData(['branding', organizationId], data);
+      toast.success('تم رفع الشعار');
+    },
+    onError: (error) => toast.error(errorMessage(error)),
+  });
+
+  const removeLogoMutation = useMutation({
+    mutationFn: () => brandingApi.removeLogo(organizationId as string),
+    onSuccess: (data) => {
+      queryClient.setQueryData(['branding', organizationId], data);
+      toast.success('تمت إزالة الشعار');
+    },
+    onError: (error) => toast.error(errorMessage(error)),
+  });
+
+  if (!organizationId) {
+    return <Alert severity="warning">No organization is attached to this account.</Alert>;
+  }
+  if (brandingQuery.isLoading) return <LoadingState label="Loading branding…" />;
+  if (brandingQuery.error) return <Alert severity="error">{errorMessage(brandingQuery.error)}</Alert>;
+
+  const data = brandingQuery.data;
+  const busy =
+    updateMutation.isPending || logoMutation.isPending || removeLogoMutation.isPending;
+
+  return (
+    <Grid container spacing={2}>
+      <Grid item xs={12} md={7}>
+        <Card>
+          <CardContent>
+            <Typography variant="h3" sx={{ fontSize: '1.05rem', mb: 0.5 }}>
+              Organization branding
+            </Typography>
+            <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+              New templates inherit this identity automatically. Existing templates can override
+              the button colour inside the visual editor.
+            </Typography>
+            <Stack spacing={2}>
+              <TextField
+                label="Company name"
+                fullWidth
+                value={companyName}
+                onChange={(event) => setCompanyName(event.target.value)}
+                disabled={!canEdit || busy}
+                helperText="Used in the footer and in {{company_name}} merge tags."
+              />
+              <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5}>
+                <TextField
+                  label="Primary brand colour"
+                  fullWidth
+                  value={primaryColor}
+                  onChange={(event) => setPrimaryColor(event.target.value.toUpperCase())}
+                  disabled={!canEdit || busy}
+                  InputProps={{
+                    startAdornment: (
+                      <Box
+                        component="input"
+                        type="color"
+                        value={/^#[0-9a-f]{6}$/i.test(primaryColor) ? primaryColor : '#0F6CBD'}
+                        onChange={(event) => setPrimaryColor(event.target.value.toUpperCase())}
+                        sx={{
+                          width: 32,
+                          height: 32,
+                          p: 0,
+                          border: '1px solid rgba(255,255,255,.2)',
+                          borderRadius: 1,
+                          bgcolor: 'transparent',
+                          cursor: 'pointer',
+                          mr: 1,
+                        }}
+                      />
+                    ),
+                    sx: { fontFamily: 'Consolas, monospace' },
+                  }}
+                />
+                <TextField
+                  label="Support email"
+                  type="email"
+                  fullWidth
+                  value={supportEmail}
+                  onChange={(event) => setSupportEmail(event.target.value)}
+                  disabled={!canEdit || busy}
+                  helperText="Shown in the email footer."
+                />
+              </Stack>
+              <Box>
+                <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', mb: 1 }}>
+                  Logo (PNG, JPEG, GIF or WebP — max 2 MB)
+                </Typography>
+                <Stack direction="row" spacing={1} alignItems="center" sx={{ flexWrap: 'wrap', gap: 1 }}>
+                  <Button
+                    component="label"
+                    variant="outlined"
+                    disabled={!canEdit || busy}
+                    sx={{ position: 'relative', overflow: 'hidden' }}
+                  >
+                    {logoMutation.isPending ? 'Uploading…' : 'Upload logo'}
+                    <Box
+                      component="input"
+                      type="file"
+                      accept="image/png,image/jpeg,image/gif,image/webp"
+                      onChange={(event) => {
+                        const file = event.target.files?.[0];
+                        if (file) logoMutation.mutate(file);
+                        event.target.value = '';
+                      }}
+                      sx={{ position: 'absolute', inset: 0, opacity: 0, cursor: 'pointer' }}
+                    />
+                  </Button>
+                  {data?.has_logo ? (
+                    <Button
+                      variant="text"
+                      color="error"
+                      disabled={!canEdit || busy}
+                      onClick={() => removeLogoMutation.mutate()}
+                    >
+                      Remove logo
+                    </Button>
+                  ) : null}
+                </Stack>
+              </Box>
+              <Box>
+                <Button
+                  variant="contained"
+                  disabled={!canEdit || busy || !companyName.trim()}
+                  startIcon={updateMutation.isPending ? <CircularProgress size={16} color="inherit" /> : null}
+                  onClick={() => updateMutation.mutate()}
+                >
+                  Save branding
+                </Button>
+                {!canEdit ? (
+                  <Typography variant="caption" sx={{ display: 'block', color: 'text.secondary', mt: 1 }}>
+                    Only administrators and managers can change organization branding.
+                  </Typography>
+                ) : null}
+              </Box>
+            </Stack>
+          </CardContent>
+        </Card>
+      </Grid>
+      <Grid item xs={12} md={5}>
+        <Card sx={{ height: '100%' }}>
+          <CardContent>
+            <Typography variant="h3" sx={{ fontSize: '1.05rem', mb: 2 }}>
+              Live brand preview
+            </Typography>
+            <Box
+              sx={{
+                borderRadius: 2,
+                border: '1px solid rgba(255,255,255,.1)',
+                overflow: 'hidden',
+                bgcolor: '#F2F4F7',
+                color: '#344054',
+                p: 2.5,
+              }}
+            >
+              <Stack direction="row" spacing={1.25} alignItems="center" sx={{ mb: 2 }}>
+                {data?.logo_url ? (
+                  <Box
+                    component="img"
+                    src={data.logo_url}
+                    alt={companyName || data.company_name}
+                    sx={{ width: 54, height: 54, objectFit: 'contain', borderRadius: 1.5, bgcolor: '#fff' }}
+                  />
+                ) : (
+                  <Box
+                    sx={{
+                      width: 54,
+                      height: 54,
+                      borderRadius: 1.5,
+                      display: 'grid',
+                      placeItems: 'center',
+                      bgcolor: primaryColor,
+                      color: '#fff',
+                      fontWeight: 900,
+                    }}
+                  >
+                    {(companyName || data?.company_name || 'H').slice(0, 2)}
+                  </Box>
+                )}
+                <Box>
+                  <Typography sx={{ fontWeight: 800, color: '#101828' }}>
+                    {companyName || data?.company_name || 'Your company'}
+                  </Typography>
+                  <Typography variant="caption" sx={{ color: '#667085' }}>
+                    {supportEmail || 'support@company.com'}
+                  </Typography>
+                </Box>
+              </Stack>
+              <Box sx={{ bgcolor: '#fff', borderRadius: 1.5, p: 2, border: '1px solid #E4E7EC' }}>
+                <Typography sx={{ fontSize: '0.82rem', color: '#344054', mb: 1.5 }}>
+                  مرحباً سارة، لديك مستند جديد يحتاج مراجعتك.
+                </Typography>
+                <Button
+                  size="small"
+                  variant="contained"
+                  sx={{ bgcolor: primaryColor, '&:hover': { bgcolor: primaryColor } }}
+                >
+                  فتح المستند
+                </Button>
+              </Box>
+              <Typography variant="caption" sx={{ display: 'block', color: '#98A2B3', mt: 2 }}>
+                © {new Date().getFullYear()} {companyName || data?.company_name || 'Your company'}.
+              </Typography>
+            </Box>
+            <Typography variant="caption" sx={{ display: 'block', color: 'text.secondary', mt: 1.5 }}>
+              This preview uses the same live values injected by the email renderer.
+            </Typography>
+          </CardContent>
+        </Card>
+      </Grid>
+    </Grid>
+  );
+}
+
 export function SettingsPage() {
   const { user } = useAuth();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const tab = searchParams.get('tab') === 'branding' ? 1 : 0;
   const [testEmail, setTestEmail] = useState(user?.email ?? '');
 
   const configQuery = useQuery({
@@ -73,9 +332,22 @@ export function SettingsPage() {
     <>
       <PageHeader
         title="Settings"
-        subtitle="Read-only runtime configuration, dependency health and deliverability checks."
+        subtitle="Organization branding, runtime configuration, dependency health and deliverability checks."
       />
 
+      <Tabs
+        value={tab}
+        onChange={(_event, value: number) => {
+          if (value === 1) setSearchParams({ tab: 'branding' });
+          else setSearchParams({});
+        }}
+        sx={{ mb: 2 }}
+      >
+        <Tab label="Runtime & diagnostics" />
+        <Tab label="Branding" />
+      </Tabs>
+
+      {tab === 0 ? (
       <Grid container spacing={2}>
         <Grid item xs={12} md={6}>
           <Card sx={{ height: '100%' }}>
@@ -377,6 +649,9 @@ export function SettingsPage() {
           </Card>
         </Grid>
       </Grid>
+      ) : (
+        <BrandingSettings organizationId={user?.organization_id ?? null} />
+      )}
     </>
   );
 }

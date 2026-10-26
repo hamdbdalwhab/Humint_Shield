@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.logging_config import get_logger
+from app.services.email_design import legacy_design_payload
 from app.models import (
     EmailTemplate,
     HumanAsset,
@@ -760,6 +761,8 @@ async def seed_builtin_templates(db: AsyncSession, organization_id) -> int:
                 current.difficulty_level = definition["difficulty_level"]
                 current.available_variables = list(definition["available_variables"])
                 upgraded += 1
+            if not current.design_json:
+                current.design_json = legacy_design_payload(current.body_html)
             continue
         db.add(
             EmailTemplate(
@@ -767,6 +770,7 @@ async def seed_builtin_templates(db: AsyncSession, organization_id) -> int:
                 name=definition["name"],
                 subject=definition["subject"],
                 body_html=definition["body_html"],
+                design_json=legacy_design_payload(definition["body_html"]),
                 difficulty_level=definition["difficulty_level"],
                 available_variables=list(definition["available_variables"]),
                 is_built_in=True,

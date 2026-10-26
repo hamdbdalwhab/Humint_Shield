@@ -2,22 +2,35 @@
 from __future__ import annotations
 
 import uuid
+from types import SimpleNamespace
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import get_settings
 from app.database import get_db
 from app.deps import get_current_user, get_organization_or_404, rate_limit, require_roles
 from app.logging_config import get_logger
 from app.models import DEFAULT_VARIABLES, EmailTemplate, HumanAsset, User
 from app.schemas import (
+    EmailDesign,
     EmailTemplateCreate,
     EmailTemplatePublic,
     EmailTemplateUpdate,
     TemplatePreviewRequest,
     TemplatePreviewResponse,
+    TemplateTestSendRequest,
+    TemplateTestSendResponse,
 )
+from app.services.brevo_service import BrevoService
+from app.services.email_design import (
+    branding_from_organization,
+    compile_design_html,
+    design_for_template,
+    legacy_design_payload,
+)
+from app.services.html_sanitizer import sanitize_email_html
 from app.services.template_service import TemplatePersonalizer
 
 logger = get_logger(__name__)
@@ -102,12 +115,24 @@ async def create_template(
     organization=Depends(get_organization_or_404),
     user: User = Depends(require_roles("admin", "manager")),
 ) -> EmailTemplatePublic:
-    """Create a custom template."""
+    """Create a custom template from compiled HTML or a visual design."""
+    settings = get_settings()
+    branding = branding_from_organization(organization, settings.base_url)
+    if payload.design_json is not None:
+        design = payload.design_json
+        body_html = compile_design_html(design, branding)
+        design_json = design.model_dump(mode="json")
+    else:
+        body_html = sanitize_email_html(payload.body_html or "")
+        design_json = legacy_design_payload(
+            body_html, primary_color=branding.primary_color
+        )
     template = EmailTemplate(
         organization_id=org_id,
         name=payload.name,
         subject=payload.subject,
-        body_html=payload.body_html,
+        body_html=body_html,
+        design_json=design_json,
         channel=payload.channel,
         difficulty_level=payload.difficulty_level,
         is_active=payload.is_active,
@@ -133,6 +158,28 @@ async def get_template(
     return EmailTemplatePublic.model_validate(await _get_template(db, org_id, template_id))
 
 
+@router.get(
+    "/{template_id}/design",
+    response_model=EmailDesign,
+    summary="Get the editable visual design for a template",
+)
+async def get_template_design(
+    org_id: uuid.UUID,
+    template_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    organization=Depends(get_organization_or_404),
+    user: User = Depends(get_current_user),
+) -> EmailDesign:
+    """Return the visual design, wrapping legacy HTML automatically.
+
+    This is the bridge that lets the thirteen pre-existing built-in templates
+    open in the visual editor without rewriting their stored HTML first.
+    """
+    template = await _get_template(db, org_id, template_id)
+    primary = getattr(organization, "brand_primary_color", None) or "#0F6CBD"
+    return design_for_template(template, primary_color=primary)
+
+
 @router.put("/{template_id}", response_model=EmailTemplatePublic, summary="Update an email template")
 async def update_template(
     org_id: uuid.UUID,
@@ -145,12 +192,37 @@ async def update_template(
     """Update a template (built-in templates remain editable content-wise).
 
     Built-in templates keep their ``is_built_in`` flag so they can never be
-    deleted, but their copy may be adjusted.
+    deleted, but their copy may be adjusted.  When a visual design is supplied,
+    the backend recompiles and sanitises ``body_html`` so the stored compiled
+    output always matches the editor source.
     """
     template = await _get_template(db, org_id, template_id)
-    data = payload.model_dump(exclude_unset=True)
+    settings = get_settings()
+    branding = branding_from_organization(organization, settings.base_url)
+    design_supplied = "design_json" in payload.model_fields_set
+    design = payload.design_json
+    data = payload.model_dump(exclude_unset=True, exclude={"design_json"})
+
+    if design_supplied:
+        if design is None:
+            # Explicitly clearing the visual source falls back to raw HTML.
+            template.design_json = None
+        else:
+            template.body_html = compile_design_html(design, branding)
+            template.design_json = design.model_dump(mode="json")
+            data.pop("body_html", None)
+    elif "body_html" in data:
+        body_html = data.pop("body_html")
+        if body_html is not None:
+            body_html = sanitize_email_html(body_html)
+            template.body_html = body_html
+            template.design_json = legacy_design_payload(
+                body_html, primary_color=branding.primary_color
+            )
+
     for field, value in data.items():
-        setattr(template, field, value)
+        if value is not None:
+            setattr(template, field, value)
     await db.commit()
     await db.refresh(template)
     logger.info("template_updated", template_id=str(template_id))
@@ -183,6 +255,83 @@ async def delete_template(
     await db.delete(template)
     await db.commit()
     logger.info("template_deleted", template_id=str(template_id))
+
+
+@router.post(
+    "/test-send",
+    response_model=TemplateTestSendResponse,
+    summary="Send the current visual design to the signed-in administrator",
+)
+async def send_test_template(
+    org_id: uuid.UUID,
+    payload: TemplateTestSendRequest,
+    db: AsyncSession = Depends(get_db),
+    organization=Depends(get_organization_or_404),
+    user: User = Depends(require_roles("admin", "manager")),
+) -> TemplateTestSendResponse:
+    """Render the unsaved editor state and send it to the admin's own inbox.
+
+    Dummy employee values are used so merge tags are visible, but tracking is
+    deliberately disabled: a test message must never create a real event.
+    """
+    if payload.channel != "email":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Test sends are available for email templates only",
+        )
+    settings = get_settings()
+    branding = branding_from_organization(organization, settings.base_url)
+    if payload.design_json is not None:
+        design = payload.design_json
+        compiled = compile_design_html(design, branding)
+        design_json = design.model_dump(mode="json")
+    else:
+        compiled = sanitize_email_html(payload.body_html or "")
+        design_json = legacy_design_payload(
+            compiled, primary_color=branding.primary_color
+        )
+
+    transient = SimpleNamespace(
+        id="test-preview",
+        subject=payload.subject,
+        body_html=compiled,
+        design_json=design_json,
+    )
+    dummy = SimpleNamespace(
+        id="test-preview",
+        first_name="سارة",
+        last_name="العتيبي",
+        email=user.email,
+        department="الموارد البشرية",
+        job_title="مديرة",
+        manager_name="خالد الحربي",
+        risk_profile={},
+        behavioral_baseline={},
+        device_profile={},
+    )
+    rendered = TemplatePersonalizer().personalize_test(
+        transient, dummy, organization, settings.base_url
+    )
+    result = await BrevoService().send_email(
+        to_email=user.email,
+        subject=rendered["subject"],
+        html_content=rendered["html_content"],
+        to_name=user.email,
+        correlation_id=f"test-send:{org_id}:{user.id}",
+    )
+    logger.info(
+        "template_test_send",
+        org_id=str(org_id),
+        user_id=str(user.id),
+        success=bool(result.get("success")),
+    )
+    return TemplateTestSendResponse(
+        success=bool(result.get("success")),
+        message_id=result.get("message_id"),
+        error=result.get("error"),
+        to_email=user.email,
+        preview_html=rendered["html_content"],
+    )
 
 
 @router.post(
