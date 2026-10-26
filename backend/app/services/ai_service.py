@@ -16,6 +16,7 @@ Security properties:
 """
 from __future__ import annotations
 
+import html
 import json
 import re
 from typing import Any
@@ -48,6 +49,34 @@ _JAVASCRIPT_URL_RE = re.compile(
 _CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
 _JSON_FENCE_RE = re.compile(r"^\s*```(?:json)?\s*|\s*```\s*$", re.IGNORECASE)
+#: Some reasoning models wrap their answer in ``<think>...</think>``.  The
+#: reasoning is not part of the template and must never reach the parser.
+_THINK_RE = re.compile(r"<think\b[^>]*>.*?</think\s*>", re.IGNORECASE | re.DOTALL)
+
+#: Fixed, safe RTL shell for models that return plain text instead of HTML.
+#: The body is escaped before insertion, so generated text cannot inject markup.
+_EMAIL_WRAPPER = """<div dir="rtl" style="margin:0;padding:0;background:#f3f6fb;font-family:'Segoe UI',Tahoma,Arial,sans-serif;color:#1f2937;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f3f6fb;padding:28px 12px;">
+    <tr>
+      <td align="center">
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:600px;background:#ffffff;border:1px solid #e5e7eb;border-radius:12px;overflow:hidden;">
+          <tr>
+            <td style="background:#0b5fff;padding:20px 28px;color:#ffffff;font-size:18px;font-weight:700;">{{company_name}}</td>
+          </tr>
+          <tr>
+            <td style="padding:28px;font-size:16px;line-height:1.9;">
+              __BODY__
+              <p style="margin:28px 0 0;text-align:center;">
+                <a href="{{tracking_url}}" style="display:inline-block;background:#0b5fff;color:#ffffff;text-decoration:none;padding:13px 30px;border-radius:8px;font-weight:700;">متابعة الإجراء</a>
+              </p>
+              <p style="margin:24px 0 0;font-size:12px;color:#6b7280;line-height:1.7;">رسالة داخلية من {{department}} — {{company_name}}</p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</div>"""
 
 
 class AIServiceError(RuntimeError):
@@ -92,11 +121,45 @@ def sanitize_subject(value: str) -> str:
     return re.sub(r"\s+", " ", cleaned).strip()
 
 
+def sanitize_generated_text(value: str) -> str:
+    """Turn model-generated text into escaped plain text.
+
+    The model is asked for plain text, but a provider may still return markup.
+    Tags are removed first, then the remaining text is HTML-escaped.  This is
+    deliberately stricter than :func:`sanitize_generated_html`: plain text is
+    the only thing inserted into the fixed email shell.
+    """
+    if not isinstance(value, str):
+        raise AIProviderError("generated body_text must be a string")
+    cleaned = _CONTROL_RE.sub("", value)
+    cleaned = re.sub(r"<[^>]*>", "", cleaned)
+    cleaned = html.escape(cleaned, quote=False)
+    cleaned = re.sub(r"[ \t]+\n", "\n", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
+
+
+def _render_body_html(body_text: str) -> str:
+    """Wrap escaped, model-generated text in the fixed RTL email shell."""
+    paragraphs = [
+        part.strip()
+        for part in re.split(r"\n\s*\n|\n", body_text)
+        if part.strip()
+    ]
+    if not paragraphs:
+        raise AIProviderError("LLM response did not include body_text")
+    body = "".join(
+        f'<p style="margin:0 0 14px;">{paragraph}</p>' for paragraph in paragraphs
+    )
+    return _EMAIL_WRAPPER.replace("__BODY__", body)
+
+
 def _extract_json(content: str) -> dict[str, Any]:
     """Parse a JSON object from a model response, tolerating Markdown fences."""
     if not isinstance(content, str) or not content.strip():
         raise AIProviderError("LLM returned an empty response")
-    text = _JSON_FENCE_RE.sub("", content.strip()).strip()
+    text = _THINK_RE.sub("", content).strip()
+    text = _JSON_FENCE_RE.sub("", text).strip()
     start = text.find("{")
     end = text.rfind("}")
     if start == -1 or end == -1 or end <= start:
@@ -189,21 +252,28 @@ class AIService:
             scenario=scenario.strip(),
             channel=channel,
         )
+        models = [self.settings.llm_model_resolved]
+        for fallback in self.settings.llm_fallback_model_list:
+            if fallback not in models:
+                models.append(fallback)
+
         payload = {
-            "model": self.settings.llm_model_resolved,
+            "model": models[0],
             "messages": [
                 {
                     "role": "system",
                     "content": (
                         "You are a senior security-awareness simulation author. "
                         "You write realistic but safe phishing-simulation templates "
-                        "for authorized employee training. Return only valid JSON."
+                        "for authorized employee training. Return only valid JSON. "
+                        "Do not include reasoning or explanations."
                     ),
                 },
                 {"role": "user", "content": prompt},
             ],
-            "temperature": 0.7,
+            "temperature": 0.3,
             "max_tokens": self.settings.llm_max_tokens,
+            "response_format": {"type": "json_object"},
         }
         url = f"{self.settings.llm_base_url_resolved.rstrip('/')}/chat/completions"
         headers = {
@@ -212,16 +282,67 @@ class AIService:
             "Accept": "application/json",
         }
 
+        last_error: AIProviderError | None = None
+        for index, model in enumerate(models):
+            payload["model"] = model
+            timeout_seconds = (
+                self.settings.llm_primary_timeout_seconds
+                if index == 0
+                else self.settings.llm_timeout_seconds
+            )
+            try:
+                return await self._generate_once(
+                    model=model,
+                    payload=payload,
+                    url=url,
+                    headers=headers,
+                    timeout_seconds=timeout_seconds,
+                    channel=channel,
+                    industry=industry,
+                    department=target_department,
+                )
+            except AIProviderError as exc:
+                last_error = exc
+                if index + 1 < len(models):
+                    logger.warning(
+                        "ai_model_fallback",
+                        failed_model=model,
+                        next_model=models[index + 1],
+                        error=str(exc)[:300],
+                    )
+                    continue
+                raise
+
+        raise last_error or AIProviderError("AI generation failed")
+
+    async def _generate_once(
+        self,
+        *,
+        model: str,
+        payload: dict[str, Any],
+        url: str,
+        headers: dict[str, str],
+        timeout_seconds: float,
+        channel: str,
+        industry: str,
+        department: str,
+    ) -> AIGeneratedTemplate:
+        """Call one model and turn its response into a validated template."""
         try:
             if self._client is not None:
-                response = await self._client.post(url, json=payload, headers=headers)
+                response = await self._client.post(
+                    url,
+                    json=payload,
+                    headers=headers,
+                    timeout=timeout_seconds,
+                )
             else:
-                async with httpx.AsyncClient(
-                    timeout=self.settings.llm_timeout_seconds
-                ) as client:
+                async with httpx.AsyncClient(timeout=timeout_seconds) as client:
                     response = await client.post(url, json=payload, headers=headers)
         except httpx.TimeoutException as exc:
-            raise AIProviderError("LLM provider timed out") from exc
+            raise AIProviderError(
+                f"LLM provider timed out after {timeout_seconds:g}s"
+            ) from exc
         except httpx.HTTPError as exc:
             raise AIProviderError(f"LLM provider request failed: {exc}") from exc
 
@@ -230,6 +351,7 @@ class AIService:
             logger.warning(
                 "ai_provider_http_error",
                 provider=self.settings.llm_provider_slug,
+                model=model,
                 status_code=response.status_code,
                 detail=detail,
             )
@@ -250,12 +372,25 @@ class AIService:
 
         parsed = _extract_json(content)
         subject = sanitize_subject(parsed.get("subject", ""))
-        body_html = sanitize_generated_html(parsed.get("body_html", ""))
         if not subject:
             raise AIProviderError("LLM response did not include a subject")
-        if not body_html:
-            raise AIProviderError("LLM response did not include body_html")
-        body_html = _ensure_tracking_link(body_html)
+
+        body_html_value = parsed.get("body_html")
+        body_text_value = parsed.get("body_text")
+        if isinstance(body_html_value, str) and body_html_value.strip():
+            body_html = sanitize_generated_html(body_html_value)
+            if not body_html:
+                raise AIProviderError("LLM response did not include usable body_html")
+            body_html = _ensure_tracking_link(body_html)
+        elif isinstance(body_text_value, str) and body_text_value.strip():
+            body_text = sanitize_generated_text(body_text_value)
+            if not body_text:
+                raise AIProviderError("LLM response did not include usable body_text")
+            body_html = sanitize_generated_html(_render_body_html(body_text))
+        else:
+            raise AIProviderError(
+                "LLM response did not include body_html or body_text"
+            )
 
         try:
             generated = AIGeneratedTemplate(
@@ -263,10 +398,12 @@ class AIService:
                 body_html=body_html,
                 difficulty_level=_coerce_difficulty(parsed.get("difficulty_level")),
                 provider=self.settings.llm_provider_slug,
-                model=str(data.get("model") or self.settings.llm_model_resolved)[:120],
+                model=str(data.get("model") or model)[:120],
             )
         except ValidationError as exc:
-            raise AIProviderError(f"LLM response failed validation: {exc.errors()[0]['msg']}") from exc
+            raise AIProviderError(
+                f"LLM response failed validation: {exc.errors()[0]['msg']}"
+            ) from exc
 
         logger.info(
             "ai_template_generated",
@@ -275,36 +412,34 @@ class AIService:
             difficulty=generated.difficulty_level,
             channel=channel,
             industry=industry,
-            department=target_department,
+            department=department,
         )
         return generated
 
     @staticmethod
     def _build_prompt(*, industry: str, department: str, scenario: str, channel: str) -> str:
-        """Build the provider prompt without embedding any secret."""
+        """Build a compact prompt that asks for text, not HTML.
+
+        The backend owns the HTML shell so a model cannot introduce active
+        content and so the response stays small enough for the provider and the
+        Cloudflare tunnel's request window.
+        """
         return f"""Create one authorized security-awareness simulation template.
 
-Organization industry: {industry}
+Industry: {industry}
 Target department: {department}
-Requested scenario: {scenario}
-Delivery channel: {channel}
+Scenario: {scenario}
+Channel: {channel}
 
-Return ONLY a JSON object with exactly these keys:
-- "subject": a concise subject line (for SMS/WhatsApp, a short message title)
-- "body_html": a complete, email-safe HTML fragment using inline CSS and a
-  professional visual hierarchy. Use Arabic when the scenario is Arabic;
-  otherwise use the scenario's language. Make it look like a plausible internal
-  message for the stated industry and department.
+Return only a JSON object with exactly these keys:
+- "subject": a concise subject line under 120 characters.
+- "body_text": 3 to 5 short sentences of plain text in the scenario's language
+  (Arabic when the scenario is Arabic). Use {{{{first_name}}}},
+  {{{{company_name}}}}, and {{{{department}}}} where appropriate. End with a
+  clear instruction to click the verification link. Do not include HTML, URLs,
+  or mention that this is a simulation.
 - "difficulty_level": an integer from 1 to 10 (1-3 easy, 4-7 medium, 8-10 hard).
   Choose a level consistent with the subtlety of the pretext.
 
-Requirements:
-- Use these placeholders exactly where appropriate: {{{{first_name}}}},
-  {{{{company_name}}}}, {{{{department}}}}, {{{{tracking_url}}}}.
-- Include at least one visible call-to-action anchor whose href is exactly
-  {{{{tracking_url}}}}.
-- Do not include <script>, <iframe>, <object>, <embed>, forms, real credentials,
-  external tracking pixels, or images hosted on unknown domains.
-- Do not mention that this is a simulation inside the email body.
-- Keep the subject under 120 characters and the HTML under 12,000 characters.
+Do not explain, reason, or use markdown. Output JSON only.
 """

@@ -6,7 +6,7 @@ from typing import Any
 from app.api.v1.ai import get_ai_service
 from app.config import Settings
 from app.schemas.ai import AIGeneratedTemplate
-from app.services.ai_service import AIService
+from app.services.ai_service import AIProviderError, AIService
 
 
 class FakeAIService:
@@ -23,6 +23,15 @@ class FakeAIService:
             difficulty_level=6,
             provider="test",
             model="test-model",
+        )
+
+
+class FailingAIService:
+    """Provider double that reproduces an upstream rate-limit failure."""
+
+    async def generate_template(self, **kwargs: Any) -> AIGeneratedTemplate:
+        raise AIProviderError(
+            "LLM provider returned HTTP 429: model_concurrency capacity"
         )
 
 
@@ -46,6 +55,29 @@ async def test_ai_generation_requires_configuration(
         app.dependency_overrides.pop(get_ai_service, None)
     assert response.status_code == 503
     assert "LLM_API_KEY" in response.json()["detail"]
+
+
+async def test_ai_provider_failure_is_client_visible(
+    client, auth_headers, organization, app
+) -> None:
+    """Provider failures use 424 so Cloudflare does not replace the JSON detail."""
+    app.dependency_overrides[get_ai_service] = lambda: FailingAIService()
+    try:
+        response = await client.post(
+            "/api/v1/ai/generate-template",
+            json={
+                "target_department": "Finance",
+                "scenario": "Urgent invoice from a known supplier",
+            },
+            headers=auth_headers,
+        )
+    finally:
+        app.dependency_overrides.pop(get_ai_service, None)
+
+    assert response.status_code == 424
+    detail = response.json()["detail"]
+    assert "AI generation failed" in detail
+    assert "429" in detail
 
 
 async def test_ai_generation_returns_validated_template(

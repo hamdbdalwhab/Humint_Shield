@@ -82,8 +82,11 @@ async def generate_template(
             organization_id=str(organization.id),
             error=str(exc),
         )
+        # Cloudflare replaces origin 5xx responses with its own HTML error page,
+        # hiding the actionable provider message from the dashboard.  424 is a
+        # client-visible failure that keeps the detail intact through the tunnel.
         raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
+            status_code=status.HTTP_424_FAILED_DEPENDENCY,
             detail=f"AI generation failed: {exc}",
         ) from exc
 

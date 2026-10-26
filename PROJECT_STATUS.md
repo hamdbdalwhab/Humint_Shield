@@ -1,10 +1,10 @@
 # HUMINT Shield — Project Status
 
-- **Last updated:** 2026-10-25
+- **Last updated:** 2026-10-26
 - **Branch:** `main`
 - **Runtime:** Windows, Python 3.14.5, Node/Jest, SQLite
 - **Local backend:** `http://127.0.0.1:8000`
-- **Active quick tunnel:** `https://wendy-beliefs-directories-putting.trycloudflare.com`
+- **Active quick tunnel:** `https://package-conferencing-bingo-successful.trycloudflare.com`
 - **Frontend build:** `frontend/dist` (Vite, served by FastAPI)
 
 ---
@@ -18,13 +18,15 @@
 - **Response:** `subject`, `body_html`, `difficulty_level`, `provider`, `model`
 - **Provider:** Dahl Inference, OpenAI-compatible API
   - Base URL: `https://inference.dahl.global/v1`
-  - Model: `deepseek-ai/DeepSeek-V4-Flash-0731`
+  - Primary model: `deepseek-ai/DeepSeek-V4-Flash-0731`
+  - Fallback model: `MiniMaxAI/MiniMax-M2.7` via `LLM_FALLBACK_MODELS`
   - Key is configured in the ignored `backend/.env`; it is not committed.
 - **Prompt context:** organization industry from the authenticated user's DB record, target department, scenario, and channel.
-- **Safety:** generated HTML is sanitized (scripts, event handlers, dangerous URLs removed); output is validated before returning. Provider failures return explicit `502`; missing configuration returns explicit `503`. There is no mock fallback.
+- **Safety:** the model returns `body_text`; the backend escapes it and wraps it in a fixed, safe RTL HTML shell. If a model returns `body_html`, it is still sanitized (scripts, event handlers, dangerous URLs removed). Output is validated before returning. Provider failures return explicit **`424`** so Cloudflare passes the JSON error detail; missing configuration returns `503`. There is no mock template.
+- **Cloudflare resilience:** the primary model has a 30-second budget, the fallback has 60 seconds, and the frontend Axios timeout is 150 seconds. A `429` or timeout from the primary transparently retries the fallback. This keeps normal generation inside Cloudflare's request window.
 - **Authorization / limits:** admin and manager only; 10 requests per minute.
 - **UI:** Create Template modal has the exact visible button **“✨ Generate with AI”**, loading state, error alert, and autofill for name, subject, body, channel, and difficulty.
-- **Current live state:** a real **200** was observed once with Dahl: Arabic `subject`/`body_html`, `difficulty_level: 5`, model `deepseek-ai/DeepSeek-V4-Flash-0731`, ~90.4 seconds. Subsequent retries returned **HTTP 429 `model_concurrency`**; the provider admits signed-in/paid accounts first. Click **Allocate** in Dahl and retry for stable access. The backend timeout is 120 seconds and the frontend timeout is 150 seconds so the UI can receive a successful response.
+- **Current live state (2026-10-26):** DeepSeek still returns **HTTP 429 `model_concurrency`**. The automatic fallback to MiniMax returned a real **`200` in 16.73 seconds** for `السكرتارية` + `تحديث كلمة المرور` with Arabic `subject`, valid RTL `body_html`, `difficulty_level: 5`, and `model: MiniMaxAI/MiniMax-M2.7`. The same generation was repeated from the browser UI: subject, body, and difficulty were autofilled and the previous Cloudflare error disappeared. Click **Allocate** in Dahl to restore DeepSeek as the preferred model.
 
 ### Module 2 — Elo Adaptive Difficulty
 
@@ -79,8 +81,8 @@
 ### Backend
 
 ```text
-346 passed in 36.66s
-Coverage: 89.67% (required 80%)
+350 passed in 39.32s
+Coverage: 89.78% (required 80%)
 Alembic head: 0008_elo_rating
 ```
 
@@ -116,7 +118,8 @@ npm run test
 |---|---|
 | `GET /healthz` local | `200 {"status":"ok","version":"1.0.0"}` |
 | Public tunnel `/healthz` | `200 {"status":"ok","version":"1.0.0"}` |
-| AI endpoint with Dahl key | `200` observed once — Arabic subject/body, `difficulty_level:5`, model `deepseek-ai/DeepSeek-V4-Flash-0731`; later retries `429 model_concurrency` |
+| AI endpoint via public tunnel | `200` in `16.73s` — Arabic subject/body, `difficulty_level:5`, `model: MiniMaxAI/MiniMax-M2.7`; DeepSeek primary returned `429 model_concurrency` and fallback handled it |
+| AI endpoint from browser UI | `200` — subject, body, and difficulty autofilled; no Cloudflare error |
 | Brevo verify | `200` with `valid:false`, `action_required:ip_allowlist` |
 | Draft campaign launch | `502` with exact IP-allowlist message; campaign remains `draft` |
 | Executive PDF | `200 application/pdf`, 47,096 bytes, 2 pages |
@@ -130,10 +133,10 @@ npm run test
 - **Database:** SQLite at `backend/humint_dev.db`; Alembic revision `0008_elo_rating`.
 - **PostgreSQL:** not available in this environment; SQLite is the active runtime.
 - **Python:** 3.14.5. Python 3.11 is not installed.
-- **AI:** Dahl key present in ignored `backend/.env`; a real `200` was observed, but subsequent retries return `429 model_concurrency` until the key is allocated/admitted. The model is slow (~90s per generation), so the backend timeout is 120s and the frontend timeout is 150s.
+- **AI:** Dahl key present in ignored `backend/.env`. Primary `deepseek-ai/DeepSeek-V4-Flash-0731` still returns `429 model_concurrency`; automatic fallback `MiniMaxAI/MiniMax-M2.7` is working. Primary timeout 30s, fallback timeout 60s, frontend timeout 150s.
 - **Email:** Brevo API key is present, but Brevo rejects the current egress IP. Current blocked IP: **`94.26.222.41`**.
 - **SMS/WhatsApp:** Vonage API key/secret, WhatsApp sender/app credentials, and a test phone are blank. No real SMS/WhatsApp/DLR has been sent.
-- **Tunnel:** Quick tunnel is active at `https://wendy-beliefs-directories-putting.trycloudflare.com`; it is ephemeral. The old `accepted-models-interval-ghz.trycloudflare.com` URL is dead.
+- **Tunnel:** Quick tunnel is active at `https://package-conferencing-bingo-successful.trycloudflare.com`; it is ephemeral. Older quick-tunnel URLs (`wendy-beliefs-directories-putting`, `accepted-models-interval-ghz`) are dead.
 - **Git:** CLI is available at `C:\Program Files\Git\cmd\git.exe` (not on PATH). `backend/.env`, databases, logs, and `frontend/dist` are ignored.
 - **Secrets:** the Dahl key and other credentials exist only in the ignored `.env`; they are not included in this report or the commit.
 
@@ -141,26 +144,29 @@ npm run test
 
 ## 4. Next Steps Checklist
 
-- [x] **Dahl:** key is configured and a real `200` was observed with Arabic output and `difficulty_level: 5`.
-- [ ] **Stabilize Dahl:** log in at `https://inference.dahl.global/account`, link this key, click **Allocate**, and retry until the AI endpoint returns `200` repeatably (latest retries are `429 model_concurrency`).
+- [x] **Dahl:** key is configured; primary DeepSeek still hits `429 model_concurrency`.
+- [x] **Cloudflare 502 fix:** provider errors return `424`, primary has a 30s budget, and MiniMax fallback returns `200`; verified via the public tunnel and browser UI.
+- [x] **AI fallback:** a real `200` in `16.73s` with Arabic subject/body, `difficulty_level: 5`, model `MiniMaxAI/MiniMax-M2.7`.
+- [ ] **Stabilize Dahl primary:** log in at `https://inference.dahl.global/account`, link this key, click **Allocate**, and retry until DeepSeek returns `200` repeatably.
 - [ ] **Brevo:** open Brevo → Security → Authorised IPs, add **`94.26.222.41`** (and `46.161.243.54` if that egress is still used), or disable the IP restriction.
-- [ ] **Tunnel:** confirm the current quick tunnel or start a new `cloudflared tunnel --url http://localhost:8000`; update `BASE_URL` and `CORS_ORIGINS` in `backend/.env`; restart the backend.
-- [ ] **Real email:** launch draft campaign `16ccfeb3-f986-46e9-956f-44b3f16e0883`.
+- [x] **Tunnel:** current quick tunnel is active at `https://package-conferencing-bingo-successful.trycloudflare.com`; `BASE_URL`, `FRONTEND_URL`, and `CORS_ORIGINS` match it.
+- [ ] **Real email:** launch draft campaign `16ccfeb3-f986-46e9-956f-44b3f16e0883` after Brevo allowlists the IP.
 - [ ] **Proof of life:** confirm delivery, click `/phish/{uuid}`, submit the form, observe `/hacked/{uuid}` for 5 seconds, then continue to training.
 - [ ] **Database proof:** verify `submitted_at` is recorded and the employee's `elo_score` drops by 32 on first click.
 - [ ] **PDF proof:** download the Executive PDF from Campaign Results.
 - [ ] **Vonage:** configure API key/secret, SMS sender, WhatsApp sender/app credentials, webhooks, and a test phone; then test real SMS/WhatsApp/DLR.
 - [ ] **Stable domain:** replace the ephemeral quick tunnel with a permanent domain before production.
 - [ ] **Font license:** add the Amiri OFL license file if the bundled fonts will be distributed.
-- [x] **Commit:** source changes and this report committed with `feat: complete AI, Elo, Hack, PDF + env cleanup + status report`.
-- [ ] **Push:** push the commit to the remote when the remote is configured/available.
+- [x] **Commit:** previous production-readiness work committed as `76c2d86`.
+- [ ] **Commit this fix:** stage and commit the AI fallback / Cloudflare fix.
+- [ ] **Push:** push the commits to the remote when confirmed.
 
 ---
 
 ## 5. Known Limitations / Blockers
 
-1. **Dahl access is intermittent.**
-   A real generation returned `200` after ~90.4 seconds, but subsequent retries returned `429 model_concurrency`. The provider message says signed-in/paid accounts are admitted first and recommends allocating/linking the key, retrying after `Retry-After`, or switching models. Click **Allocate** for this key and retry. The backend timeout is 120s and the frontend timeout is 150s; no mock template is used as a fallback.
+1. **Dahl primary model is capacity-limited; fallback is active.**
+   DeepSeek returns `429 model_concurrency`; the provider admits signed-in/paid accounts first. The service now automatically falls back to MiniMax and returns a real template. Click **Allocate** for this key at `https://inference.dahl.global/account` to restore DeepSeek as the preferred model. No mock template is used; both primary and fallback are real providers. MiniMax may take 15–50 seconds and emits a reasoning block, which the parser strips before validating the JSON.
 
 2. **Brevo IP allowlist is blocking email.**
    The current launch response is:
@@ -196,8 +202,9 @@ npm run test
 ## 6. Operational Notes
 
 - Restart the backend after changing `.env`; settings are loaded at startup.
-- The main AI endpoint intentionally returns `503` when no key is configured and `502` when the provider fails; it never silently substitutes a mock template.
+- The main AI endpoint intentionally returns `503` when no key is configured and **`424`** when the provider fails; it never silently substitutes a mock template. The `424` is deliberate: Cloudflare replaces origin `5xx` responses with its own HTML error page, which hid the actionable provider message.
 - AI generation is rate-limited to 10 requests/minute; PDF generation is rate-limited to 20 requests/minute.
-- Dahl generation can take ~90s; the backend provider timeout is 120s and the frontend Axios timeout is 150s.
+- Primary AI timeout is 30s; fallback timeout is 60s; the frontend Axios timeout is 150s. Keep the combined primary + fallback budget below Cloudflare's request window.
 - `backend/.env`, `*.db`, `*.log`, and `frontend/dist/` are ignored and must not be committed.
 - The active backend is serving the built frontend from `frontend/dist` at both the local and tunnel URLs.
+- Current runtime PIDs: backend `9500`, cloudflared `16252` (verify after any restart).

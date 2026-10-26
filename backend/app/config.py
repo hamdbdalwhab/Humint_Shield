@@ -197,8 +197,12 @@ class Settings(BaseSettings):
     llm_provider: str = "openai"
     llm_api_key: str = ""
     llm_model: str = ""
+    llm_fallback_models: str = ""
     llm_base_url: str = ""
-    llm_timeout_seconds: float = 120.0
+    #: Timeout for fallback models.  The primary model has a shorter budget so a
+    #: slow/queued primary cannot consume the whole Cloudflare request window.
+    llm_timeout_seconds: float = 60.0
+    llm_primary_timeout_seconds: float = 30.0
     llm_max_tokens: int = 1800
 
     @property
@@ -229,6 +233,25 @@ class Settings(BaseSettings):
         if self.llm_provider_slug == "openai":
             return "gpt-4o-mini"
         return ""
+
+    @property
+    def llm_fallback_model_list(self) -> list[str]:
+        """Return the optional fallback models in configured order.
+
+        The value is a comma separated list so a deployment can add models
+        without changing code.  Blank entries and duplicates are removed.
+        """
+        raw = (self.llm_fallback_models or "").strip()
+        if not raw:
+            return []
+        models: list[str] = []
+        seen: set[str] = set()
+        for part in raw.split(","):
+            model = part.strip()
+            if model and model not in seen:
+                seen.add(model)
+                models.append(model)
+        return models
 
     @property
     def llm_configured(self) -> bool:
