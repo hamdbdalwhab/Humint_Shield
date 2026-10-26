@@ -159,7 +159,7 @@ npm run test
 - [ ] **Font license:** add the Amiri OFL license file if the bundled fonts will be distributed.
 - [x] **Commit:** previous production-readiness work committed as `76c2d86`.
 - [x] **Commit this fix:** `b6ab0ba` — AI fallback / Cloudflare fix.
-- [ ] **Push:** `main` is ahead of `origin/main` by 2 commits (`76c2d86`, `b6ab0ba`); push when confirmed.
+- [ ] **Push:** `main` is ahead of `origin/main` by 4 commits; push when confirmed.
 
 ---
 
