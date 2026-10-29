@@ -43,7 +43,12 @@ EVENT_LABELS = {
     "form_submitted": "Credentials entered",
     "credentials_submitted": "Credentials entered",
     "phishing_reported": "Reported as phishing",
+    "reported_phish": "Reported as phishing",
     "training_completed": "Micro-training completed",
+    "qr_scanned": "QR code scanned",
+    "usb_opened": "USB awareness document opened",
+    "credential_disclosed": "Verification code disclosed",
+    "financial_fraud": "Gift-card codes sent",
 }
 
 

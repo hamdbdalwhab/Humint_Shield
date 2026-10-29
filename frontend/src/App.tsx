@@ -17,17 +17,21 @@ import { DashboardPage } from '@/pages/DashboardPage';
 import { EmployeeDossierPage } from '@/pages/EmployeeDossierPage';
 import { EmployeesPage } from '@/pages/EmployeesPage';
 import { HackedPage } from '@/pages/HackedPage';
+import { IncidentResponseSimulationPage } from '@/pages/IncidentResponseSimulationPage';
 import { LoginPage } from '@/pages/LoginPage';
 import { LiveBoardPage } from '@/pages/LiveBoardPage';
 import { MyTrainingPage } from '@/pages/MyTrainingPage';
 import { NewCampaignPage } from '@/pages/NewCampaignPage';
 import { NotFoundPage } from '@/pages/NotFoundPage';
 import { PhishingLandingPage } from '@/pages/PhishingLandingPage';
+import { PretextingSimulationPage } from '@/pages/PretextingSimulationPage';
+import { QrSimulationPage } from '@/pages/QrSimulationPage';
 import { ReportInboxPage } from '@/pages/ReportInboxPage';
 import { SettingsPage } from '@/pages/SettingsPage';
 import { TemplatesPage } from '@/pages/TemplatesPage';
 import { TrainingExperiencePage } from '@/pages/TrainingExperiencePage';
 import { TrainingLibraryPage } from '@/pages/TrainingLibraryPage';
+import { VishingSimulationPage } from '@/pages/VishingSimulationPage';
 
 /** Wrap a page in the authenticated application shell. */
 function Shell({ children }: { children: ReactNode }) {
@@ -43,6 +47,10 @@ export function App() {
     <Routes>
       <Route path="/login" element={<LoginPage />} />
       <Route path="/phish/:trackingUuid" element={<PhishingLandingPage />} />
+      <Route path="/simulation/qr/:trackingUuid" element={<QrSimulationPage />} />
+      <Route path="/simulation/vishing/:trackingUuid" element={<VishingSimulationPage />} />
+      <Route path="/simulation/ceo/:trackingUuid" element={<PretextingSimulationPage />} />
+      <Route path="/simulation/pretexting/:trackingUuid" element={<PretextingSimulationPage />} />
       <Route path="/hacked/:trackingUuid" element={<HackedPage />} />
       <Route path="/training-experience/:trackingUuid" element={<TrainingExperiencePage />} />
       <Route path="/training/:trackingUuid" element={<TrainingExperiencePage />} />
@@ -108,6 +116,15 @@ export function App() {
         element={
           <Shell>
             <CampaignDetailPage />
+          </Shell>
+        }
+      />
+
+      <Route
+        path="/incident-response-simulation"
+        element={
+          <Shell>
+            <IncidentResponseSimulationPage />
           </Shell>
         }
       />

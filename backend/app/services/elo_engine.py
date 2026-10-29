@@ -31,6 +31,19 @@ MAX_ELO = 2000
 CLICK_ELO_DELTA = -32
 REPORT_ELO_DELTA = 32
 
+#: Channel-specific outcomes for the advanced simulation channels.
+#:
+#: A QR scan by itself is score-neutral: the scan only opens the simulated
+#: mobile sign-in page.  The quishing penalty is applied once, when the
+#: recipient actually submits the credential form.
+QR_SCAN_ELO_DELTA = 0
+QR_CREDENTIAL_ELO_DELTA = -25
+USB_OPEN_ELO_DELTA = -30
+VISHING_CREDENTIAL_ELO_DELTA = -30
+VISHING_REPORT_ELO_DELTA = 20
+PRETEXTING_FRAUD_ELO_DELTA = -30
+PRETEXTING_REPORT_ELO_DELTA = 20
+
 DifficultyBand = Literal["easy", "medium", "hard"]
 ThreatLevel = Literal["low", "medium", "high", "critical"]
 
@@ -154,6 +167,10 @@ __all__ = [
     "INITIAL_ELO",
     "MAX_ELO",
     "MIN_ELO",
+    "PRETEXTING_FRAUD_ELO_DELTA",
+    "PRETEXTING_REPORT_ELO_DELTA",
+    "QR_CREDENTIAL_ELO_DELTA",
+    "QR_SCAN_ELO_DELTA",
     "REPORT_ELO_DELTA",
     "THREAT_LABELS",
     "THREAT_LABELS_AR",

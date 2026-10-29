@@ -45,6 +45,8 @@ import {
   Shield,
   ShieldCheck,
   Sparkles,
+  Terminal,
+  Usb,
   Users,
 } from 'lucide-react';
 import { useMemo, useState, type ReactNode } from 'react';
@@ -71,6 +73,7 @@ const CAMPAIGN_NAV: NavItem[] = [
   { labelAr: 'الموظفون', labelEn: 'Human Assets', to: '/employees', icon: <Users size={19} /> },
   { labelAr: 'قوالب الرسائل', labelEn: 'Templates', to: '/templates', icon: <Mail size={19} /> },
   { labelAr: 'الحملات', labelEn: 'Campaigns', to: '/campaigns', icon: <Megaphone size={19} /> },
+  { labelAr: 'محاكاة SOC', labelEn: 'SOC Simulation', to: '/incident-response-simulation', icon: <Terminal size={19} /> },
 ];
 
 const LMS_NAV: NavItem[] = [
@@ -85,6 +88,11 @@ const PAGE_TITLES: Array<{ prefix: string; ar: string; en: string }> = [
   { prefix: '/employees', ar: 'الموظفون', en: 'Human Assets' },
   { prefix: '/templates', ar: 'قوالب الرسائل', en: 'Templates' },
   { prefix: '/campaigns', ar: 'الحملات', en: 'Campaigns' },
+  {
+    prefix: '/incident-response-simulation',
+    ar: 'محاكاة SOC',
+    en: 'SOC Simulation',
+  },
   { prefix: '/training-library', ar: 'مكتبة التدريب', en: 'Training Library' },
   { prefix: '/assignments', ar: 'المهام التدريبية', en: 'Assignments' },
   { prefix: '/my-training', ar: 'تدريبي', en: 'My Training' },
@@ -103,6 +111,7 @@ interface RecentEvent {
 }
 
 function eventIcon(type: string): ReactNode {
+  if (type.includes('usb')) return <Usb size={16} />;
   if (type.includes('submitted')) return <KeyRound size={16} />;
   if (type.includes('click')) return <MousePointerClick size={16} />;
   if (type.includes('form_viewed')) return <ScanEye size={16} />;
@@ -112,6 +121,7 @@ function eventIcon(type: string): ReactNode {
 }
 
 function eventColor(type: string): string {
+  if (type.includes('usb')) return '#FF1744';
   if (type.includes('submitted')) return '#FF1744';
   if (type.includes('click') || type.includes('form_viewed')) return '#FFB020';
   if (type.includes('reported') || type.includes('completed')) return '#00E676';

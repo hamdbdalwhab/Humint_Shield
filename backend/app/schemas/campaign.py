@@ -15,8 +15,11 @@ class CampaignBase(BaseModel):
 
     name: str = Field(min_length=1, max_length=255)
     template_id: uuid.UUID
-    channel: str = Field(default="email", pattern="^(email|sms|whatsapp)$")
+    channel: str = Field(
+        default="email", pattern="^(email|sms|whatsapp|qr|vishing|pretexting|usb)$"
+    )
     difficulty_level: int = Field(default=5, ge=1, le=10)
+    channel_config: dict[str, Any] | None = None
 
 
 class CampaignCreate(CampaignBase):
@@ -30,8 +33,11 @@ class CampaignUpdate(BaseModel):
 
     name: str | None = Field(default=None, min_length=1, max_length=255)
     template_id: uuid.UUID | None = None
-    channel: str | None = Field(default=None, pattern="^(email|sms|whatsapp)$")
+    channel: str | None = Field(
+        default=None, pattern="^(email|sms|whatsapp|qr|vishing|pretexting|usb)$"
+    )
     difficulty_level: int | None = Field(default=None, ge=1, le=10)
+    channel_config: dict[str, Any] | None = None
     target_employee_ids: list[uuid.UUID] | None = None
 
 
@@ -45,6 +51,7 @@ class CampaignPublic(BaseModel):
     template_id: uuid.UUID | None
     name: str
     channel: str = "email"
+    channel_config: dict[str, Any] | None = None
     status: str
     target_employee_ids: list[str]
     total_targets: int
@@ -106,6 +113,7 @@ class CampaignEmployeeResult(BaseModel):
     """Per-employee engagement row."""
 
     employee_id: uuid.UUID
+    tracking_uuid: uuid.UUID | None = None
     name: str
     email: str
     phone: str | None = None
@@ -324,6 +332,10 @@ class TrainingSubmission(BaseModel):
     password_length: int | None = Field(default=None, ge=0, le=1024)
     fields: dict[str, str] = Field(default_factory=dict)
     client: dict[str, Any] | None = None
+    #: When ``False`` the backend records only non-secret metadata and never
+    #: persists the typed password.  The React credential pages always send
+    #: ``False``; legacy API clients default to the historical behaviour.
+    capture_secret: bool = True
 
 
 class TrainingInteractionResponse(BaseModel):
@@ -340,3 +352,44 @@ class TestEmailRequest(BaseModel):
     """Body for ``POST /test/brevo``."""
 
     to_email: str = Field(min_length=3, max_length=255)
+
+
+class SimulationChoiceRequest(BaseModel):
+    """Choice made on a vishing or pretexting simulation page."""
+
+    choice: str = Field(
+        pattern="^(credential_disclosed|financial_fraud|reported_phish)$"
+    )
+
+
+class SimulationChoiceResponse(BaseModel):
+    """Result of a vishing/pretexting choice, including the updated Elo."""
+
+    success: bool
+    choice: str
+    message: str = ""
+    already_recorded: bool = False
+    elo_score: int | None = None
+    threat_level: str | None = None
+    redirect_url: str | None = None
+
+
+class QRPosterRequest(BaseModel):
+    """Optional copy overrides for a quishing poster pack."""
+
+    headline: str | None = Field(default=None, max_length=180)
+    body: str | None = Field(default=None, max_length=1200)
+    footer: str | None = Field(default=None, max_length=240)
+    pretext_key: str | None = Field(default=None, max_length=60)
+
+
+class USBPDFRequest(BaseModel):
+    """Optional document metadata for a safe USB-drop PDF pack.
+
+    The awareness warning itself is fixed in the renderer and cannot be
+    overridden.  Only the downloaded document name and the visible month label
+    are operator-configurable.
+    """
+
+    document_name: str | None = Field(default=None, max_length=120)
+    month_label: str | None = Field(default=None, max_length=80)

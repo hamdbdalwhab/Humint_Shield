@@ -25,6 +25,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_session_factory
 from app.logging_config import get_logger
 from app.models import (
+    CHANNELS,
+    SIMULATION_CHANNELS,
     EmailCampaign,
     EmailTemplate,
     EmailTracking,
@@ -106,7 +108,7 @@ class CampaignLauncher:
                 f"campaign is '{campaign.status}'; only 'draft' campaigns can be launched"
             )
         channel = (campaign.channel or "email").strip().lower()
-        if channel not in {"email", "sms", "whatsapp"}:
+        if channel not in CHANNELS:
             raise CampaignLaunchError(f"unsupported campaign channel: {channel!r}")
         campaign.channel = channel
 
@@ -306,17 +308,24 @@ class CampaignLauncher:
         )
 
         tracking_uuid = uuid.uuid4()
+        provider_name = (
+            "brevo"
+            if channel == "email"
+            else "simulation"
+            if channel in SIMULATION_CHANNELS
+            else "vonage"
+        )
         tracking = existing or EmailTracking(
             campaign_id=campaign.id,
             employee_id=employee.id,
             template_id=selected_template.id,
             channel=channel,
-            provider="brevo" if channel == "email" else "vonage",
+            provider=provider_name,
             tracking_uuid=tracking_uuid,
         )
         tracking.template_id = selected_template.id
         tracking.channel = channel
-        tracking.provider = "brevo" if channel == "email" else "vonage"
+        tracking.provider = provider_name
         # A failed previous attempt may have left no provider id; a reused row
         # must never retain an id belonging to the failed send.
         if tracking.sent_at is None:
@@ -344,7 +353,13 @@ class CampaignLauncher:
         correlation_id = f"{campaign.id}:{employee.id}"
         response: dict[str, Any]
 
-        if channel == "email":
+        if channel in SIMULATION_CHANNELS:
+            # These channels are delivered outside a provider: the operator
+            # prints the QR poster or shares the unique simulation link.  The
+            # tracking row is still materialised so every interaction is
+            # measurable through the same funnel and Elo pipeline.
+            response = {"success": True, "message_id": None, "error": None}
+        elif channel == "email":
             rendered = self.personalizer.personalize(
                 selected_template,
                 employee,
@@ -418,6 +433,9 @@ class CampaignLauncher:
                 # delivered timestamp from the provider webhook only.
                 tracking.delivered_at = _now()
                 tracking.delivery_status = "delivered"
+            elif channel in SIMULATION_CHANNELS:
+                tracking.delivered_at = _now()
+                tracking.delivery_status = "available"
             else:
                 tracking.delivery_status = "submitted"
             tracking.delivery_error = None
@@ -488,6 +506,8 @@ class CampaignLauncher:
                 status = "submitted"
             if tracking.completed_at is not None:
                 status = "completed"
+            if tracking.reported_at is not None and tracking.submitted_at is None:
+                status = "reported_safe"
             if tracking.is_reported_safe:
                 status = "reported_safe"
             opened += 1 if tracking.opened_at else 0
@@ -497,6 +517,7 @@ class CampaignLauncher:
             employees.append(
                 {
                     "employee_id": employee.id,
+                    "tracking_uuid": tracking.tracking_uuid,
                     "name": employee.full_name,
                     "email": employee.email,
                     "phone": employee.phone,
@@ -677,6 +698,10 @@ class CampaignLauncher:
         if not template.is_active:
             raise CampaignLaunchError("campaign template is inactive")
         channel = (campaign.channel or "email").strip().lower()
+        if channel in SIMULATION_CHANNELS:
+            # Simulation channels reuse an active email template as their
+            # scenario/reference content; delivery happens outside a provider.
+            return template
         if (template.channel or "email") != channel:
             raise CampaignLaunchError(
                 f"template channel '{template.channel}' does not match campaign channel '{channel}'"

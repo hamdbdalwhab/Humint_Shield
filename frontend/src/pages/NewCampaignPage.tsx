@@ -57,11 +57,40 @@ import type { Employee } from '@/types';
 
 const STEPS = ['التفاصيل', 'المستهدفون', 'المراجعة'];
 
-const CHANNEL_LABELS: Record<'email' | 'sms' | 'whatsapp', string> = {
+type WizardChannel = 'email' | 'sms' | 'whatsapp' | 'qr' | 'vishing' | 'pretexting' | 'usb';
+
+const CHANNEL_LABELS: Record<WizardChannel, string> = {
   email: 'البريد الإلكتروني — Brevo',
   sms: 'رسائل SMS — Vonage',
   whatsapp: 'واتساب — Vonage',
+  qr: 'رمز QR — Quishing (طباعة يدوية)',
+  vishing: 'مكالمة صوتية — Vishing (رابط يدوي)',
+  pretexting: 'محادثة CEO — Pretexting (رابط يدوي)',
+  usb: 'فلاشة USB — HTML/PDF توعوي (توزيع يدوي)',
 };
+
+const QR_PRECEPTS: { value: string; label: string; hint: string }[] = [
+  {
+    value: 'it_security',
+    label: 'تحديث أمني إلزامي',
+    hint: 'انتحال فريق أمن المعلومات وطلب إعادة التحقق خلال 24 ساعة.',
+  },
+  {
+    value: 'hr_policy',
+    label: 'سياسة الموارد البشرية',
+    hint: 'انتحال الموارد البشرية وتحديث سياسة العمل عن بُعد.',
+  },
+  {
+    value: 'finance_bonus',
+    label: 'مكافأة مالية',
+    hint: 'انتحال الإدارة المالية وإقرار مكافأة ربع سنوية.',
+  },
+  {
+    value: 'free_coffee',
+    label: 'قهوة مجانية',
+    hint: 'عرض ترفيهي من كافتيريا الشركة — الأكثر فاعلية في اختبارات USB/QR.',
+  },
+];
 
 /** Strict E.164: country code plus 8-15 digits, no separators. */
 const E164_PATTERN = /^\+[1-9]\d{7,14}$/;
@@ -84,7 +113,8 @@ export function NewCampaignPage() {
 
   const [step, setStep] = useState(0);
   const [name, setName] = useState('');
-  const [channel, setChannel] = useState<'email' | 'sms' | 'whatsapp'>('email');
+  const [channel, setChannel] = useState<WizardChannel>('email');
+  const [qrPretext, setQrPretext] = useState('it_security');
   const [templateId, setTemplateId] = useState('');
   const [difficulty, setDifficulty] = useState(5);
   const [selected, setSelected] = useState<Map<string, Employee>>(new Map());
@@ -99,9 +129,18 @@ export function NewCampaignPage() {
   const quickSendRef = useRef(false);
   const [launchError, setLaunchError] = useState<string | null>(null);
 
+  const templateChannel =
+    channel === 'qr' || channel === 'usb' || channel === 'vishing' || channel === 'pretexting'
+      ? 'email'
+      : channel;
+
   const templatesQuery = useQuery({
-    queryKey: ['templates', organizationId, channel],
-    queryFn: () => templatesApi.list(organizationId as string, { is_active: true, channel }),
+    queryKey: ['templates', organizationId, templateChannel],
+    queryFn: () =>
+      templatesApi.list(organizationId as string, {
+        is_active: true,
+        channel: templateChannel,
+      }),
     enabled: Boolean(organizationId),
   });
 
@@ -163,8 +202,13 @@ export function NewCampaignPage() {
     queryFn: () =>
       channel === 'email'
         ? diagnosticsApi.verifyBrevo()
-        : diagnosticsApi.verifyVonage(channel),
-    enabled: step === 2,
+        : diagnosticsApi.verifyVonage(channel as 'sms' | 'whatsapp'),
+    enabled:
+      step === 2 &&
+      channel !== 'qr' &&
+      channel !== 'usb' &&
+      channel !== 'vishing' &&
+      channel !== 'pretexting',
     staleTime: 15_000,
     retry: false,
   });
@@ -173,12 +217,35 @@ export function NewCampaignPage() {
     mutationFn: async () => {
       if (!organizationId) throw new Error('No organization');
       const targets = Array.from(selected.keys());
+      const channelConfig =
+        channel === 'qr'
+          ? { qr: { pretext_key: qrPretext } }
+          : channel === 'vishing'
+            ? {
+                vishing: {
+                  caller_name: 'أحمد — الدعم الفني',
+                  script:
+                    'مرحباً، أنا أحمد من الدعم الفني. لقد لاحظنا اختراقاً في حسابك. هل يمكنك إعطائي الرمز الذي وصلك في رسالة نصية؟',
+                },
+              }
+            : channel === 'pretexting'
+              ? {
+                  pretexting: {
+                    sender_name: 'محمد العتيبي',
+                    message:
+                      'أحتاج منك شراء 3 بطاقات جوجل بلاي (100$) وإرسال الأكواد هنا فوراً. سأعوضك لاحقاً.',
+                  },
+                }
+              : channel === 'usb'
+                ? { usb: { document_name: 'راتب_الشهر_القادم.pdf' } }
+                : undefined;
       let campaignId = draftIdRef.current;
       if (!campaignId) {
         const campaign = await campaignsApi.create(organizationId, {
           name,
           template_id: templateId,
           channel,
+          channel_config: channelConfig,
           difficulty_level: difficulty,
           target_employee_ids: targets,
         });
@@ -190,6 +257,7 @@ export function NewCampaignPage() {
           name,
           template_id: templateId,
           channel,
+          channel_config: channelConfig,
           target_employee_ids: targets,
         });
       }
@@ -198,6 +266,36 @@ export function NewCampaignPage() {
     onSuccess: (result) => {
       setConfirmOpen(false);
       setLaunchError(null);
+      if (
+        channel === 'qr' ||
+        channel === 'usb' ||
+        channel === 'vishing' ||
+        channel === 'pretexting'
+      ) {
+        const unit =
+          channel === 'usb'
+            ? 'مستند USB'
+            : channel === 'qr'
+              ? 'ملصق QR'
+              : 'رابط محاكاة';
+        if (result.failed > 0) {
+          toast.error(`تم تجهيز ${result.sent} من ${result.total} ${unit}؛ فشل ${result.failed}.`);
+        } else if (channel === 'usb') {
+          toast.success(
+            `تم تجهيز ${result.total} مستند USB. حمّل ملف HTML أو PDF من صفحة الحملة.`,
+          );
+        } else if (channel === 'qr') {
+          toast.success(
+            `تم تجهيز ${result.total} ملصق QR. حمّل ملف الـ PDF من صفحة الحملة.`,
+          );
+        } else {
+          toast.success(
+            `تم تجهيز ${result.total} ${unit}. افتح صفحة الحملة لعرض الروابط وتعليمات التسليم.`,
+          );
+        }
+        navigate(`/campaigns/${result.campaign_id}`);
+        return;
+      }
       if (result.failed > 0) {
         toast.error(`أُرسل ${result.sent} من ${result.total}؛ فشل ${result.failed}.`);
       } else {
@@ -218,6 +316,12 @@ export function NewCampaignPage() {
     [employeesQuery.data],
   );
 
+  const isQrChannel = channel === 'qr';
+  const isUsbChannel = channel === 'usb';
+  const isVishingChannel = channel === 'vishing';
+  const isPretextingChannel = channel === 'pretexting';
+  const isManualChannel =
+    isQrChannel || isUsbChannel || isVishingChannel || isPretextingChannel;
   const isPhoneChannel = channel === 'sms' || channel === 'whatsapp';
 
   function isSelectable(employee: Employee): boolean {
@@ -295,10 +399,30 @@ export function NewCampaignPage() {
   const invalidPhoneCount = visibleEmployees.filter(
     (employee) => !hasValidPhone(employee.phone),
   ).length;
-  const channelNoun =
-    channel === 'email' ? 'رسالة بريد إلكتروني' : channel === 'sms' ? 'رسالة SMS' : 'رسالة واتساب';
-  const providerName = channel === 'email' ? 'Brevo/SMTP' : 'Vonage';
-  const preflightBlocked = Boolean(preflightQuery.data && !preflightQuery.data.valid);
+  const channelNoun = isQrChannel
+    ? 'ملصق QR'
+    : isUsbChannel
+      ? 'مستند USB'
+      : isVishingChannel
+        ? 'مكالمة Vishing'
+        : isPretextingChannel
+          ? 'محادثة CEO'
+          : channel === 'email'
+            ? 'رسالة بريد إلكتروني'
+            : channel === 'sms'
+              ? 'رسالة SMS'
+              : 'رسالة واتساب';
+  const providerName = isQrChannel
+    ? 'الطباعة اليدوية'
+    : isUsbChannel
+      ? 'التوزيع اليدوي'
+      : isVishingChannel || isPretextingChannel
+        ? 'التسليم اليدوي للرابط'
+        : channel === 'email'
+          ? 'Brevo/SMTP'
+          : 'Vonage';
+  const preflightBlocked =
+    !isManualChannel && Boolean(preflightQuery.data && !preflightQuery.data.valid);
 
   return (
     <>
@@ -361,16 +485,63 @@ export function NewCampaignPage() {
                 value={channel}
                 fullWidth
                 onChange={(event) => {
-                  const nextChannel = event.target.value as 'email' | 'sms' | 'whatsapp';
+                  const nextChannel = event.target.value as WizardChannel;
                   setChannel(nextChannel);
                   setTemplateId('');
                 }}
-                helperText="البريد الإلكتروني يُرسل عبر Brevo، وSMS وواتساب يُرسلان عبر Vonage. أرقام الهاتف يجب أن تكون بصيغة E.164 مثل +966500000000."
+                helperText={
+                  isQrChannel
+                    ? 'حملة QR لا ترسل رسائل: بعد الإطلاق تُنزّل ملف PDF به ملصق لكل موظف، برمز فريد ورابط تتبع إلى صفحة دخول الجوال. القالب يُستخدم كمرجع للسيناريو فقط.'
+                    : isUsbChannel
+                      ? 'حملة USB لا ترسل رسائل: بعد الإطلاق تُنزّل ملف HTML آمن باسم الرواتب_السرية.html، وتنسخه على فلاشات مصرّح بها. كل ملف يحمل رابط تتبع فريداً. القالب يُستخدم كمرجع للسيناريو فقط.'
+                      : isVishingChannel || isPretextingChannel
+                        ? 'هذه قناة محاكاة يدوية: لا تُرسل مكالمة أو رسالة حقيقية. بعد الإطلاق تنسخ رابط المحاكاة الفريد لكل موظف من صفحة الحملة. القالب يُستخدم كمرجع للسيناريو فقط.'
+                        : 'البريد الإلكتروني يُرسل عبر Brevo، وSMS وواتساب يُرسلان عبر Vonage. أرقام الهاتف يجب أن تكون بصيغة E.164 مثل +966500000000.'
+                }
               >
                 <MenuItem value="email">البريد الإلكتروني</MenuItem>
                 <MenuItem value="sms">SMS — Vonage</MenuItem>
                 <MenuItem value="whatsapp">واتساب — Vonage</MenuItem>
+                <MenuItem value="qr">رمز QR — Quishing</MenuItem>
+                <MenuItem value="vishing">مكالمة صوتية — Vishing</MenuItem>
+                <MenuItem value="pretexting">محادثة CEO — Pretexting</MenuItem>
+                <MenuItem value="usb">فلاشة USB — HTML/PDF توعوي</MenuItem>
               </TextField>
+              {isUsbChannel ? (
+                <Alert severity="info">
+                  سيتم إنشاء ملف HTML قياسي وآمن باسم{' '}
+                  <strong>الرواتب_السرية.html</strong> يعرض تحذيراً أحمر فور فتحه ويسجل
+                  الحدث <span dir="ltr" className="mc-mono">usb_opened</span>. يمكنك أيضاً
+                  تنزيل نسخة PDF من صفحة الحملة. لا يحتوي أي ملف على برامج أو أوامر تنفيذية،
+                  ولا يُشغّل أي شيء تلقائياً. راجع <strong>README_USB.md</strong> قبل التوزيع.
+                </Alert>
+              ) : null}
+              {isVishingChannel || isPretextingChannel ? (
+                <Alert severity="info">
+                  {isVishingChannel
+                    ? 'ستُجهّز صفحة مكالمة واردة تحاكي الدعم الفني، مع تحويل النص إلى كلام في المتصفح. لا تُجرى أي مكالمة هاتفية حقيقية ولا يُطلب رمز حقيقي.'
+                    : 'ستُجهّز محادثة واتساب/Teams تحاكي الرئيس التنفيذي وتُعرض رسالتا الطلب تلقائياً. لا تُرسل أي أموال أو رسائل حقيقية.'}
+                </Alert>
+              ) : null}
+              {isQrChannel ? (
+                <TextField
+                  select
+                  label="سيناريو الملصق"
+                  fullWidth
+                  value={qrPretext}
+                  onChange={(event) => setQrPretext(event.target.value)}
+                  helperText={
+                    QR_PRECEPTS.find((pretext) => pretext.value === qrPretext)?.hint ??
+                    'اختر القصة التي ستظهر على الملصق المطبوع.'
+                  }
+                >
+                  {QR_PRECEPTS.map((pretext) => (
+                    <MenuItem key={pretext.value} value={pretext.value}>
+                      {pretext.label}
+                    </MenuItem>
+                  ))}
+                </TextField>
+              ) : null}
               <TextField
                 select
                 label="القالب"
@@ -386,10 +557,14 @@ export function NewCampaignPage() {
                 disabled={templatesQuery.isLoading}
                 helperText={
                   templatesQuery.data && templatesQuery.data.length === 0
-                    ? channel === 'email'
-                      ? 'لا توجد قوالب بريد نشطة — أنشئ قالباً من صفحة القوالب أولاً.'
-                      : `لا توجد قوالب ${channel === 'sms' ? 'SMS' : 'واتساب'} نشطة — أنشئ قالباً من صفحة القوالب واختر القناة الصحيحة.`
-                    : 'القالب يحدد قصة المرسل والموضوع ونص الرسالة.'
+                    ? isManualChannel
+                      ? 'لا توجد قوالب بريد نشطة — القنوات اليدوية تحتاج قالباً نشطاً كمرجع للسيناريو. أنشئ قالباً أولاً.'
+                      : channel === 'email'
+                        ? 'لا توجد قوالب بريد نشطة — أنشئ قالباً من صفحة القوالب أولاً.'
+                        : `لا توجد قوالب ${channel === 'sms' ? 'SMS' : 'واتساب'} نشطة — أنشئ قالباً من صفحة القوالب واختر القناة الصحيحة.`
+                    : isManualChannel
+                      ? 'قالب البريد يُستخدم كمرجع للسيناريو فقط؛ لا تُرسل أي رسالة بريد في هذه الحملة.'
+                      : 'القالب يحدد قصة المرسل والموضوع ونص الرسالة.'
                 }
               >
                 {(templatesQuery.data ?? []).map((template) => (
@@ -758,7 +933,30 @@ export function NewCampaignPage() {
                 </TableContainer>
               </Box>
 
-              {preflightQuery.isFetching ? (
+              {isQrChannel ? (
+                <Alert severity="info">
+                  قناة QR لا تستخدم مزوّد إرسال. سيتم إنشاء صفحة طباعة A4 لكل مستهدف برمز
+                  فريد يفتح صفحة دخول جوال تحاكي شبكة الشركة والتأمين الصحي. عند إرسال
+                  النموذج يُسجّل الحدثان{' '}
+                  <span dir="ltr" className="mc-mono">qr_scanned</span> و{' '}
+                  <span dir="ltr" className="mc-mono">credential_submitted</span> وتُخصم 25
+                  نقطة Elo مرة واحدة. كلمة المرور لا تُخزَّن أبداً.
+                </Alert>
+              ) : isUsbChannel ? (
+                <Alert severity="info">
+                  قناة USB لا تستخدم مزوّد إرسال. سيتم إنشاء ملف HTML آمن باسم{' '}
+                  <strong>الرواتب_السرية.html</strong> يعرض تحذيراً أحمر فور فتحه ويسجّل{' '}
+                  <span dir="ltr" className="mc-mono">usb_opened</span> ويخصم 30 نقطة Elo مرة
+                  واحدة. يمكنك أيضاً تنزيل نسخة PDF من صفحة الحملة. لا يحتوي أي ملف على
+                  برنامج أو أمر تنفيذي.
+                </Alert>
+              ) : isVishingChannel || isPretextingChannel ? (
+                <Alert severity="info">
+                  {isVishingChannel
+                    ? 'قناة Vishing يدوية بالكامل: ستُجهّز رابط مكالمة واردة فريداً لكل مستهدف، مع تحويل النص إلى كلام داخل المتصفح. لا تُجرى مكالمة هاتفية حقيقية. اختيار إعطاء الرمز يخصم 30 نقطة Elo، والإبلاغ يضيف 20 نقطة.'
+                    : 'قناة Pretexting يدوية بالكامل: ستُجهّز رابط محادثة CEO فريداً لكل مستهدف، وتُعرض رسالتا طلب بطاقات جوجل بلاي تلقائياً. لا تُرسل أموال أو رسائل حقيقية. الشراء يخصم 30 نقطة Elo، والإبلاغ يضيف 20 نقطة.'}
+                </Alert>
+              ) : preflightQuery.isFetching ? (
                 <Alert severity="info">جارٍ التحقق من جاهزية الإرسال الحقيقي…</Alert>
               ) : preflightQuery.data && !preflightQuery.data.valid ? (
                 <Alert
@@ -838,12 +1036,31 @@ export function NewCampaignPage() {
                 </Alert>
               ) : null}
 
-              <Alert severity="warning">
-                سيتم إرسال <strong>{selected.size} {channelNoun} حقيقية</strong> عبر {providerName} من
-                المرسل المُعدّ. يجب أن تكون العناوين مملوكة للشركة ومشمولة بسياسة الاستخدام
-                المقبول. يُضاف رابط تتبع فريد لكل مستهدف، وكل فتح ونقرة وقيمة مُدخلة تُسجّل في
-                تقرير الحملة.
-              </Alert>
+              {isQrChannel ? (
+                <Alert severity="info">
+                  سيتم تجهيز <strong>{selected.size} ملصق QR</strong> بسيناريو «
+                  {QR_PRECEPTS.find((pretext) => pretext.value === qrPretext)?.label}». كل ملصق
+                  يحمل رمزاً فريداً يفتح صفحة المحاكاة مباشرة؛ المسح لا يخصم نقاطاً، وأول إرسال
+                  لبيانات الدخول يخصم 25 نقطة Elo ثم يحوّل الموظف إلى صفحة الاختراق فالتدريب.
+                  نزّل ملف PDF من صفحة الحملة بعد الإطلاق.
+                </Alert>
+              ) : isUsbChannel ? (
+                <Alert severity="info">
+                  سيتم تجهيز <strong>{selected.size} ملف USB آمن</strong> باسم{' '}
+                  <strong>الرواتب_السرية.html</strong> (وعند تعدد المستهدفين يُنزَّل ZIP بمجلد
+                  لكل موظف). عند أول فتح يسجّل{' '}
+                  <span dir="ltr" className="mc-mono">usb_opened</span> ويخصم 30 نقطة Elo ثم
+                  يعرض التحذير وزر التدريب. يتوفر ملف PDF احتياطي من صفحة الحملة بعد الإطلاق، ولا
+                  توزّع أي ملف إلا ضمن تمرين مصرّح به.
+                </Alert>
+              ) : (
+                <Alert severity="warning">
+                  سيتم إرسال <strong>{selected.size} {channelNoun} حقيقية</strong> عبر {providerName} من
+                  المرسل المُعدّ. يجب أن تكون العناوين مملوكة للشركة ومشمولة بسياسة الاستخدام
+                  المقبول. يُضاف رابط تتبع فريد لكل مستهدف، وكل فتح ونقرة وقيمة مُدخلة تُسجّل في
+                  تقرير الحملة.
+                </Alert>
+              )}
 
               <Stack direction="row" justifyContent="space-between">
                 <Button onClick={() => setStep(1)}>رجوع</Button>
@@ -877,7 +1094,13 @@ export function NewCampaignPage() {
               {launchMutation.isPending ? (
                 <Box>
                   <Typography variant="body2" color="text.secondary" gutterBottom>
-                    جارٍ إرسال {selected.size} {channelNoun} عبر {providerName}…
+                    {isQrChannel
+                      ? `جارٍ تجهيز ${selected.size} ملصق QR…`
+                      : isUsbChannel
+                        ? `جارٍ تجهيز ${selected.size} مستند USB…`
+                        : isVishingChannel || isPretextingChannel
+                          ? `جارٍ تجهيز ${selected.size} رابط محاكاة…`
+                          : `جارٍ إرسال ${selected.size} ${channelNoun} عبر ${providerName}…`}
                   </Typography>
                   <LinearProgress />
                 </Box>
@@ -890,8 +1113,24 @@ export function NewCampaignPage() {
       <ConfirmDialog
         open={confirmOpen}
         title="تأكيد الإطلاق"
-        message={`سيتم إرسال ${selected.size} ${channelNoun} حقيقية عبر ${providerName} إلى الموظفين المحددين. هل تريد المتابعة؟`}
-        confirmLabel="إرسال الرسائل"
+        message={
+          isQrChannel
+            ? `سيتم تجهيز ${selected.size} ملصق QR برابط تتبّع فريد لكل موظف. لا تُرسل أي رسائل. بعد الإطلاق نزّل ملف PDF من صفحة الحملة. هل تريد المتابعة؟`
+            : isUsbChannel
+              ? `سيتم تجهيز ${selected.size} ملف USB آمن. عند التوزيع يمكنك تنزيل الرواتب_السرية.html لكل موظف أو حزمة ZIP، مع نسخة PDF اختيارية. لا تُرسل أي رسائل ولا يُنفّذ أي برنامج. بعد الإطلاق نزّل الملف من صفحة الحملة. هل تريد المتابعة؟`
+              : isVishingChannel || isPretextingChannel
+                ? `سيتم تجهيز ${selected.size} رابط محاكاة فريد. لا تُجرى مكالمة أو محادثة حقيقية ولا تُرسل أي رسالة. بعد الإطلاق افتح صفحة الحملة لعرض الروابط وتعليمات التسليم. هل تريد المتابعة؟`
+                : `سيتم إرسال ${selected.size} ${channelNoun} حقيقية عبر ${providerName} إلى الموظفين المحددين. هل تريد المتابعة؟`
+        }
+        confirmLabel={
+          isQrChannel
+            ? 'تجهيز الملصقات'
+            : isUsbChannel
+              ? 'تجهيز مستند USB'
+              : isVishingChannel || isPretextingChannel
+                ? 'تجهيز روابط المحاكاة'
+                : 'إرسال الرسائل'
+        }
         destructive
         busy={launchMutation.isPending}
         onConfirm={() => launchMutation.mutate()}

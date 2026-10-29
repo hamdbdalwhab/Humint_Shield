@@ -21,7 +21,8 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.database import Base, INETType, JSONBType, UUIDType, generate_uuid
 
 CAMPAIGN_STATUSES = ("draft", "active", "completed", "aborted")
-CHANNELS = ("email", "sms", "whatsapp")
+CHANNELS = ("email", "sms", "whatsapp", "qr", "vishing", "pretexting", "usb")
+SIMULATION_CHANNELS = ("qr", "vishing", "pretexting", "usb")
 DEFAULT_CHANNEL = "email"
 
 
@@ -52,6 +53,10 @@ class EmailCampaign(Base):
         String(20), default=DEFAULT_CHANNEL, server_default=DEFAULT_CHANNEL, index=True, nullable=False
     )
     status: Mapped[str] = mapped_column(String(20), default="draft", index=True)
+    #: Channel-specific scenario configuration (QR pretext, credential provider,
+    #: vishing/pretexting copy).  Keeping it in one JSON column lets all channels
+    #: share the same campaign and tracking tables.
+    channel_config: Mapped[dict | None] = mapped_column(JSONBType, default=dict)
     target_employee_ids: Mapped[list] = mapped_column(JSONBType, default=list)
     total_targets: Mapped[int] = mapped_column(Integer, default=0)
     sent_count: Mapped[int] = mapped_column(Integer, default=0)

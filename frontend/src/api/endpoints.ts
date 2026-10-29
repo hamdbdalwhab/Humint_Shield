@@ -33,6 +33,8 @@ import type {
   PhishingReport,
   RuntimeConfig,
   ReportSafeResponse,
+  SimulationChoiceResponse,
+  SimulationVisitResponse,
   TemplatePreview,
   TemplateTestSendRequest,
   TemplateTestSendResult,
@@ -298,12 +300,57 @@ export const campaignsApi = {
     );
     return data as Blob;
   },
+  async generateQrPosters(id: string): Promise<Blob> {
+    const { data } = await http.post(
+      `/api/v1/campaigns/${id}/generate-qr`,
+      {},
+      { responseType: 'blob' },
+    );
+    return data as Blob;
+  },
+  async generateUsbPdf(id: string, employeeId?: string): Promise<Blob> {
+    const { data } = await http.post(
+      `/api/v1/campaigns/${id}/generate-usb-pdf`,
+      {},
+      {
+        params: employeeId ? { employee_id: employeeId } : {},
+        responseType: 'blob',
+      },
+    );
+    return data as Blob;
+  },
+  async generateUsbHtml(id: string, employeeId?: string): Promise<Blob> {
+    const { data } = await http.post(
+      `/api/v1/campaigns/${id}/generate-usb-html`,
+      {},
+      {
+        params: employeeId ? { employee_id: employeeId } : {},
+        responseType: 'blob',
+      },
+    );
+    return data as Blob;
+  },
 };
 
 export const reportsApi = {
   async executivePdf(campaignId: string): Promise<Blob> {
     const { data } = await http.get('/api/v1/reports/executive-pdf', {
       params: { campaign_id: campaignId },
+      responseType: 'blob',
+    });
+    return data as Blob;
+  },
+};
+
+export const securityApi = {
+  async playbook(): Promise<Blob> {
+    const { data } = await http.get('/api/v1/security/playbook', {
+      responseType: 'blob',
+    });
+    return data as Blob;
+  },
+  async usbGuide(): Promise<Blob> {
+    const { data } = await http.get('/api/v1/security/usb-guide', {
       responseType: 'blob',
     });
     return data as Blob;
@@ -402,6 +449,37 @@ export const trackingApi = {
   async reportSafe(trackingUuid: string): Promise<ReportSafeResponse> {
     const { data } = await http.post<ReportSafeResponse>(
       `/api/v1/track/report-safe/${trackingUuid}`,
+    );
+    return data;
+  },
+  async visit(
+    trackingUuid: string,
+    channel: 'qr' | 'vishing' | 'pretexting',
+  ): Promise<SimulationVisitResponse> {
+    const { data } = await http.post<SimulationVisitResponse>(
+      `/api/v1/track/visit/${trackingUuid}`,
+      undefined,
+      { params: { channel } },
+    );
+    return data;
+  },
+  async vishingChoice(
+    trackingUuid: string,
+    choice: 'credential_disclosed' | 'reported_phish',
+  ): Promise<SimulationChoiceResponse> {
+    const { data } = await http.post<SimulationChoiceResponse>(
+      `/api/v1/track/vishing/${trackingUuid}`,
+      { choice },
+    );
+    return data;
+  },
+  async pretextingChoice(
+    trackingUuid: string,
+    choice: 'financial_fraud' | 'reported_phish',
+  ): Promise<SimulationChoiceResponse> {
+    const { data } = await http.post<SimulationChoiceResponse>(
+      `/api/v1/track/pretexting/${trackingUuid}`,
+      { choice },
     );
     return data;
   },

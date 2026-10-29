@@ -26,6 +26,8 @@ reportlab==5.1.0
 arabic-reshaper==3.0.1
 python-bidi==0.6.12
 pillow==13.0.0
+# Quishing: high-resolution QR generation for printable posters.
+qrcode[pil]==8.2
 python-dotenv==1.2.4
 structlog==24.4.0
 prometheus-fastapi-instrumentator==7.0.0

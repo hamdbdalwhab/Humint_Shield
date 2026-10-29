@@ -35,6 +35,7 @@ import {
   FolderLock,
   GraduationCap,
   KeyRound,
+  Laptop,
   Link2,
   LockKeyhole,
   MailWarning,
@@ -50,6 +51,8 @@ import { useParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 
 import { trackingApi } from '@/api/endpoints';
+import { SimulationPreview } from '@/components/SimulationPreview';
+import { contentForChannel, type ChannelContent } from '@/lib/simulationContent';
 import type { TrackingCompleteResponse, TrackingContext } from '@/types';
 
 const COUNTDOWN_SECONDS = 60;
@@ -66,10 +69,23 @@ const ASSET_ENGLISH: Record<string, string> = {
   'الوصول إلى الأنظمة الداخلية المتاحة من حسابك': 'Access to Internal Systems',
   'جلسة دخول دائمة (تذكرني)': 'Persistent Login Session',
   'بيانات القسم ومكان العمل': 'Department & Office Details',
+  'بيانات الدخول إلى بوابة الشركة': 'Corporate Portal Credentials',
+  'جلسة دخول دائمة على جهازك': 'Persistent Session on Your Device',
+  'رمز التحقق لمرة واحدة (OTP)': 'One-Time Verification Code (OTP)',
+  'الوصول إلى حساب الدعم الفني': 'Access to the IT Support Account',
+  'محاولة إعادة تعيين كلمة المرور': 'Password Reset Attempt',
+  'أموال الشركة عبر بطاقات الهدايا': 'Company Funds via Gift Cards',
+  'أكواد البطاقات — نقد فوري للمهاجم': 'Gift Card Codes — Instant Cash',
+  'ثقة العلاقة مع الإدارة التنفيذية': 'Trust in Executive Communications',
+  'التحكم الكامل في جهاز العمل': 'Full Control of the Work Device',
+  'ملفات العمل المخزنة على القرص': 'Work Files Stored on Disk',
+  'بيانات الدخول المحفوظة في المتصفح': 'Credentials Saved in the Browser',
+  'جلسة الشبكة الداخلية للشركة': 'Internal Corporate Network Session',
 };
 
 function assetIcon(asset: string) {
   if (asset.includes('كلمة مرور')) return KeyRound;
+  if (asset.includes('جهاز') || asset.includes('التحكم')) return Laptop;
   if (asset.includes('ملفات') || asset.includes('الملفات')) return FolderLock;
   if (asset.includes('بريد')) return MailWarning;
   return Database;
@@ -209,6 +225,18 @@ const QUIZ_QUESTIONS: QuizQuestion[] = [
     wrongHint: 'إعادة التوجيه قد تنشر الرسالة، والحذف وحده لا يحمي الآخرين. أبلغ فريق الأمن.',
   },
 ];
+
+const EMAIL_CONTENT: ChannelContent = {
+  key: 'email',
+  label: 'تصيّد بالبريد الإلكتروني',
+  chip: 'Email phishing',
+  headline: 'لقد وقعت في اختبار أمني، لا تقلق.',
+  description:
+    'هذه محاكاة توعية مصرّح بها من مؤسستك. خذ دقيقة لتتعرّف على مؤشرات الرسالة المشبوهة قبل أن تصل رسالة حقيقية.',
+  previewKind: 'email',
+  redFlags: RED_FLAGS,
+  quiz: QUIZ_QUESTIONS,
+};
 
 function fireConfetti() {
   const colors = ['#00F0FF', '#7000FF', '#00E676', '#FFB020', '#E2E8F0'];
@@ -635,6 +663,10 @@ export function TrainingExperiencePage() {
   });
 
   const context = contextQuery.data;
+  const content =
+    context && context.channel && context.channel !== 'email'
+      ? contentForChannel(context.channel)
+      : EMAIL_CONTENT;
   const compromisedAssets = context?.compromised_assets ?? [];
   const alreadyComplete = Boolean(context?.already_completed);
   const completed = alreadyComplete || Boolean(completion?.success);
@@ -677,15 +709,15 @@ export function TrainingExperiencePage() {
   );
 
   const answeredCount = Object.keys(answers).length;
-  const quizComplete = answeredCount === QUIZ_QUESTIONS.length;
+  const quizComplete = answeredCount === content.quiz.length;
   const quizScore = useMemo(
     () =>
-      QUIZ_QUESTIONS.reduce(
+      content.quiz.reduce(
         (total, question) =>
           total + (answers[question.id] === question.correct ? 1 : 0),
         0,
       ),
-    [answers],
+    [answers, content.quiz],
   );
 
   const completeTraining = useCallback(async () => {
@@ -695,7 +727,7 @@ export function TrainingExperiencePage() {
     try {
       const result = await trackingApi.complete(trackingUuid, {
         score: quizScore,
-        total: QUIZ_QUESTIONS.length,
+        total: content.quiz.length,
       });
       setCompletion(result);
       if (!result.success) {
@@ -706,7 +738,7 @@ export function TrainingExperiencePage() {
     } finally {
       setCompleting(false);
     }
-  }, [completing, quizComplete, quizScore, ready, trackingUuid]);
+  }, [completing, content.quiz.length, quizComplete, quizScore, ready, trackingUuid]);
 
   const reportPhishing = useCallback(async () => {
     if (!trackingUuid || reportBusy) return;
@@ -721,7 +753,10 @@ export function TrainingExperiencePage() {
     }
   }, [reportBusy, trackingUuid]);
 
-  const progress = useMemo(() => (discovered.length / RED_FLAGS.length) * 100, [discovered.length]);
+  const progress = useMemo(
+    () => (discovered.length / content.redFlags.length) * 100,
+    [discovered.length, content.redFlags.length],
+  );
 
   if (contextQuery.isLoading) {
     return (
@@ -740,7 +775,7 @@ export function TrainingExperiencePage() {
 
   const displayName = [context.first_name, context.last_name].filter(Boolean).join(' ') || context.email || 'الموظف';
   const finalScore = completion?.quiz_score ?? context.quiz_score ?? (alreadyComplete ? null : quizScore);
-  const finalTotal = completion?.quiz_total ?? context.quiz_total ?? QUIZ_QUESTIONS.length;
+  const finalTotal = completion?.quiz_total ?? context.quiz_total ?? content.quiz.length;
 
   if (sessionEnded) return <SessionEnded displayName={displayName} />;
 
@@ -782,7 +817,7 @@ export function TrainingExperiencePage() {
           <Stack alignItems="center" textAlign="center" spacing={2} sx={{ mb: { xs: 4, md: 5.5 } }}>
             <Chip
               icon={<GraduationCap size={15} />}
-              label="🎓 محاكاة تدريبية"
+              label={`🎓 ${content.chip}`}
               color="primary"
               variant="outlined"
               sx={{ px: 0.5, py: 0.4, fontSize: '0.78rem', fontWeight: 800 }}
@@ -797,15 +832,13 @@ export function TrainingExperiencePage() {
                 maxWidth: 960,
               }}
             >
-              لقد وقعت في اختبار أمني،{' '}
               <Box component="span" className="mc-neon-text">
-                لا تقلق.
+                {content.headline}
               </Box>
             </Typography>
-            <Typography sx={{ color: 'text.secondary', maxWidth: 740, fontSize: { xs: '0.9rem', md: '1rem' }, lineHeight: 1.9 }}>
-              هذه محاكاة توعية مصرّح بها من {context.company_name ?? 'مؤسستك'}. لم تُرسل بياناتك إلى
-              أي جهة خارجية، وكل ما كتبته محفوظ بأمان لأغراض التدريب. خذ دقيقة واحدة لتتعلّم كيف
-              تتعرّف على الرسالة المشبوهة في المرة القادمة.
+            <Typography sx={{ color: 'text.secondary', maxWidth: 760, fontSize: { xs: '0.9rem', md: '1rem' }, lineHeight: 1.9 }}>
+              {content.description} هذه محاكاة توعية مصرّح بها من {context.company_name ?? 'مؤسستك'}؛
+              لم تُرسل بياناتك إلى أي جهة خارجية.
             </Typography>
             <Stack direction="row" spacing={1} sx={{ flexWrap: 'wrap', gap: 0.75, justifyContent: 'center' }}>
               <Chip size="small" icon={<ShieldCheck size={13} />} label="لا ضرر عليك" color="success" variant="outlined" />
@@ -956,7 +989,9 @@ export function TrainingExperiencePage() {
             >
               <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 1.5, px: 0.5 }}>
                 <Box>
-                  <Typography sx={{ fontWeight: 800, fontSize: '0.95rem' }}>الرسالة التي وصلتك</Typography>
+                  <Typography sx={{ fontWeight: 800, fontSize: '0.95rem' }}>
+                    {content.previewKind === 'email' ? 'الرسالة التي وصلتك' : content.label}
+                  </Typography>
                   <Typography variant="caption" sx={{ color: 'text.secondary', fontSize: '0.7rem' }}>
                     اضغط على الدوائر الحمراء لكشف المؤشر
                   </Typography>
@@ -964,17 +999,27 @@ export function TrainingExperiencePage() {
                 <Chip
                   size="small"
                   icon={<AlertTriangle size={13} />}
-                  label={`${discovered.length} / ${RED_FLAGS.length} مؤشرات`}
-                  color={discovered.length === RED_FLAGS.length ? 'success' : 'error'}
+                  label={`${discovered.length} / ${content.redFlags.length} مؤشرات`}
+                  color={discovered.length === content.redFlags.length ? 'success' : 'error'}
                   variant="outlined"
                 />
               </Stack>
-              <SimulatedEmail
-                context={context}
-                activeFlag={activeFlag}
-                onFlag={discover}
-                onCloseFlag={() => setActiveFlag(null)}
-              />
+              {content.previewKind === 'email' ? (
+                <SimulatedEmail
+                  context={context}
+                  activeFlag={activeFlag}
+                  onFlag={discover}
+                  onCloseFlag={() => setActiveFlag(null)}
+                />
+              ) : (
+                <SimulationPreview
+                  context={context}
+                  redFlags={content.redFlags}
+                  activeFlag={activeFlag}
+                  onFlag={discover}
+                  onCloseFlag={() => setActiveFlag(null)}
+                />
+              )}
               <Box sx={{ mt: 1.5, px: 0.5 }}>
                 <LinearProgress variant="determinate" value={progress} sx={{ height: 5, borderRadius: 99 }} />
               </Box>
@@ -1018,7 +1063,7 @@ export function TrainingExperiencePage() {
               >
                 <Typography sx={{ fontWeight: 800, fontSize: '0.92rem', mb: 1.2 }}>قائمة المؤشرات</Typography>
                 <Stack spacing={1}>
-                  {RED_FLAGS.map((flag) => {
+                  {content.redFlags.map((flag) => {
                     const found = discovered.includes(flag.id);
                     const FlagIcon = flag.icon;
                     return (
@@ -1069,34 +1114,36 @@ export function TrainingExperiencePage() {
                 </Stack>
               </Box>
 
-              <Box
-                sx={{
-                  p: 1.5,
-                  borderRadius: 3,
-                  border: reported ? '1px solid rgba(0,230,118,.3)' : '1px solid rgba(255,255,255,.09)',
-                  bgcolor: reported ? 'rgba(0,230,118,.05)' : 'rgba(255,255,255,.02)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 1.2,
-                }}
-              >
-                <Box sx={{ width: 32, height: 32, borderRadius: 1.5, display: 'grid', placeItems: 'center', bgcolor: reported ? 'rgba(0,230,118,.1)' : 'rgba(255,23,68,.08)', color: reported ? 'success.main' : '#FF6B81' }}>
-                  {reported ? <BadgeCheck size={16} /> : <Flag size={16} />}
+              {content.previewKind === 'email' ? (
+                <Box
+                  sx={{
+                    p: 1.5,
+                    borderRadius: 3,
+                    border: reported ? '1px solid rgba(0,230,118,.3)' : '1px solid rgba(255,255,255,.09)',
+                    bgcolor: reported ? 'rgba(0,230,118,.05)' : 'rgba(255,255,255,.02)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 1.2,
+                  }}
+                >
+                  <Box sx={{ width: 32, height: 32, borderRadius: 1.5, display: 'grid', placeItems: 'center', bgcolor: reported ? 'rgba(0,230,118,.1)' : 'rgba(255,23,68,.08)', color: reported ? 'success.main' : '#FF6B81' }}>
+                    {reported ? <BadgeCheck size={16} /> : <Flag size={16} />}
+                  </Box>
+                  <Box sx={{ flex: 1 }}>
+                    <Typography sx={{ fontSize: '0.74rem', fontWeight: 700 }}>
+                      {reported ? 'تم تسجيل البلاغ — أحسنت' : 'هل أدركت أنها محاولة تصيّد؟'}
+                    </Typography>
+                    <Typography variant="caption" sx={{ color: 'text.secondary', fontSize: '0.63rem' }}>
+                      {reported ? 'أبلغت عن الرسالة كتصيّد.' : 'أبلغ عنها الآن لتعزيز مناعتك.'}
+                    </Typography>
+                  </Box>
+                  {!reported ? (
+                    <Button size="small" variant="outlined" color="error" disabled={reportBusy} onClick={() => void reportPhishing()}>
+                      {reportBusy ? '...' : 'أبلغ'}
+                    </Button>
+                  ) : null}
                 </Box>
-                <Box sx={{ flex: 1 }}>
-                  <Typography sx={{ fontSize: '0.74rem', fontWeight: 700 }}>
-                    {reported ? 'تم تسجيل البلاغ — أحسنت' : 'هل أدركت أنها محاولة تصيّد؟'}
-                  </Typography>
-                  <Typography variant="caption" sx={{ color: 'text.secondary', fontSize: '0.63rem' }}>
-                    {reported ? 'أبلغت عن الرسالة كتصيّد.' : 'أبلغ عنها الآن لتعزيز مناعتك.'}
-                  </Typography>
-                </Box>
-                {!reported ? (
-                  <Button size="small" variant="outlined" color="error" disabled={reportBusy} onClick={() => void reportPhishing()}>
-                    {reportBusy ? '...' : 'أبلغ'}
-                  </Button>
-                ) : null}
-              </Box>
+              ) : null}
             </Stack>
           </motion.div>
         </Box>
@@ -1121,7 +1168,7 @@ export function TrainingExperiencePage() {
                 KNOWLEDGE CHECK · 5 QUESTIONS
               </Typography>
               <Typography sx={{ fontSize: { xs: '1.1rem', md: '1.3rem' }, fontWeight: 800, lineHeight: 1.5 }}>
-                اختبر ما تعلمته من تفكيك الرسالة
+                اختبر ما تعلمته من تفكيك المحتوى
               </Typography>
               <Typography variant="body2" sx={{ color: 'text.secondary', mt: 0.5 }}>
                 لكل إجابة صحيحة +1، ولكل إجابة خاطئة -1. لا يمكن تغيير الإجابة بعد اختيارها.
@@ -1130,13 +1177,13 @@ export function TrainingExperiencePage() {
             <Stack direction="row" spacing={1} alignItems="center">
               <Chip
                 icon={ready ? <Sparkles size={13} /> : <Clock3 size={13} />}
-                label={ready ? `${answeredCount} / ${QUIZ_QUESTIONS.length} answered` : `يفتح بعد ${remaining} ثانية`}
+                label={ready ? `${answeredCount} / ${content.quiz.length} answered` : `يفتح بعد ${remaining} ثانية`}
                 color={ready ? 'success' : 'default'}
                 variant="outlined"
               />
               <Chip
-                label={`${quizScore} / ${QUIZ_QUESTIONS.length}`}
-                color={quizScore === QUIZ_QUESTIONS.length ? 'success' : 'primary'}
+                label={`${quizScore} / ${content.quiz.length}`}
+                color={quizScore === content.quiz.length ? 'success' : 'primary'}
                 variant="filled"
               />
             </Stack>
@@ -1152,7 +1199,7 @@ export function TrainingExperiencePage() {
           ) : (
             <Box sx={{ position: 'relative', zIndex: 1 }}>
               <Stack spacing={1.5}>
-                {QUIZ_QUESTIONS.map((question, questionIndex) => {
+                {content.quiz.map((question, questionIndex) => {
                   const selected = answers[question.id];
                   const answered = Boolean(selected);
                   const isCorrect = selected === question.correct;
@@ -1275,12 +1322,12 @@ export function TrainingExperiencePage() {
               <Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" alignItems={{ xs: 'stretch', sm: 'center' }} spacing={1.25} sx={{ mt: 2 }}>
                 <Box>
                   <Typography sx={{ fontWeight: 800, fontSize: '0.82rem' }}>
-                    النتيجة الحالية: {quizScore} من {QUIZ_QUESTIONS.length}
+                    النتيجة الحالية: {quizScore} من {content.quiz.length}
                   </Typography>
                   <Typography variant="caption" sx={{ color: 'text.secondary' }}>
                     {quizComplete
                       ? 'أجبت على جميع الأسئلة. أرسل النتيجة لإكمال التدريب.'
-                      : `أكمل ${QUIZ_QUESTIONS.length - answeredCount} سؤالاً متبقياً.`}
+                      : `أكمل ${content.quiz.length - answeredCount} سؤالاً متبقياً.`}
                   </Typography>
                 </Box>
                 <Button
@@ -1343,7 +1390,7 @@ export function TrainingExperiencePage() {
                     <Box component="span" sx={{ color: 'text.primary', fontWeight: 800 }}>
                       {displayName}
                     </Box>{' '}
-                    تقديراً لإكماله محاكاة التصيّد الأمني بنجاح.
+                    تقديراً لإكماله {content.label} بنجاح.
                   </Typography>
                   <Typography
                     sx={{

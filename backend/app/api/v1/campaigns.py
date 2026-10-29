@@ -14,7 +14,13 @@ from app.config import get_settings
 from app.database import get_db
 from app.deps import get_current_user, get_organization_or_404, rate_limit, require_roles
 from app.logging_config import get_logger
-from app.models import EmailCampaign, EmailTemplate, HumanAsset, User
+from app.models import (
+    SIMULATION_CHANNELS,
+    EmailCampaign,
+    EmailTemplate,
+    HumanAsset,
+    User,
+)
 from app.schemas import (
     CampaignActivity,
     CampaignCreate,
@@ -72,6 +78,10 @@ async def _validate_template(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Template is not active"
         )
+    if channel in SIMULATION_CHANNELS:
+        # QR/vishing/pretexting reuse an active email template as their
+        # scenario reference; they do not deliver through the email provider.
+        return template
     if (template.channel or "email") != channel:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -187,6 +197,7 @@ async def create_campaign(
         template_id=payload.template_id,
         name=payload.name,
         channel=payload.channel,
+        channel_config=payload.channel_config or {},
         status="draft",
         target_employee_ids=[str(t) for t in valid_targets],
         total_targets=len(valid_targets),
@@ -249,6 +260,8 @@ async def update_campaign(
         campaign.channel = data["channel"]
     if "name" in data and data["name"]:
         campaign.name = data["name"]
+    if "channel_config" in data:
+        campaign.channel_config = data["channel_config"] or {}
     # ``difficulty_level`` is accepted for API symmetry but is a property of the
     # template, so it is validated (by the schema) and otherwise not persisted.
     if data.get("target_employee_ids") is not None:
@@ -358,7 +371,7 @@ async def launch_campaign(
                     status_code=status.HTTP_502_BAD_GATEWAY,
                     detail=f"Real delivery is blocked: {hint}",
                 )
-    else:
+    elif channel in {"sms", "whatsapp"}:
         ready = (
             settings.vonage_sms_configured
             if channel == "sms"

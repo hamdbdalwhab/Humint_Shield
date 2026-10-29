@@ -30,6 +30,49 @@ def build_compromised_assets(
         account, password (if one was typed) and the most relevant business
         system inferred from the template/campaign context.
     """
+    channel = (tracking.channel or "email").strip().lower()
+    if channel == "qr":
+        return (
+            [
+                "بيانات الدخول إلى بوابة الشركة",
+                "الوصول إلى ملفات الموارد البشرية",
+                "جلسة دخول دائمة على جهازك",
+            ]
+            if (tracking.clicked_at or tracking.reported_at or tracking.submitted_at)
+            else []
+        )
+    if channel == "usb":
+        return (
+            [
+                "التحكم الكامل في جهاز العمل",
+                "ملفات العمل المخزنة على القرص",
+                "بيانات الدخول المحفوظة في المتصفح",
+                "جلسة الشبكة الداخلية للشركة",
+            ]
+            if (tracking.clicked_at or tracking.reported_at or tracking.submitted_at)
+            else []
+        )
+    if channel == "vishing":
+        return (
+            [
+                "رمز التحقق لمرة واحدة (OTP)",
+                "الوصول إلى حساب الدعم الفني",
+                "محاولة إعادة تعيين كلمة المرور",
+            ]
+            if (tracking.clicked_at or tracking.reported_at or tracking.submitted_at)
+            else []
+        )
+    if channel == "pretexting":
+        return (
+            [
+                "أموال الشركة عبر بطاقات الهدايا",
+                "أكواد البطاقات — نقد فوري للمهاجم",
+                "ثقة العلاقة مع الإدارة التنفيذية",
+            ]
+            if (tracking.clicked_at or tracking.reported_at or tracking.submitted_at)
+            else []
+        )
+
     if tracking.submitted_at is None:
         return []
 

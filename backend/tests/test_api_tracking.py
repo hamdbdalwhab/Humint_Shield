@@ -120,6 +120,105 @@ async def test_click_redirects_to_training_for_sms(
     assert response.headers["location"].endswith(f"/training/{tracking.tracking_uuid}")
 
 
+async def test_click_redirects_to_qr_mobile_form(
+    client, db, organization, employee, custom_template
+) -> None:
+    """A QR link opens the mobile sign-in simulation, not the email form."""
+    tracking = await _seed_tracking(
+        db, organization, employee, custom_template, channel="qr"
+    )
+    response = await client.get(
+        f"/api/v1/track/click/{tracking.tracking_uuid}",
+        follow_redirects=False,
+    )
+    assert response.status_code == 302
+    assert response.headers["location"].endswith(
+        f"/simulation/qr/{tracking.tracking_uuid}"
+    )
+
+
+async def test_vishing_failure_and_report_are_idempotent(
+    client, db, organization, employee, custom_template
+) -> None:
+    """Vishing applies -30 once, then refuses to add a second outcome."""
+    employee.elo_score = 1000
+    await db.commit()
+    tracking = await _seed_tracking(
+        db, organization, employee, custom_template, channel="vishing"
+    )
+
+    first = await client.post(
+        f"/api/v1/track/vishing/{tracking.tracking_uuid}",
+        json={"choice": "credential_disclosed"},
+    )
+    assert first.status_code == 200, first.text
+    assert first.json()["success"] is True
+    assert first.json()["already_recorded"] is False
+    await db.refresh(employee)
+    assert employee.elo_score == 970
+
+    second = await client.post(
+        f"/api/v1/track/vishing/{tracking.tracking_uuid}",
+        json={"choice": "reported_phish"},
+    )
+    assert second.status_code == 200
+    assert second.json()["already_recorded"] is True
+    await db.refresh(employee)
+    assert employee.elo_score == 970
+
+    events = (
+        await db.execute(
+            select(TrainingInteraction).where(
+                TrainingInteraction.tracking_id == tracking.id,
+                TrainingInteraction.event_type == "credential_disclosed",
+            )
+        )
+    ).scalars().all()
+    assert len(events) == 1
+    assert events[0].details["elo_delta"] == -30
+
+
+async def test_pretexting_report_rewards_and_ceo_alias(
+    client, db, organization, employee, custom_template
+) -> None:
+    """The CEO alias records a pretexting report and adds +20 once."""
+    employee.elo_score = 1000
+    await db.commit()
+    tracking = await _seed_tracking(
+        db, organization, employee, custom_template, channel="pretexting"
+    )
+
+    first = await client.post(
+        f"/api/v1/track/ceo/{tracking.tracking_uuid}",
+        json={"choice": "reported_phish"},
+    )
+    assert first.status_code == 200, first.text
+    assert first.json()["success"] is True
+    assert first.json()["already_recorded"] is False
+    await db.refresh(employee)
+    assert employee.elo_score == 1020
+
+    second = await client.post(
+        f"/api/v1/track/pretexting/{tracking.tracking_uuid}",
+        json={"choice": "financial_fraud"},
+    )
+    assert second.status_code == 200
+    assert second.json()["already_recorded"] is True
+    await db.refresh(employee)
+    assert employee.elo_score == 1020
+
+    reports = (
+        await db.execute(
+            select(PhishingReport).where(
+                PhishingReport.employee_id == employee.id,
+                PhishingReport.is_training_simulation.is_(True),
+            )
+        )
+    ).scalars().all()
+    assert len(reports) == 1
+    assert reports[0].details["source"] == "pretexting"
+
+
 async def test_click_unknown_uuid_still_redirects(client) -> None:
     """An unknown click UUID redirects without error."""
     identifier = uuid.uuid4()

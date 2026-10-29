@@ -226,7 +226,13 @@ export function DashboardPage() {
               </Typography>
             </Box>
 
-            <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.25} sx={{ flex: '0 0 auto' }}>
+            <Stack
+              direction={{ xs: 'column', sm: 'row' }}
+              spacing={1.25}
+              useFlexGap
+              flexWrap="wrap"
+              sx={{ flex: '0 0 auto' }}
+            >
               <Button
                 variant="contained"
                 startIcon={<Zap size={17} />}
@@ -240,6 +246,13 @@ export function DashboardPage() {
                 onClick={() => navigate(liveHref)}
               >
                 المراقبة الحية
+              </Button>
+              <Button
+                variant="outlined"
+                startIcon={<ShieldCheck size={17} />}
+                onClick={() => navigate('/incident-response-simulation?tab=recommendations')}
+              >
+                توصيات الأمان
               </Button>
             </Stack>
           </Stack>

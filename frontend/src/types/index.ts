@@ -6,6 +6,15 @@ export type Role = 'admin' | 'manager' | 'viewer';
 
 export type CampaignStatus = 'draft' | 'active' | 'completed' | 'aborted';
 
+/** Delivery channels supported by the campaign engine. */
+export type CampaignChannel = 'email' | 'sms' | 'whatsapp' | 'qr' | 'vishing' | 'pretexting' | 'usb';
+
+/** Channels delivered outside an email/SMS provider. */
+export type SimulationChannel = 'qr' | 'vishing' | 'pretexting' | 'usb';
+
+/** Credential-page skin selected in the campaign channel configuration. */
+export type CredentialProvider = 'microsoft' | 'google' | 'hr';
+
 export type EngagementStatus =
   | 'pending'
   | 'sent'
@@ -23,6 +32,7 @@ export type DeliveryStatus =
   | 'buffered'
   | 'delivered'
   | 'read'
+  | 'available'
   | 'failed'
   | 'rejected';
 
@@ -325,12 +335,41 @@ export interface AIGeneratedTemplate {
   model?: string;
 }
 
+export interface CampaignChannelConfig {
+  /** Credential-page skin used by the email landing page. */
+  credential_provider?: CredentialProvider;
+  /** Quishing poster copy and built-in Arabic pretext key. */
+  qr?: {
+    pretext_key?: string;
+    headline?: string;
+    body?: string;
+    footer?: string;
+    label?: string;
+  };
+  /** Optional vishing scenario copy; the fixed training script is used when absent. */
+  vishing?: {
+    caller_name?: string;
+    script?: string;
+  };
+  /** Optional pretexting scenario copy; the fixed CEO message is used when absent. */
+  pretexting?: {
+    sender_name?: string;
+    message?: string;
+  };
+  /** Safe USB-drop document metadata; the warning itself is fixed server-side. */
+  usb?: {
+    document_name?: string;
+    month_label?: string;
+  };
+}
+
 export interface Campaign {
   id: string;
   organization_id: string;
   template_id: string | null;
   name: string;
-  channel: 'email' | 'sms' | 'whatsapp';
+  channel: CampaignChannel;
+  channel_config: CampaignChannelConfig | null;
   status: CampaignStatus;
   target_employee_ids: string[];
   total_targets: number;
@@ -349,7 +388,8 @@ export interface Campaign {
 export interface CampaignCreate {
   name: string;
   template_id: string;
-  channel?: 'email' | 'sms' | 'whatsapp';
+  channel?: CampaignChannel;
+  channel_config?: CampaignChannelConfig | null;
   difficulty_level: number;
   target_employee_ids: string[];
 }
@@ -384,10 +424,11 @@ export interface CampaignStats {
 
 export interface CampaignEmployeeResult {
   employee_id: string;
+  tracking_uuid: string | null;
   name: string;
   email: string;
   phone: string | null;
-  channel: 'email' | 'sms' | 'whatsapp';
+  channel: CampaignChannel;
   department: string | null;
   job_title: string | null;
   status: EngagementStatus;
@@ -436,7 +477,7 @@ export type LiveStatus = EngagementStatus | 'form_viewed';
 export interface LiveCampaign {
   id: string;
   name: string;
-  channel: 'email' | 'sms' | 'whatsapp';
+  channel: CampaignChannel;
   status: CampaignStatus;
   template_name: string | null;
   difficulty_level: number | null;
@@ -568,7 +609,7 @@ export interface EmployeeCampaignRecord {
   campaign_name: string;
   campaign_status: CampaignStatus;
   template_name: string | null;
-  channel: 'email' | 'sms' | 'whatsapp';
+  channel: CampaignChannel;
   tracking_uuid: string;
   status: EngagementStatus;
   sent_at: string | null;
@@ -793,23 +834,50 @@ export interface TrackingContext {
   subject?: string;
   sender_name?: string;
   campaign_name?: string;
-  channel?: 'email' | 'sms' | 'whatsapp';
-  skin?: 'microsoft' | 'hr';
+  channel?: CampaignChannel;
+  channel_config?: CampaignChannelConfig | null;
+  skin?: CredentialProvider;
+  credential_provider?: CredentialProvider;
+  brand_primary_color?: string;
+  brand_logo_url?: string | null;
   form_submitted?: boolean;
   already_completed?: boolean;
   quiz_score?: number | null;
   quiz_total?: number | null;
   is_reported_safe?: boolean;
+  /** Whether the recipient already chose a vishing/pretexting outcome. */
+  reported?: boolean;
   /** Safe, human-readable assets shown on the post-submit reveal. */
   compromised_assets?: string[];
 }
 
 export interface TrackingSubmission {
   identifier: string;
-  password: string;
+  /** The React pages never transmit the typed password. */
+  password?: string;
   password_length: number;
   fields: Record<string, string>;
   client: Record<string, unknown>;
+  /** Explicitly instruct the backend to discard any secret material. */
+  capture_secret?: boolean;
+}
+
+export interface SimulationChoiceResponse {
+  success: boolean;
+  choice: 'credential_disclosed' | 'financial_fraud' | 'reported_phish';
+  message: string;
+  already_recorded: boolean;
+  elo_score: number | null;
+  threat_level: ThreatLevel | null;
+  redirect_url: string | null;
+}
+
+export interface SimulationVisitResponse {
+  success: boolean;
+  first_time: boolean;
+  message: string;
+  immunity_score?: number | null;
+  behavioral_category?: BehavioralCategory | null;
 }
 
 export interface RuntimeConfig {

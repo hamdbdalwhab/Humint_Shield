@@ -30,7 +30,12 @@ import TextField from '@mui/material/TextField';
 import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
 import DownloadIcon from '@mui/icons-material/Download';
+import CodeIcon from '@mui/icons-material/Code';
+import ContentCopyIcon from '@mui/icons-material/ContentCopy';
+import CheckIcon from '@mui/icons-material/Check';
 import PictureAsPdfIcon from '@mui/icons-material/PictureAsPdf';
+import QrCode2Icon from '@mui/icons-material/QrCode2';
+import UsbIcon from '@mui/icons-material/Usb';
 import CheckCircleOutlineIcon from '@mui/icons-material/CheckCircleOutline';
 import DoneAllIcon from '@mui/icons-material/DoneAll';
 import ErrorOutlineIcon from '@mui/icons-material/ErrorOutline';
@@ -80,8 +85,19 @@ const DELIVERY_LABELS: Record<DeliveryStatus, string> = {
   buffered: 'Buffered',
   delivered: 'Delivered',
   read: 'Read',
+  available: 'Available',
   failed: 'Failed',
   rejected: 'Rejected',
+};
+
+const CHANNEL_CHIPS: Record<string, string> = {
+  email: 'Email',
+  sms: 'SMS · Vonage',
+  whatsapp: 'WhatsApp · Vonage',
+  qr: 'QR · Quishing',
+  vishing: 'Vishing · Call',
+  pretexting: 'Pretexting · Chat',
+  usb: 'USB · Drop',
 };
 
 function DeliveryStatusBadge({
@@ -94,6 +110,19 @@ function DeliveryStatusBadge({
   failedAt?: string | null;
 }) {
   if (!status) return <Typography variant="caption" color="text.secondary">—</Typography>;
+  if (status === 'available') {
+    return (
+      <Tooltip title={error || 'The simulation is ready for manual delivery'}>
+        <Chip
+          size="small"
+          color="info"
+          variant="outlined"
+          icon={<CheckCircleOutlineIcon />}
+          label={DELIVERY_LABELS[status]}
+        />
+      </Tooltip>
+    );
+  }
   if (status === 'read') {
     return (
       <Tooltip title={error || 'The recipient read the message on WhatsApp'}>
@@ -166,6 +195,10 @@ export function CampaignDetailPage() {
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [reportBusy, setReportBusy] = useState(false);
+  const [qrBusy, setQrBusy] = useState(false);
+  const [usbBusy, setUsbBusy] = useState(false);
+  const [usbHtmlBusy, setUsbHtmlBusy] = useState(false);
+  const [copiedEmployeeId, setCopiedEmployeeId] = useState<string | null>(null);
 
   const resultsQuery = useQuery({
     queryKey: ['campaign-results', organizationId, campaignId],
@@ -234,13 +267,108 @@ export function CampaignDetailPage() {
     }
   }
 
+  async function handleQrPosters() {
+    if (!campaignId) return;
+    setQrBusy(true);
+    try {
+      const blob = await campaignsApi.generateQrPosters(campaignId);
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = `qr_posters_${campaignId}.pdf`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      document.body.removeChild(anchor);
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+      toast.success('QR poster pack downloaded');
+    } catch (error) {
+      toast.error(errorMessage(error));
+    } finally {
+      setQrBusy(false);
+    }
+  }
+
+  async function handleUsbPdf() {
+    if (!campaignId) return;
+    setUsbBusy(true);
+    try {
+      const blob = await campaignsApi.generateUsbPdf(campaignId);
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = 'راتب_الشهر_القادم.pdf';
+      document.body.appendChild(anchor);
+      anchor.click();
+      document.body.removeChild(anchor);
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+      toast.success('USB awareness document downloaded');
+    } catch (error) {
+      toast.error(errorMessage(error));
+    } finally {
+      setUsbBusy(false);
+    }
+  }
+
+  async function handleUsbHtml() {
+    if (!campaignId) return;
+    setUsbHtmlBusy(true);
+    try {
+      const blob = await campaignsApi.generateUsbHtml(campaignId);
+      const recipientCount = resultsQuery.data?.employees.length ?? 0;
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download =
+        recipientCount <= 1 ? 'الرواتب_السرية.html' : 'usb_html_pack.zip';
+      document.body.appendChild(anchor);
+      anchor.click();
+      document.body.removeChild(anchor);
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+      toast.success(
+        recipientCount <= 1
+          ? 'USB HTML awareness file downloaded'
+          : 'USB HTML pack downloaded (one file per recipient)',
+      );
+    } catch (error) {
+      toast.error(errorMessage(error));
+    } finally {
+      setUsbHtmlBusy(false);
+    }
+  }
+
   if (resultsQuery.isLoading) return <LoadingState label="Loading campaign…" />;
   if (resultsQuery.error) return <Alert severity="error">{errorMessage(resultsQuery.error)}</Alert>;
   if (!resultsQuery.data) return null;
 
   const { campaign, stats } = resultsQuery.data;
   const allEmployees = resultsQuery.data.employees;
-  const isPhoneChannel = campaign.channel !== 'email';
+  const isPhoneChannel = campaign.channel === 'sms' || campaign.channel === 'whatsapp';
+  const isQrChannel = campaign.channel === 'qr';
+  const isUsbChannel = campaign.channel === 'usb';
+  const isVishingChannel = campaign.channel === 'vishing';
+  const isPretextingChannel = campaign.channel === 'pretexting';
+  const isLinkChannel = isVishingChannel || isPretextingChannel;
+  const isManualChannel =
+    isQrChannel || isUsbChannel || isVishingChannel || isPretextingChannel;
+
+  async function handleCopySimulationLink(row: CampaignEmployeeResult) {
+    if (!row.tracking_uuid) {
+      toast.error('This recipient has no tracking link yet. Launch the campaign first.');
+      return;
+    }
+    const path = isVishingChannel
+      ? `/simulation/vishing/${row.tracking_uuid}`
+      : `/simulation/ceo/${row.tracking_uuid}`;
+    const url = new URL(path, window.location.origin).toString();
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopiedEmployeeId(row.employee_id);
+      toast.success(`Simulation link copied for ${row.name}`);
+      window.setTimeout(() => setCopiedEmployeeId(null), 1600);
+    } catch {
+      toast(url, { icon: '🔗' });
+    }
+  }
   const deliveredCount = allEmployees.filter(
     (row) => row.delivery_status === 'delivered' || row.delivery_status === 'read',
   ).length;
@@ -261,13 +389,7 @@ export function CampaignDetailPage() {
             <Chip
               size="small"
               variant="outlined"
-              label={
-                campaign.channel === 'email'
-                  ? 'Email'
-                  : campaign.channel === 'sms'
-                    ? 'SMS · Vonage'
-                    : 'WhatsApp · Vonage'
-              }
+              label={CHANNEL_CHIPS[campaign.channel] ?? campaign.channel}
             />
             {campaign.status !== 'draft' ? (
               <Button
@@ -278,6 +400,52 @@ export function CampaignDetailPage() {
               >
                 Live board
               </Button>
+            ) : null}
+            {isQrChannel ? (
+              <Button
+                variant="contained"
+                color="primary"
+                startIcon={
+                  qrBusy ? <CircularProgress size={16} color="inherit" /> : <QrCode2Icon />
+                }
+                onClick={handleQrPosters}
+                disabled={qrBusy}
+                aria-busy={qrBusy}
+              >
+                {qrBusy ? 'Generating posters…' : 'Download QR Posters'}
+              </Button>
+            ) : null}
+            {isUsbChannel ? (
+              <>
+                <Button
+                  variant="contained"
+                  color="primary"
+                  startIcon={
+                    usbHtmlBusy ? (
+                      <CircularProgress size={16} color="inherit" />
+                    ) : (
+                      <CodeIcon />
+                    )
+                  }
+                  onClick={handleUsbHtml}
+                  disabled={usbHtmlBusy}
+                  aria-busy={usbHtmlBusy}
+                >
+                  {usbHtmlBusy ? 'Generating HTML…' : 'Download USB HTML'}
+                </Button>
+                <Button
+                  variant="outlined"
+                  color="primary"
+                  startIcon={
+                    usbBusy ? <CircularProgress size={16} color="inherit" /> : <UsbIcon />
+                  }
+                  onClick={handleUsbPdf}
+                  disabled={usbBusy}
+                  aria-busy={usbBusy}
+                >
+                  {usbBusy ? 'Generating document…' : 'Download USB PDF'}
+                </Button>
+              </>
             ) : null}
             <Button
               variant="contained"
@@ -307,7 +475,18 @@ export function CampaignDetailPage() {
           <StatCard label="Total" value={stats.total} />
         </Grid>
         <Grid item xs={12} sm={6} md={2}>
-          <StatCard label="Sent" value={stats.sent} helper={`${stats.failed} failed`} tone="primary" />
+          <StatCard
+            label={isManualChannel ? 'Prepared' : 'Sent'}
+            value={stats.sent}
+            helper={
+              isQrChannel
+                ? `${stats.total} posters`
+                : isUsbChannel
+                  ? `${stats.total} documents`
+                  : `${stats.failed} failed`
+            }
+            tone="primary"
+          />
         </Grid>
         {isPhoneChannel ? (
           <>
@@ -330,20 +509,31 @@ export function CampaignDetailPage() {
           </>
         ) : (
           <Grid item xs={12} sm={6} md={2}>
-            <StatCard label="Opened" value={stats.opened} helper={formatPercent(stats.open_rate)} tone="primary" />
+            <StatCard
+              label={isQrChannel ? 'Scanned' : 'Opened'}
+              value={isQrChannel || isUsbChannel ? stats.clicked : stats.opened}
+              helper={formatPercent(
+                isQrChannel || isUsbChannel ? stats.click_rate : stats.open_rate,
+              )}
+              tone="primary"
+            />
           </Grid>
         )}
-        <Grid item xs={12} sm={6} md={2}>
-          <StatCard label="Clicked" value={stats.clicked} helper={formatPercent(stats.click_rate)} tone="warning" />
-        </Grid>
-        <Grid item xs={12} sm={6} md={2}>
-          <StatCard
-            label="Form submitted"
-            value={stats.submitted}
-            helper={formatPercent(stats.submission_rate)}
-            tone="warning"
-          />
-        </Grid>
+        {!isManualChannel ? (
+          <Grid item xs={12} sm={6} md={2}>
+            <StatCard label="Clicked" value={stats.clicked} helper={formatPercent(stats.click_rate)} tone="warning" />
+          </Grid>
+        ) : null}
+        {!isUsbChannel ? (
+          <Grid item xs={12} sm={6} md={2}>
+            <StatCard
+              label="Form submitted"
+              value={stats.submitted}
+              helper={formatPercent(stats.submission_rate)}
+              tone="warning"
+            />
+          </Grid>
+        ) : null}
         <Grid item xs={12} sm={6} md={2}>
           <StatCard
             label="Completed"
@@ -416,13 +606,16 @@ export function CampaignDetailPage() {
                       <TableCell>Department</TableCell>
                       <TableCell align="center">Status</TableCell>
                       {isPhoneChannel ? <TableCell align="center">Delivery</TableCell> : null}
-                      <TableCell>Opened</TableCell>
-                      <TableCell>Clicked</TableCell>
-                      <TableCell>Form shown</TableCell>
-                      <TableCell>Submitted</TableCell>
+                      <TableCell>{isUsbChannel ? 'USB opened' : 'Opened'}</TableCell>
+                      {!isUsbChannel ? <TableCell>Clicked</TableCell> : null}
+                      {!isUsbChannel ? <TableCell>Form shown</TableCell> : null}
+                      {!isUsbChannel ? <TableCell>Submitted</TableCell> : null}
                       <TableCell align="center">Score</TableCell>
                       <TableCell align="center">Threat</TableCell>
                       <TableCell align="center">Category</TableCell>
+                      {isLinkChannel ? (
+                        <TableCell align="center">Simulation link</TableCell>
+                      ) : null}
                       <TableCell align="center">Dossier</TableCell>
                     </TableRow>
                   </TableHead>
@@ -458,17 +651,23 @@ export function CampaignDetailPage() {
                           {formatDateTime(row.opened_at)}
                           {row.open_count > 1 ? ` (${row.open_count}×)` : ''}
                         </TableCell>
-                        <TableCell sx={{ fontFamily: 'monospace', whiteSpace: 'nowrap' }}>
-                          {formatDateTime(row.clicked_at)}
-                          {row.click_count > 1 ? ` (${row.click_count}×)` : ''}
-                        </TableCell>
-                        <TableCell sx={{ fontFamily: 'monospace', whiteSpace: 'nowrap' }}>
-                          {formatDateTime(row.form_viewed_at)}
-                        </TableCell>
-                        <TableCell sx={{ fontFamily: 'monospace', whiteSpace: 'nowrap' }}>
-                          {formatDateTime(row.submitted_at)}
-                          {row.submission_count > 1 ? ` (${row.submission_count}×)` : ''}
-                        </TableCell>
+                        {!isUsbChannel ? (
+                          <TableCell sx={{ fontFamily: 'monospace', whiteSpace: 'nowrap' }}>
+                            {formatDateTime(row.clicked_at)}
+                            {row.click_count > 1 ? ` (${row.click_count}×)` : ''}
+                          </TableCell>
+                        ) : null}
+                        {!isUsbChannel ? (
+                          <TableCell sx={{ fontFamily: 'monospace', whiteSpace: 'nowrap' }}>
+                            {formatDateTime(row.form_viewed_at)}
+                          </TableCell>
+                        ) : null}
+                        {!isUsbChannel ? (
+                          <TableCell sx={{ fontFamily: 'monospace', whiteSpace: 'nowrap' }}>
+                            {formatDateTime(row.submitted_at)}
+                            {row.submission_count > 1 ? ` (${row.submission_count}×)` : ''}
+                          </TableCell>
+                        ) : null}
                         <TableCell align="center">
                           {row.immunity_score !== null ? row.immunity_score.toFixed(1) : '—'}
                         </TableCell>
@@ -483,6 +682,36 @@ export function CampaignDetailPage() {
                         <TableCell align="center">
                           <CategoryChip category={row.behavioral_category} />
                         </TableCell>
+                        {isLinkChannel ? (
+                          <TableCell align="center">
+                            <Tooltip
+                              title={
+                                copiedEmployeeId === row.employee_id
+                                  ? 'Copied'
+                                  : 'Copy the unique simulation link'
+                              }
+                            >
+                              <span>
+                                <IconButton
+                                  size="small"
+                                  color={copiedEmployeeId === row.employee_id ? 'success' : 'primary'}
+                                  aria-label={`Copy simulation link for ${row.name}`}
+                                  disabled={!row.tracking_uuid}
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    void handleCopySimulationLink(row);
+                                  }}
+                                >
+                                  {copiedEmployeeId === row.employee_id ? (
+                                    <CheckIcon fontSize="small" />
+                                  ) : (
+                                    <ContentCopyIcon fontSize="small" />
+                                  )}
+                                </IconButton>
+                              </span>
+                            </Tooltip>
+                          </TableCell>
+                        ) : null}
                         <TableCell align="center">
                           <Tooltip title="Open full dossier">
                             <IconButton

@@ -36,7 +36,15 @@ from app.security import EncryptionError, decrypt_value, encrypt_value
 from app.services.classification_engine import ClassificationEngine
 from app.services.elo_engine import (
     CLICK_ELO_DELTA,
+    PRETEXTING_FRAUD_ELO_DELTA,
+    PRETEXTING_REPORT_ELO_DELTA,
+    QR_CREDENTIAL_ELO_DELTA,
+    QR_SCAN_ELO_DELTA,
+    USB_OPEN_ELO_DELTA,
+    VISHING_CREDENTIAL_ELO_DELTA,
+    VISHING_REPORT_ELO_DELTA,
     apply_click,
+    apply_elo_delta,
     apply_report,
     clamp_elo,
 )
@@ -87,6 +95,12 @@ EVENT_FORM_VIEWED = "form_viewed"
 EVENT_SUBMITTED = "form_submitted"
 EVENT_REPORTED = "phishing_reported"
 EVENT_COMPLETED = "training_completed"
+EVENT_QR_SCANNED = "qr_scanned"
+EVENT_CREDENTIAL_SUBMITTED = "credential_submitted"
+EVENT_USB_OPENED = "usb_opened"
+EVENT_CREDENTIAL_DISCLOSED = "credential_disclosed"
+EVENT_FINANCIAL_FRAUD = "financial_fraud"
+EVENT_REPORTED_PHISH = "reported_phish"
 
 
 def sanitize_submitted_fields(fields: object) -> dict[str, str]:
@@ -623,18 +637,23 @@ class TrackingService:
         user_agent: str | None,
         db: AsyncSession,
         client: dict[str, Any] | None = None,
+        capture_secret: bool = True,
     ) -> EmailTracking | None:
         """Record a simulated credential submission.
 
-        Everything the recipient typed is preserved: the identifier, the
-        password value and every other named field.  The verbatim mapping is
-        serialised to JSON and encrypted with AES-256-GCM before storage; a
-        secret-free copy also lands in ``submitted_fields`` for quick display.
+        QR/quishing rows are deliberately **secret-free**: the channel forces
+        ``capture_secret`` off, discards any password value before it reaches
+        the database, and keeps only the identifier, password length and
+        non-secret field names.  A first QR submission also applies the
+        quishing failure penalty exactly once and records the distinct
+        ``credential_submitted`` event.  The QR page is reached from a printed
+        poster, not an email, so it must not inherit the email click penalty.
 
-        The first submission on a campaign increments
-        ``employee.total_credential_submissions`` and re-runs the behavioural
-        classification, which is what moves the employee into the risk
-        category.
+        Other channels preserve the historical behaviour: when
+        ``capture_secret`` is true the verbatim payload is encrypted with
+        AES-256-GCM; when false the password is discarded.  The first
+        submission increments ``employee.total_credential_submissions`` and
+        re-runs the behavioural classification.
 
         Args:
             tracking_uuid: Per-recipient tracking UUID.
@@ -647,6 +666,7 @@ class TrackingService:
             user_agent: Client User-Agent.
             db: Active session.
             client: Non-secret browser context (client clock, durations, …).
+            capture_secret: Whether a non-QR channel may encrypt the password.
 
         Returns:
             The updated row, or ``None`` when the UUID is unknown.
@@ -659,6 +679,13 @@ class TrackingService:
             logger.warning("track_submit_unknown", tracking_uuid=str(tracking_uuid))
             return None
 
+        channel = (row.channel or "email").strip().lower()
+        is_qr = channel == "qr"
+        if is_qr:
+            # A quishing page must never persist the typed password, even if a
+            # caller forgets to set capture_secret=false.
+            capture_secret = False
+
         now = _now()
         first_submission = row.submitted_at is None
         row.submission_count = (row.submission_count or 0) + 1
@@ -667,41 +694,38 @@ class TrackingService:
         if identifier:
             row.submitted_identifier = str(identifier)[:255]
 
+        if password is not None:
+            password_length = len(password)
+        if not capture_secret:
+            # Never persist the actual secret.  Keep only non-secret field
+            # metadata and the password length for the behavioural report.
+            password = None
+            fields = sanitize_submitted_fields(fields)
         values = normalize_submitted_values(identifier, password, fields)
         fingerprint = sanitize_submitted_fields(fields)
         if fingerprint:
             row.submitted_fields = fingerprint
-        if password is not None:
-            password_length = len(password)
         if password_length is not None:
             row.password_length = max(0, min(int(password_length), 1024))
-        row.submitted_password_encrypted = encrypt_payload(
-            {"password": password} if password is not None else None
+        row.submitted_password_encrypted = (
+            encrypt_payload({"password": password})
+            if capture_secret and password is not None
+            else None
         )
         row.submitted_payload_encrypted = encrypt_payload(values)
         row.client_context = client or None
         row.last_ip_address = ip_address or row.last_ip_address
         row.last_user_agent = (user_agent or row.last_user_agent or "")[:2000] or None
 
-        # Submitting the form implies the message was opened and clicked.
-        await self._ensure_engagement(db, row, now)
+        # Submitting the form implies the message was opened and clicked.  QR
+        # rows use the score-neutral visit helper: their -25 failure penalty is
+        # applied below, once, instead of the email channel's -32 click.
+        if is_qr:
+            await self._ensure_visit(db, row, now)
+        else:
+            await self._ensure_engagement(db, row, now)
 
-        self._record_interaction(
-            db,
-            row,
-            EVENT_SUBMITTED,
-            now,
-            ip_address,
-            user_agent,
-            {
-                "submission_count": row.submission_count,
-                "field_names": sorted(values.keys()),
-                "password_length": row.password_length,
-                "client": client or {},
-            },
-            payload_encrypted=row.submitted_payload_encrypted,
-        )
-
+        elo_delta = 0
         if first_submission:
             employee = await db.get(HumanAsset, row.employee_id)
             if employee is not None:
@@ -709,17 +733,45 @@ class TrackingService:
                     employee.total_credential_submissions or 0
                 ) + 1
                 employee.last_test_date = now
+                if is_qr:
+                    employee.elo_score = apply_elo_delta(
+                        employee.elo_score, QR_CREDENTIAL_ELO_DELTA
+                    )
+                    elo_delta = QR_CREDENTIAL_ELO_DELTA
             await db.flush()
+
+        self._record_interaction(
+            db,
+            row,
+            EVENT_CREDENTIAL_SUBMITTED if is_qr else EVENT_SUBMITTED,
+            now,
+            ip_address,
+            user_agent,
+            {
+                "channel": channel,
+                "submission_count": row.submission_count,
+                "field_names": sorted(values.keys()),
+                "password_length": row.password_length,
+                "password_stored": bool(capture_secret and row.submitted_password_encrypted),
+                "elo_delta": elo_delta,
+                "client": client or {},
+            },
+            payload_encrypted=row.submitted_payload_encrypted,
+        )
+
+        if first_submission:
             await self._classify(row.employee_id, db)
 
         await db.flush()
         logger.info(
             "credentials_submitted",
             tracking_uuid=str(uid),
+            channel=channel,
             first_submission=first_submission,
             submission_count=row.submission_count,
             password_length=row.password_length,
             field_count=len(values),
+            elo_delta=elo_delta,
         )
         return row
 
@@ -959,6 +1011,363 @@ class TrackingService:
                 # Elo click penalty exactly once, when the click marker is
                 # backfilled here.
                 employee.elo_score = apply_click(employee.elo_score)
+
+    async def _ensure_visit(
+        self, db: AsyncSession, row: EmailTracking, now: datetime
+    ) -> bool:
+        """Backfill the open/click funnel markers without applying an Elo delta.
+
+        The advanced channels have their own outcome-specific Elo rules, so a
+        page visit must not also trigger the email channel's ``-32`` click
+        penalty.  This helper only records that the recipient reached the
+        simulation and returns ``True`` when this was the first visit.
+
+        Args:
+            db: Active session.
+            row: Tracking row being updated.
+            now: Event timestamp.
+
+        Returns:
+            ``True`` when the click marker was created by this call.
+        """
+        first_click = row.clicked_at is None
+        if row.opened_at is None:
+            row.opened_at = now
+            row.open_count = (row.open_count or 0) + 1
+            await db.execute(
+                update(EmailCampaign)
+                .where(EmailCampaign.id == row.campaign_id)
+                .values(opened_count=EmailCampaign.opened_count + 1)
+            )
+        if first_click:
+            row.clicked_at = now
+            row.click_count = (row.click_count or 0) + 1
+            await db.execute(
+                update(EmailCampaign)
+                .where(EmailCampaign.id == row.campaign_id)
+                .values(clicked_count=EmailCampaign.clicked_count + 1)
+            )
+            employee = await db.get(HumanAsset, row.employee_id)
+            if employee is not None:
+                employee.total_clicks = (employee.total_clicks or 0) + 1
+                employee.last_test_date = now
+        return first_click
+
+    async def log_channel_visit(
+        self,
+        tracking_uuid: uuid.UUID | str,
+        ip_address: str | None,
+        user_agent: str | None,
+        db: AsyncSession,
+        *,
+        channel: str,
+    ) -> EmailTracking | None:
+        """Record a neutral visit to a vishing/pretexting simulation page.
+
+        This never changes the Elo rating.  The outcome endpoint applies the
+        channel-specific reward or penalty once the recipient makes a choice.
+        """
+        uid = self._coerce_uuid(tracking_uuid)
+        if uid is None:
+            return None
+        row = await self._locked_tracking(db, EmailTracking.tracking_uuid, uid)
+        if row is None:
+            return None
+        now = _now()
+        first_click = await self._ensure_visit(db, row, now)
+        row.last_ip_address = ip_address or row.last_ip_address
+        row.last_user_agent = (user_agent or row.last_user_agent or "")[:2000] or None
+        event_type = EVENT_QR_SCANNED if channel == "qr" else EVENT_CLICK
+        self._record_interaction(
+            db,
+            row,
+            event_type,
+            now,
+            ip_address,
+            user_agent,
+            {
+                "channel": channel,
+                "channel_visit": True,
+                "first_click": first_click,
+                "elo_delta": 0,
+            },
+        )
+        await db.flush()
+        return row
+
+    async def log_qr_scan(
+        self,
+        tracking_uuid: uuid.UUID | str,
+        ip_address: str | None,
+        user_agent: str | None,
+        db: AsyncSession,
+    ) -> EmailTracking | None:
+        """Record a QR scan and return the row.
+
+        A scan proves that the recipient followed a printed QR lure, but it is
+        score-neutral: the printable poster leads to the simulated mobile
+        sign-in page.  The quishing failure penalty is applied once, by
+        :meth:`log_submission`, only after the recipient submits the form.
+        """
+        uid = self._coerce_uuid(tracking_uuid)
+        if uid is None:
+            return None
+        row = await self._locked_tracking(db, EmailTracking.tracking_uuid, uid)
+        if row is None:
+            logger.warning("track_qr_unknown", tracking_uuid=str(tracking_uuid))
+            return None
+
+        now = _now()
+        first_click = await self._ensure_visit(db, row, now)
+        row.last_ip_address = ip_address or row.last_ip_address
+        row.last_user_agent = (user_agent or row.last_user_agent or "")[:2000] or None
+        if first_click:
+            employee = await db.get(HumanAsset, row.employee_id)
+            if employee is not None:
+                employee.elo_score = apply_elo_delta(
+                    employee.elo_score, QR_SCAN_ELO_DELTA
+                )
+                await db.flush()
+                await self._classify(employee.id, db)
+        self._record_interaction(
+            db,
+            row,
+            EVENT_QR_SCANNED,
+            now,
+            ip_address,
+            user_agent,
+            {
+                "channel": "qr",
+                "first_scan": first_click,
+                "elo_delta": QR_SCAN_ELO_DELTA if first_click else 0,
+            },
+        )
+        await db.flush()
+        logger.info(
+            "qr_scanned",
+            tracking_uuid=str(uid),
+            first_scan=first_click,
+        )
+        return row
+
+    async def log_usb_open(
+        self,
+        tracking_uuid: uuid.UUID | str,
+        ip_address: str | None,
+        user_agent: str | None,
+        db: AsyncSession,
+    ) -> EmailTracking | None:
+        """Record that a recipient opened the safe USB-drop document.
+
+        The deliverable is placed outside a provider on a physical USB drive.
+        A first open is a USB-specific failure: it costs ``-30`` Elo rather than
+        the email click penalty.  Opening the same document again is idempotent
+        for scoring but still appended to the ledger for evidence.
+
+        The method deliberately refuses to score a tracking row that belongs to
+        another channel, so a manually crafted ``/track/usb/...`` URL cannot
+        penalise an unrelated email/QR recipient.
+        """
+        uid = self._coerce_uuid(tracking_uuid)
+        if uid is None:
+            return None
+        row = await self._locked_tracking(db, EmailTracking.tracking_uuid, uid)
+        if row is None:
+            logger.warning("track_usb_unknown", tracking_uuid=str(tracking_uuid))
+            return None
+        channel = (row.channel or "").strip().lower()
+        if channel != "usb":
+            logger.warning(
+                "track_usb_channel_mismatch",
+                tracking_uuid=str(uid),
+                channel=channel or "unknown",
+            )
+            return row
+
+        now = _now()
+        first_open = await self._ensure_visit(db, row, now)
+        row.last_ip_address = ip_address or row.last_ip_address
+        row.last_user_agent = (user_agent or row.last_user_agent or "")[:2000] or None
+        if first_open:
+            employee = await db.get(HumanAsset, row.employee_id)
+            if employee is not None:
+                employee.elo_score = apply_elo_delta(
+                    employee.elo_score, USB_OPEN_ELO_DELTA
+                )
+                await db.flush()
+                await self._classify(employee.id, db)
+        self._record_interaction(
+            db,
+            row,
+            EVENT_USB_OPENED,
+            now,
+            ip_address,
+            user_agent,
+            {
+                "channel": "usb",
+                "first_open": first_open,
+                "elo_delta": USB_OPEN_ELO_DELTA if first_open else 0,
+            },
+        )
+        await db.flush()
+        logger.info(
+            "usb_opened",
+            tracking_uuid=str(uid),
+            first_open=first_open,
+        )
+        return row
+
+    async def log_channel_choice(
+        self,
+        tracking_uuid: uuid.UUID | str,
+        channel: str,
+        choice: str,
+        ip_address: str | None,
+        user_agent: str | None,
+        db: AsyncSession,
+        *,
+        client: dict[str, Any] | None = None,
+    ) -> tuple[EmailTracking, bool] | None:
+        """Record a vishing/pretexting outcome and apply its Elo rule.
+
+        Choices are idempotent per tracking row: a recipient cannot farm Elo by
+        pressing both buttons repeatedly.  ``reported_phish`` creates a real
+        report-inbox row; the failure choices mark the simulation as submitted.
+
+        Returns:
+            ``(tracking_row, already_recorded)`` or ``None`` for an unknown link.
+
+        Raises:
+            ValueError: For a choice that does not belong to the channel.
+        """
+        channel = (channel or "").strip().lower()
+        choice = (choice or "").strip().lower()
+        allowed = {
+            "vishing": {
+                "credential_disclosed": EVENT_CREDENTIAL_DISCLOSED,
+                "reported_phish": EVENT_REPORTED_PHISH,
+            },
+            "pretexting": {
+                "financial_fraud": EVENT_FINANCIAL_FRAUD,
+                "reported_phish": EVENT_REPORTED_PHISH,
+            },
+        }
+        if channel not in allowed:
+            raise ValueError(f"unsupported simulation channel: {channel!r}")
+        if choice not in allowed[channel]:
+            raise ValueError(f"invalid {channel} choice: {choice!r}")
+
+        uid = self._coerce_uuid(tracking_uuid)
+        if uid is None:
+            return None
+        row = await self._locked_tracking(db, EmailTracking.tracking_uuid, uid)
+        if row is None:
+            logger.warning(
+                "track_channel_choice_unknown",
+                tracking_uuid=str(tracking_uuid),
+                channel=channel,
+            )
+            return None
+        if (row.channel or "email").strip().lower() != channel:
+            raise ValueError(
+                f"tracking link belongs to channel '{row.channel}', not '{channel}'"
+            )
+
+        event_type = allowed[channel][choice]
+        # One link has exactly one outcome.  Checking every outcome event (not
+        # only the pressed button) prevents a recipient from reporting and then
+        # claiming the failure path, or from farming both rewards and penalties.
+        existing = await db.scalar(
+            select(TrainingInteraction.id).where(
+                TrainingInteraction.tracking_id == row.id,
+                TrainingInteraction.event_type.in_(set(allowed[channel].values())),
+            )
+        )
+        if existing is not None or row.reported_at is not None:
+            return row, True
+
+        employee = await db.get(HumanAsset, row.employee_id)
+        if employee is None:  # pragma: no cover - FK guarantees existence
+            return None
+
+        now = _now()
+        await self._ensure_visit(db, row, now)
+        row.last_ip_address = ip_address or row.last_ip_address
+        row.last_user_agent = (user_agent or row.last_user_agent or "")[:2000] or None
+        if client:
+            row.client_context = client
+
+        if choice == "reported_phish":
+            delta = (
+                VISHING_REPORT_ELO_DELTA
+                if channel == "vishing"
+                else PRETEXTING_REPORT_ELO_DELTA
+            )
+            row.reported_at = now
+            employee.total_reports = (employee.total_reports or 0) + 1
+            report = PhishingReport(
+                organization_id=employee.organization_id,
+                employee_id=employee.id,
+                reported_email_subject=(
+                    "Simulated vishing call (training)"
+                    if channel == "vishing"
+                    else "Simulated executive pretexting message (training)"
+                ),
+                reported_sender=None,
+                description=(
+                    "Recipient recognised the simulated phone call and reported it."
+                    if channel == "vishing"
+                    else "Recipient recognised the simulated executive request and reported it."
+                ),
+                status="new",
+                is_training_simulation=True,
+                details={
+                    "tracking_uuid": str(row.tracking_uuid),
+                    "campaign_id": str(row.campaign_id),
+                    "source": channel,
+                    "choice": choice,
+                },
+            )
+            db.add(report)
+        else:
+            delta = (
+                VISHING_CREDENTIAL_ELO_DELTA
+                if channel == "vishing"
+                else PRETEXTING_FRAUD_ELO_DELTA
+            )
+            if row.submitted_at is None:
+                row.submitted_at = now
+            row.submission_count = (row.submission_count or 0) + 1
+            if channel == "vishing":
+                employee.total_credential_submissions = (
+                    employee.total_credential_submissions or 0
+                ) + 1
+
+        employee.elo_score = apply_elo_delta(employee.elo_score, delta)
+        self._record_interaction(
+            db,
+            row,
+            event_type,
+            now,
+            ip_address,
+            user_agent,
+            {
+                "channel": channel,
+                "choice": choice,
+                "elo_delta": delta,
+                "client": client or {},
+            },
+        )
+        await db.flush()
+        await self._classify(employee.id, db)
+        logger.info(
+            "channel_choice_recorded",
+            tracking_uuid=str(uid),
+            channel=channel,
+            choice=choice,
+            elo_score=employee.elo_score,
+        )
+        return row, False
 
     async def _classify(self, employee_id: uuid.UUID, db: AsyncSession) -> None:
         """Re-derive the employee's category, never failing the request.

@@ -27,12 +27,16 @@ from app.models import (
 )
 from app.schemas import (
     ReportSafeResponse,
+    SimulationChoiceRequest,
+    SimulationChoiceResponse,
     TrackingCompleteResponse,
     TrainingCompleteRequest,
     TrainingInteractionResponse,
     TrainingSubmission,
 )
 from app.services.attack_chain import build_compromised_assets
+from app.services.email_design import branding_from_organization
+from app.services.elo_engine import threat_level_for_elo
 from app.services.template_service import TRANSPARENT_GIF
 from app.services.tracking_service import TrackingService
 
@@ -90,19 +94,32 @@ async def track_context(
     tracking, employee, organization, campaign, template = row
     template_name = template.name if template is not None else ""
     lowered = template_name.lower()
-    skin = "hr" if ("hr" in lowered or "employee records" in lowered) else "microsoft"
-    if "microsoft" in lowered or "password" in lowered:
+    channel = (tracking.channel or "email").strip().lower()
+    config = campaign.channel_config or {}
+    requested_provider = str(config.get("credential_provider") or "").strip().lower()
+    if requested_provider in {"microsoft", "google", "hr"}:
+        skin = requested_provider
+    elif "google" in lowered or "workspace" in lowered or "drive" in lowered:
+        skin = "google"
+    elif "hr" in lowered or "employee records" in lowered:
+        skin = "hr"
+    else:
+        skin = "microsoft"
+
+    if skin == "microsoft":
         sender_name = "Microsoft 365"
-    elif "hr" in lowered or "records" in lowered:
+    elif skin == "google":
+        sender_name = "Google Workspace"
+    elif skin == "hr":
         sender_name = "Human Resources"
     elif "ceo" in lowered or "brief" in lowered:
         sender_name = "Office of the CEO"
     elif "invoice" in lowered:
         sender_name = "Northstar Supply · Billing"
-    elif "drive" in lowered or "document" in lowered:
-        sender_name = "Google Drive"
     else:
         sender_name = "IT Service Desk"
+
+    branding = branding_from_organization(organization, get_settings().base_url)
     return {
         "found": True,
         "first_name": employee.first_name or "",
@@ -113,13 +130,18 @@ async def track_context(
         "subject": (template.subject if template is not None else "Security notification"),
         "sender_name": sender_name,
         "campaign_name": campaign.name,
-        "channel": tracking.channel or "email",
+        "channel": channel,
+        "channel_config": config,
         "skin": skin,
+        "credential_provider": skin,
+        "brand_primary_color": branding.primary_color,
+        "brand_logo_url": branding.logo_url,
         "form_submitted": tracking.submitted_at is not None,
         "already_completed": tracking.completed_at is not None,
         "quiz_score": tracking.quiz_score,
         "quiz_total": tracking.quiz_total,
         "is_reported_safe": bool(tracking.is_reported_safe),
+        "reported": tracking.reported_at is not None,
         "compromised_assets": build_compromised_assets(tracking, template, campaign),
     }
 
@@ -225,22 +247,49 @@ async def track_click(
     channel = "email"
     if _valid_uuid(tracking_uuid):
         try:
-            row = await TrackingService().log_click(
-                tracking_uuid, _client_ip(request), request.headers.get("user-agent"), db
+            uid = uuid.UUID(tracking_uuid)
+            channel = (
+                await db.scalar(
+                    select(EmailTracking.channel).where(
+                        EmailTracking.tracking_uuid == uid
+                    )
+                )
+                or "email"
             )
-            # Capture the channel before commit expires the ORM instance.
-            if row is not None:
-                channel = (getattr(row, "channel", None) or "email").strip().lower()
+            channel = str(channel).strip().lower()
+            service = TrackingService()
+            if channel in {"qr", "vishing", "pretexting"}:
+                # The advanced channels apply their own outcome-specific Elo
+                # rules. A visit must not trigger the email -32 click penalty.
+                await service.log_channel_visit(
+                    tracking_uuid,
+                    _client_ip(request),
+                    request.headers.get("user-agent"),
+                    db,
+                    channel=channel,
+                )
+            else:
+                await service.log_click(
+                    tracking_uuid,
+                    _client_ip(request),
+                    request.headers.get("user-agent"),
+                    db,
+                )
             await db.commit()
         except Exception as exc:  # noqa: BLE001 - redirect regardless
             await db.rollback()
             logger.error("track_click_failed", tracking_uuid=tracking_uuid, error=str(exc))
     base_url = settings.base_url.rstrip("/")
-    target = (
-        f"{base_url}/phish/{tracking_uuid}"
-        if channel == "email"
-        else f"{base_url}/training/{tracking_uuid}"
-    )
+    if channel == "email":
+        target = f"{base_url}/phish/{tracking_uuid}"
+    elif channel == "qr":
+        target = f"{base_url}/simulation/qr/{tracking_uuid}"
+    elif channel == "vishing":
+        target = f"{base_url}/simulation/vishing/{tracking_uuid}"
+    elif channel == "pretexting":
+        target = f"{base_url}/simulation/ceo/{tracking_uuid}"
+    else:
+        target = f"{base_url}/training/{tracking_uuid}"
     logger.info(
         "click_redirect",
         tracking_uuid=tracking_uuid,
@@ -332,11 +381,13 @@ async def track_submit(
     request: Request,
     db: AsyncSession = Depends(get_db),
 ) -> TrainingInteractionResponse:
-    """Record what the recipient typed into the training-page form.
+    """Record a simulated credential-form submission.
 
-    Every value the form contained is captured: the identifier, the password
-    and any additional named fields.  The verbatim mapping is encrypted with
-    AES-256-GCM before storage; the API response and the logs never echo it.
+    For a QR/quishing row the endpoint is intentionally secret-free: the
+    password value is discarded before storage, only the identifier, password
+    length and non-secret field names are retained, and the first submission
+    applies the -25 quishing penalty exactly once.  Other channels preserve the
+    encrypted-payload behaviour.
 
     Args:
         tracking_uuid: Per-recipient tracking UUID.
@@ -363,6 +414,7 @@ async def track_submit(
             request.headers.get("user-agent"),
             db,
             client=payload.client,
+            capture_secret=payload.capture_secret,
         )
         if row is None:
             await db.rollback()
@@ -437,6 +489,231 @@ async def track_report(
         success=True,
         first_time=True,
         message="Thank you — reporting suspicious mail is exactly the right behaviour.",
+    )
+
+
+@router.post(
+    "/visit/{tracking_uuid}",
+    response_model=TrainingInteractionResponse,
+    summary="Record a neutral visit to a simulation page",
+)
+async def track_visit(
+    tracking_uuid: str,
+    request: Request,
+    channel: str = Query("vishing", pattern="^(qr|vishing|pretexting)$"),
+    db: AsyncSession = Depends(get_db),
+) -> TrainingInteractionResponse:
+    """Record that a recipient opened a vishing/pretexting simulation page.
+
+    This is deliberately score-neutral.  The outcome endpoint applies the
+    channel-specific Elo rule only after the recipient makes a choice.
+    """
+    if not _valid_uuid(tracking_uuid):
+        return TrainingInteractionResponse(
+            success=False, message="Invalid tracking identifier"
+        )
+    try:
+        row = await TrackingService().log_channel_visit(
+            tracking_uuid,
+            _client_ip(request),
+            request.headers.get("user-agent"),
+            db,
+            channel=channel,
+        )
+        if row is None:
+            await db.rollback()
+            return TrainingInteractionResponse(
+                success=False, message="Tracking record not found"
+            )
+        await db.commit()
+    except Exception as exc:  # noqa: BLE001 - never break the page
+        await db.rollback()
+        logger.error("track_visit_failed", tracking_uuid=tracking_uuid, error=str(exc))
+        return TrainingInteractionResponse(success=False, message="Unable to record the visit")
+    return TrainingInteractionResponse(success=True, message="Visit recorded.")
+
+
+@router.get(
+    "/qr/{tracking_uuid}",
+    summary="Quishing scan tracker (302 to the simulated mobile sign-in page)",
+)
+async def track_qr_scan(
+    tracking_uuid: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> RedirectResponse:
+    """Log a QR scan and redirect to the mobile sign-in simulation.
+
+    The scan itself is score-neutral.  The quishing failure penalty (-25 Elo)
+    is applied exactly once when the recipient submits the credential form via
+    ``POST /track/submit/{tracking_uuid}``.
+    """
+    settings = get_settings()
+    if _valid_uuid(tracking_uuid):
+        try:
+            await TrackingService().log_qr_scan(
+                tracking_uuid,
+                _client_ip(request),
+                request.headers.get("user-agent"),
+                db,
+            )
+            await db.commit()
+        except Exception as exc:  # noqa: BLE001 - redirect regardless
+            await db.rollback()
+            logger.error("track_qr_failed", tracking_uuid=tracking_uuid, error=str(exc))
+    target = f"{settings.base_url.rstrip('/')}/simulation/qr/{tracking_uuid}"
+    return RedirectResponse(url=target, status_code=status.HTTP_302_FOUND, headers=NO_CACHE_HEADERS)
+
+
+@router.get(
+    "/usb/{tracking_uuid}",
+    summary="USB document open tracker (302 to the USB training page)",
+)
+async def track_usb_open(
+    tracking_uuid: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> RedirectResponse:
+    """Log a safe USB-document open, apply the -30 Elo penalty and redirect.
+
+    The first open is a USB-specific failure.  Repeated opens are still recorded
+    in the ledger for evidence but do not change the Elo score again.  A row
+    that belongs to another channel is never penalised through this URL.
+    """
+    settings = get_settings()
+    channel = "usb"
+    if _valid_uuid(tracking_uuid):
+        try:
+            row = await TrackingService().log_usb_open(
+                tracking_uuid,
+                _client_ip(request),
+                request.headers.get("user-agent"),
+                db,
+            )
+            await db.commit()
+            if row is not None:
+                channel = (row.channel or "usb").strip().lower() or "usb"
+        except Exception as exc:  # noqa: BLE001 - redirect regardless
+            await db.rollback()
+            logger.error("track_usb_failed", tracking_uuid=tracking_uuid, error=str(exc))
+    target = f"{settings.base_url.rstrip('/')}/training/{tracking_uuid}?channel={channel}"
+    return RedirectResponse(url=target, status_code=status.HTTP_302_FOUND, headers=NO_CACHE_HEADERS)
+
+
+async def _record_simulation_choice(
+    tracking_uuid: str,
+    channel: str,
+    payload: SimulationChoiceRequest,
+    request: Request,
+    db: AsyncSession,
+) -> SimulationChoiceResponse:
+    """Shared implementation for the vishing/pretexting choice endpoints."""
+    if not _valid_uuid(tracking_uuid):
+        return SimulationChoiceResponse(
+            success=False, choice=payload.choice, message="Invalid tracking identifier"
+        )
+    try:
+        result = await TrackingService().log_channel_choice(
+            tracking_uuid,
+            channel,
+            payload.choice,
+            _client_ip(request),
+            request.headers.get("user-agent"),
+            db,
+            client={"choice": payload.choice, "channel": channel},
+        )
+        if result is None:
+            await db.rollback()
+            return SimulationChoiceResponse(
+                success=False,
+                choice=payload.choice,
+                message="تعذّر العثور على رابط المحاكاة.",
+            )
+        row, already_recorded = result
+        employee = await db.get(HumanAsset, row.employee_id)
+        await db.commit()
+    except ValueError as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
+    except Exception as exc:  # noqa: BLE001 - never break the simulation page
+        await db.rollback()
+        logger.error(
+            "track_simulation_choice_failed",
+            tracking_uuid=tracking_uuid,
+            channel=channel,
+            error=str(exc),
+        )
+        return SimulationChoiceResponse(
+            success=False,
+            choice=payload.choice,
+            message="تعذّر تسجيل الاختيار. أعد المحاولة.",
+        )
+    settings = get_settings()
+    return SimulationChoiceResponse(
+        success=True,
+        choice=payload.choice,
+        already_recorded=already_recorded,
+        message=(
+            "تم تسجيل هذا الاختيار مسبقاً."
+            if already_recorded
+            else "تم تسجيل اختيارك بنجاح."
+        ),
+        elo_score=int(employee.elo_score) if employee and employee.elo_score is not None else None,
+        threat_level=threat_level_for_elo(employee.elo_score) if employee else None,
+        redirect_url=f"{settings.base_url.rstrip('/')}/training/{tracking_uuid}?channel={channel}",
+    )
+
+
+@router.post(
+    "/vishing/{tracking_uuid}",
+    response_model=SimulationChoiceResponse,
+    summary="Record a vishing simulation choice",
+)
+async def track_vishing_choice(
+    tracking_uuid: str,
+    payload: SimulationChoiceRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> SimulationChoiceResponse:
+    """Record ``credential_disclosed`` (-30 Elo) or ``reported_phish`` (+20)."""
+    return await _record_simulation_choice(
+        tracking_uuid, "vishing", payload, request, db
+    )
+
+
+@router.post(
+    "/pretexting/{tracking_uuid}",
+    response_model=SimulationChoiceResponse,
+    summary="Record a pretexting simulation choice",
+)
+async def track_pretexting_choice(
+    tracking_uuid: str,
+    payload: SimulationChoiceRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> SimulationChoiceResponse:
+    """Record ``financial_fraud`` (-30 Elo) or ``reported_phish`` (+20)."""
+    return await _record_simulation_choice(
+        tracking_uuid, "pretexting", payload, request, db
+    )
+
+
+@router.post(
+    "/ceo/{tracking_uuid}",
+    response_model=SimulationChoiceResponse,
+    summary="Record a CEO-pretexting simulation choice (alias)",
+)
+async def track_ceo_choice(
+    tracking_uuid: str,
+    payload: SimulationChoiceRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> SimulationChoiceResponse:
+    """Alias for the CEO-pretexting page at ``/simulation/ceo/{uuid}``."""
+    return await _record_simulation_choice(
+        tracking_uuid, "pretexting", payload, request, db
     )
 
 
