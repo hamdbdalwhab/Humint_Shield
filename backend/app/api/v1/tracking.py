@@ -675,6 +675,23 @@ def _qr_branding_payload(
 )
 async def qr_campaign_context(
     campaign_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, object]:
+    """Return the branding/lure context for a generic (no-recipient) poster.
+
+    The campaign UUID is printed on the poster, so it is public by design.  No
+    employee data is ever returned.
+    """
+    if not _valid_uuid(campaign_id):
+        return {"found": False}
+    campaign = await db.get(EmailCampaign, uuid.UUID(campaign_id))
+    if campaign is None or (campaign.channel or "").strip().lower() != "qr":
+        return {"found": False}
+    organization = await db.get(Organization, campaign.organization_id)
+    if organization is None:  # pragma: no cover - FK guarantees existence
+        return {"found": False}
+    config = campaign.channel_config or {}
     host = request.headers.get("x-forwarded-host") or request.headers.get("host")
     proto = request.headers.get("x-forwarded-proto") or request.url.scheme
     effective_base_url = f"{proto}://{host}" if host else get_settings().base_url
