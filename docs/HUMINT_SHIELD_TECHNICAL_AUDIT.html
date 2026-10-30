@@ -1,0 +1,1489 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>HUMINT Shield — الملف التقني الشامل</title>
+<meta name="description" content="تدقيق تقني شامل لمنصة HUMINT Shield للتوعية الأمنية: البنية، المنطق البرمجي، الاعتماديات، الإحصائيات، وحالة القنوات." />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Cairo:wght@300;400;600;700;800;900&display=swap" rel="stylesheet" />
+<style>
+  /* ============================================================
+     HUMINT SHIELD — MASTER DOSSIER
+     Dark / glassmorphism / RTL
+     ============================================================ */
+  :root{
+    --bg:#060a12;
+    --bg-2:#0a1120;
+    --glass:rgba(255,255,255,.042);
+    --glass-2:rgba(255,255,255,.065);
+    --stroke:rgba(255,255,255,.09);
+    --stroke-2:rgba(255,255,255,.16);
+    --txt:#e9eefb;
+    --muted:#92a3c2;
+    --faint:#64748b;
+    --cyan:#22d3ee;
+    --violet:#8b5cf6;
+    --emerald:#34d399;
+    --amber:#fbbf24;
+    --rose:#fb7185;
+    --blue:#60a5fa;
+    --radius:20px;
+    --shadow:0 24px 60px -20px rgba(0,0,0,.75);
+    --mono:"Cascadia Code","Consolas","SF Mono",monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{scroll-behavior:smooth;scroll-padding-top:96px}
+  body{
+    font-family:'Cairo',system-ui,-apple-system,"Segoe UI",Tahoma,sans-serif;
+    background:var(--bg);
+    color:var(--txt);
+    line-height:1.85;
+    font-size:16px;
+    -webkit-font-smoothing:antialiased;
+    overflow-x:hidden;
+  }
+  body::before{
+    content:"";position:fixed;inset:0;z-index:-2;
+    background:
+      radial-gradient(1100px 620px at 88% -8%, rgba(34,211,238,.13), transparent 60%),
+      radial-gradient(950px 560px at 6% 4%, rgba(139,92,246,.14), transparent 62%),
+      radial-gradient(900px 700px at 50% 108%, rgba(16,185,129,.09), transparent 60%),
+      linear-gradient(180deg,#060a12 0%,#070d18 40%,#050810 100%);
+  }
+  body::after{
+    content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;opacity:.35;
+    background-image:
+      linear-gradient(rgba(255,255,255,.028) 1px,transparent 1px),
+      linear-gradient(90deg,rgba(255,255,255,.028) 1px,transparent 1px);
+    background-size:56px 56px;
+    mask-image:radial-gradient(circle at 50% 20%,#000 0%,transparent 78%);
+  }
+
+  /* ---------- top bar ---------- */
+  .topbar{
+    position:fixed;top:0;right:0;left:0;z-index:60;
+    height:66px;display:flex;align-items:center;justify-content:space-between;
+    gap:16px;padding:0 clamp(16px,4vw,44px);
+    background:rgba(6,10,18,.72);
+    backdrop-filter:blur(18px) saturate(160%);
+    -webkit-backdrop-filter:blur(18px) saturate(160%);
+    border-bottom:1px solid var(--stroke);
+  }
+  .brand{display:flex;align-items:center;gap:12px;min-width:0}
+  .brand .mark{
+    width:38px;height:38px;border-radius:11px;display:grid;place-items:center;
+    background:linear-gradient(140deg,rgba(34,211,238,.9),rgba(139,92,246,.9));
+    box-shadow:0 0 26px rgba(34,211,238,.35);
+    font-weight:900;color:#04121a;font-size:17px;letter-spacing:-.5px;
+    flex:0 0 auto;
+  }
+  .brand b{font-size:15.5px;letter-spacing:.2px;white-space:nowrap}
+  .brand small{display:block;color:var(--muted);font-size:11.5px;line-height:1.4;white-space:nowrap}
+  .topmeta{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end}
+  .pill{
+    display:inline-flex;align-items:center;gap:7px;
+    padding:6px 12px;border-radius:999px;font-size:11.5px;font-weight:600;
+    border:1px solid var(--stroke);background:var(--glass);color:var(--muted);
+    white-space:nowrap;
+  }
+  .dot{width:7px;height:7px;border-radius:50%;background:var(--emerald);box-shadow:0 0 10px var(--emerald)}
+  .dot.amber{background:var(--amber);box-shadow:0 0 10px var(--amber)}
+  .dot.rose{background:var(--rose);box-shadow:0 0 10px var(--rose)}
+  #progress{position:fixed;top:66px;right:0;height:2px;width:0;z-index:61;
+    background:linear-gradient(90deg,var(--cyan),var(--violet),var(--emerald));
+    box-shadow:0 0 14px rgba(34,211,238,.65);transition:width .12s linear}
+
+  /* ---------- shell ---------- */
+  .shell{
+    max-width:1440px;margin:0 auto;padding:104px clamp(16px,3.4vw,40px) 90px;
+    display:grid;grid-template-columns:276px minmax(0,1fr);gap:34px;align-items:start;
+  }
+  .toc{
+    position:sticky;top:96px;max-height:calc(100vh - 120px);overflow:auto;
+    padding:20px 16px;border-radius:var(--radius);
+    background:linear-gradient(175deg,rgba(255,255,255,.055),rgba(255,255,255,.02));
+    border:1px solid var(--stroke);backdrop-filter:blur(16px);
+    scrollbar-width:thin;scrollbar-color:rgba(255,255,255,.15) transparent;
+  }
+  .toc h4{font-size:11px;letter-spacing:2.4px;text-transform:uppercase;color:var(--faint);margin-bottom:12px;font-weight:700}
+  .toc a{
+    display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:10px;
+    color:var(--muted);text-decoration:none;font-size:13.5px;font-weight:600;
+    transition:.18s;border:1px solid transparent;
+  }
+  .toc a span{font-family:var(--mono);font-size:10.5px;color:var(--faint);width:18px;flex:0 0 auto}
+  .toc a:hover{color:var(--txt);background:rgba(255,255,255,.05)}
+  .toc a.active{color:#fff;background:linear-gradient(90deg,rgba(34,211,238,.16),rgba(139,92,246,.08));border-color:rgba(34,211,238,.3)}
+  .toc a.active span{color:var(--cyan)}
+
+  main{min-width:0}
+
+  /* ---------- hero ---------- */
+  .hero{
+    position:relative;overflow:hidden;border-radius:28px;padding:clamp(28px,5vw,58px);
+    border:1px solid var(--stroke-2);
+    background:
+      radial-gradient(700px 320px at 92% 0%,rgba(34,211,238,.16),transparent 60%),
+      radial-gradient(600px 300px at 0% 100%,rgba(139,92,246,.14),transparent 60%),
+      linear-gradient(160deg,rgba(255,255,255,.07),rgba(255,255,255,.018));
+    box-shadow:var(--shadow);
+    backdrop-filter:blur(20px);
+    margin-bottom:26px;
+  }
+  .hero::after{
+    content:"";position:absolute;inset:0;pointer-events:none;
+    background:linear-gradient(115deg,transparent 40%,rgba(255,255,255,.055) 50%,transparent 60%);
+  }
+  .eyebrow{
+    display:inline-flex;align-items:center;gap:9px;font-size:11.5px;font-weight:800;
+    letter-spacing:2.6px;text-transform:uppercase;color:var(--cyan);margin-bottom:18px;
+  }
+  .eyebrow::before{content:"";width:26px;height:1px;background:linear-gradient(90deg,var(--cyan),transparent)}
+  .hero h1{
+    font-size:clamp(30px,4.6vw,54px);line-height:1.18;font-weight:900;letter-spacing:-.8px;
+    background:linear-gradient(100deg,#fff 10%,#b8d9ff 46%,#8be9f7 78%);
+    -webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;
+    margin-bottom:14px;
+  }
+  .hero .sub{color:var(--muted);font-size:clamp(14px,1.6vw,17px);max-width:74ch;line-height:1.9}
+  .hero .chips{display:flex;flex-wrap:wrap;gap:9px;margin-top:26px}
+  .chip{
+    font-size:12px;font-weight:700;padding:8px 14px;border-radius:11px;
+    background:rgba(255,255,255,.05);border:1px solid var(--stroke);color:#c7d6f0;
+    display:inline-flex;align-items:center;gap:8px;
+  }
+  .chip i{width:6px;height:6px;border-radius:50%;background:var(--cyan);display:inline-block}
+
+  /* ---------- kpi strip ---------- */
+  .kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:34px}
+  .kpi{
+    position:relative;overflow:hidden;padding:20px 18px;border-radius:18px;
+    background:linear-gradient(170deg,rgba(255,255,255,.062),rgba(255,255,255,.018));
+    border:1px solid var(--stroke);backdrop-filter:blur(14px);
+  }
+  .kpi::before{content:"";position:absolute;top:0;right:0;left:0;height:2px;
+    background:linear-gradient(90deg,transparent,var(--accent,var(--cyan)),transparent);opacity:.7}
+  .kpi .n{font-size:clamp(24px,2.7vw,34px);font-weight:900;letter-spacing:-1px;line-height:1.1;
+    font-family:var(--mono);color:#fff}
+  .kpi .n small{font-size:13px;color:var(--muted);font-weight:700;margin-inline-start:4px}
+  .kpi .l{font-size:12px;color:var(--muted);margin-top:6px;font-weight:600}
+
+  /* ---------- sections ---------- */
+  section{margin-bottom:44px;scroll-margin-top:96px}
+  .panel{
+    padding:clamp(22px,3vw,34px);border-radius:var(--radius);
+    background:linear-gradient(175deg,rgba(255,255,255,.05),rgba(255,255,255,.016));
+    border:1px solid var(--stroke);backdrop-filter:blur(16px);
+    box-shadow:0 18px 44px -30px rgba(0,0,0,.9);
+  }
+  .sec-head{display:flex;align-items:flex-start;gap:16px;margin-bottom:22px}
+  .sec-num{
+    flex:0 0 auto;width:48px;height:48px;border-radius:14px;display:grid;place-items:center;
+    font-family:var(--mono);font-weight:800;font-size:16px;color:#031018;
+    background:linear-gradient(140deg,var(--cyan),#7dd3fc);
+    box-shadow:0 0 24px rgba(34,211,238,.28);
+  }
+  .sec-num.v{background:linear-gradient(140deg,#a78bfa,#8b5cf6);color:#0b0416;box-shadow:0 0 24px rgba(139,92,246,.3)}
+  .sec-num.g{background:linear-gradient(140deg,#6ee7b7,#10b981);color:#03130d;box-shadow:0 0 24px rgba(16,185,129,.28)}
+  .sec-head h2{font-size:clamp(20px,2.3vw,27px);font-weight:800;letter-spacing:-.3px;line-height:1.35}
+  .sec-head .en{display:block;font-size:11px;letter-spacing:2.4px;text-transform:uppercase;color:var(--faint);font-weight:700;margin-top:4px;font-family:var(--mono)}
+  h3{font-size:17px;font-weight:800;margin:26px 0 12px;display:flex;align-items:center;gap:9px}
+  h3::before{content:"";width:4px;height:17px;border-radius:3px;background:linear-gradient(180deg,var(--cyan),var(--violet))}
+  h4{font-size:14.5px;font-weight:800;margin:16px 0 8px;color:#dfe9ff}
+  p{color:#c3d1e8;margin-bottom:12px}
+  p.lead{font-size:16.5px;color:#d5e0f2;line-height:2}
+  strong{color:#fff;font-weight:800}
+  code{
+    font-family:var(--mono);font-size:.86em;direction:ltr;display:inline-block;
+    background:rgba(34,211,238,.09);border:1px solid rgba(34,211,238,.18);
+    color:#a5f3fc;padding:1px 7px;border-radius:6px;unicode-bidi:isolate;
+  }
+  .en-inline{direction:ltr;unicode-bidi:isolate;font-family:var(--mono);font-size:.9em;color:#b9c9e6}
+  ul,ol{margin:0 0 14px;padding-inline-start:22px;color:#c3d1e8}
+  li{margin-bottom:7px}
+  li::marker{color:var(--cyan)}
+  a{color:var(--cyan)}
+
+  /* ---------- callouts ---------- */
+  .callout{
+    display:flex;gap:14px;padding:16px 18px;border-radius:14px;margin:18px 0;
+    border:1px solid var(--stroke);background:rgba(255,255,255,.035);
+    border-inline-start:3px solid var(--cyan);
+  }
+  .callout .ico{flex:0 0 auto;font-size:18px;line-height:1.4}
+  .callout h5{font-size:13.5px;font-weight:800;margin-bottom:4px;color:#fff}
+  .callout p{margin:0;font-size:13.6px;color:#b9c9e3}
+  .callout.warn{border-inline-start-color:var(--amber);background:rgba(251,191,36,.055)}
+  .callout.danger{border-inline-start-color:var(--rose);background:rgba(251,113,133,.055)}
+  .callout.ok{border-inline-start-color:var(--emerald);background:rgba(52,211,153,.055)}
+  .callout.info{border-inline-start-color:var(--blue);background:rgba(96,165,250,.055)}
+
+  /* ---------- grids ---------- */
+  .grid-2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
+  .grid-3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}
+  .mini{
+    padding:16px;border-radius:14px;border:1px solid var(--stroke);
+    background:rgba(255,255,255,.028);
+  }
+  .mini h5{font-size:13.5px;font-weight:800;margin-bottom:5px;color:#fff}
+  .mini p{font-size:12.8px;color:var(--muted);margin:0;line-height:1.75}
+  .mini .tag{font-family:var(--mono);font-size:10.5px;color:var(--cyan);letter-spacing:.5px}
+
+  /* ---------- timeline ---------- */
+  .timeline{position:relative;padding-inline-start:26px;margin-top:10px}
+  .timeline::before{
+    content:"";position:absolute;top:6px;bottom:6px;inset-inline-start:9px;width:2px;
+    background:linear-gradient(180deg,var(--cyan),var(--violet) 55%,rgba(139,92,246,.05));
+  }
+  .tl-item{position:relative;margin-bottom:22px}
+  .tl-item::before{
+    content:"";position:absolute;inset-inline-start:-26px;top:7px;width:14px;height:14px;
+    border-radius:50%;background:var(--bg-2);border:2px solid var(--cyan);
+    box-shadow:0 0 0 4px rgba(34,211,238,.09),0 0 16px rgba(34,211,238,.4);
+  }
+  .tl-item:nth-child(2)::before{border-color:#67e8f9}
+  .tl-item:nth-child(3)::before{border-color:#a78bfa}
+  .tl-item:nth-child(4)::before{border-color:#c4b5fd}
+  .tl-item:nth-child(5)::before{border-color:var(--emerald)}
+  .tl-item:last-child::before{border-color:var(--amber)}
+  .tl-date{font-family:var(--mono);font-size:10.5px;letter-spacing:1.4px;text-transform:uppercase;color:var(--faint);font-weight:700}
+  .tl-item h4{margin:2px 0 6px;font-size:15px}
+  .tl-item p{font-size:13.5px;color:#b9c9e3;margin:0}
+  .tl-item .files{margin-top:8px;display:flex;flex-wrap:wrap;gap:6px}
+  .tag-mono{
+    font-family:var(--mono);font-size:10.5px;padding:3px 8px;border-radius:6px;
+    background:rgba(139,92,246,.1);border:1px solid rgba(139,92,246,.22);color:#c4b5fd;
+    direction:ltr;unicode-bidi:isolate;
+  }
+
+  /* ---------- progress ---------- */
+  .obj{margin-bottom:16px}
+  .obj-top{display:flex;justify-content:space-between;align-items:baseline;gap:12px;margin-bottom:6px}
+  .obj-top b{font-size:13.8px;font-weight:800;color:#eaf1ff}
+  .obj-top .pct{font-family:var(--mono);font-size:12.5px;font-weight:700;color:var(--cyan)}
+  .bar{height:8px;border-radius:99px;background:rgba(255,255,255,.07);overflow:hidden;border:1px solid rgba(255,255,255,.05)}
+  .fill{height:100%;border-radius:99px;width:0;transition:width 1.4s cubic-bezier(.2,.8,.2,1);
+    background:linear-gradient(90deg,var(--c1,var(--cyan)),var(--c2,var(--violet)));
+    box-shadow:0 0 16px rgba(34,211,238,.35)}
+  .obj small{display:block;color:var(--faint);font-size:11.8px;margin-top:5px}
+
+  /* ---------- channel cards ---------- */
+  .channels{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:13px;margin-top:16px}
+  .ch{
+    position:relative;padding:15px 16px;border-radius:14px;border:1px solid var(--stroke);
+    background:rgba(255,255,255,.03);overflow:hidden;
+  }
+  .ch::before{content:"";position:absolute;inset-inline-start:0;top:0;bottom:0;width:3px;background:var(--st)}
+  .ch .row{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:5px}
+  .ch b{font-size:14px;font-weight:800;color:#fff}
+  .ch p{font-size:12.5px;color:var(--muted);margin:0;line-height:1.7}
+  .status{
+    font-size:10.5px;font-weight:800;padding:3px 9px;border-radius:999px;white-space:nowrap;
+    border:1px solid currentColor;opacity:.95;
+  }
+  .s-live{color:var(--emerald);background:rgba(52,211,153,.1)}
+  .s-ready{color:var(--cyan);background:rgba(34,211,238,.1)}
+  .s-partial{color:var(--amber);background:rgba(251,191,36,.1)}
+  .s-off{color:var(--rose);background:rgba(251,113,133,.1)}
+
+  /* ---------- flow ---------- */
+  .flow{display:flex;flex-wrap:wrap;align-items:center;gap:9px;margin:16px 0 8px;padding:18px;
+    border-radius:14px;background:rgba(0,0,0,.22);border:1px solid var(--stroke)}
+  .node{
+    padding:9px 13px;border-radius:10px;font-size:12px;font-weight:700;
+    background:rgba(34,211,238,.09);border:1px solid rgba(34,211,238,.24);color:#c9f4fb;
+    white-space:nowrap;
+  }
+  .node.p{background:rgba(139,92,246,.1);border-color:rgba(139,92,246,.26);color:#ddd2ff}
+  .node.g{background:rgba(52,211,153,.09);border-color:rgba(52,211,153,.24);color:#c5f6e3}
+  .node.a{background:rgba(251,191,36,.09);border-color:rgba(251,191,36,.24);color:#fde9b4}
+  .arw{color:var(--faint);font-weight:900;font-size:14px}
+
+  /* ---------- tables ---------- */
+  .tbl-wrap{overflow:auto;border-radius:14px;border:1px solid var(--stroke);margin-top:14px;
+    background:rgba(0,0,0,.16);scrollbar-width:thin}
+  table{width:100%;border-collapse:collapse;font-size:13.2px;min-width:560px}
+  thead th{
+    position:sticky;top:0;z-index:2;text-align:start;padding:12px 14px;
+    background:rgba(11,18,32,.96);backdrop-filter:blur(8px);
+    font-size:11px;letter-spacing:1.3px;text-transform:uppercase;color:#93a4c3;font-weight:800;
+    border-bottom:1px solid var(--stroke-2);white-space:nowrap;
+  }
+  tbody td{padding:11px 14px;border-bottom:1px solid rgba(255,255,255,.045);color:#c3d1e8;vertical-align:top}
+  tbody tr:last-child td{border-bottom:none}
+  tbody tr:hover td{background:rgba(255,255,255,.028)}
+  td.mono,th.mono{font-family:var(--mono);direction:ltr;unicode-bidi:isolate;font-size:12px;color:#b7e9f7;white-space:nowrap}
+  td.num{font-family:var(--mono);font-weight:800;color:#fff;text-align:center;width:70px}
+  .tbl-note{font-size:11.8px;color:var(--faint);margin-top:8px}
+  .badge{display:inline-block;padding:2px 8px;border-radius:6px;font-size:10.5px;font-weight:800;
+    background:rgba(34,211,238,.1);border:1px solid rgba(34,211,238,.2);color:#a5f3fc;font-family:var(--mono);direction:ltr}
+
+  /* ---------- stat tiles ---------- */
+  .stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:13px;margin-top:8px}
+  .stat{
+    position:relative;padding:18px 16px;border-radius:15px;
+    border:1px solid var(--stroke);
+    background:linear-gradient(165deg,rgba(255,255,255,.055),rgba(255,255,255,.014));
+    text-align:center;
+  }
+  .stat .big{font-family:var(--mono);font-size:clamp(22px,2.5vw,30px);font-weight:900;color:#fff;letter-spacing:-1px;line-height:1.15}
+  .stat .cap{font-size:11.5px;color:var(--muted);margin-top:5px;font-weight:700}
+  .stat .sub{font-size:10.5px;color:var(--faint);margin-top:2px}
+
+  /* ---------- roadmap ---------- */
+  .road{display:grid;gap:12px;margin-top:12px}
+  .step{
+    display:grid;grid-template-columns:44px minmax(0,1fr) auto;gap:14px;align-items:center;
+    padding:15px 16px;border-radius:14px;border:1px solid var(--stroke);
+    background:rgba(255,255,255,.028);transition:.18s;
+  }
+  .step:hover{background:rgba(255,255,255,.05);border-color:rgba(34,211,238,.22);transform:translateX(-2px)}
+  .step .idx{
+    width:40px;height:40px;border-radius:11px;display:grid;place-items:center;
+    font-family:var(--mono);font-weight:800;font-size:14px;color:#04121a;
+    background:linear-gradient(140deg,var(--cyan),#818cf8);
+  }
+  .step h5{font-size:14px;font-weight:800;color:#fff;margin-bottom:2px}
+  .step p{font-size:12.5px;color:var(--muted);margin:0}
+  .step .eta{font-family:var(--mono);font-size:10.5px;color:var(--faint);border:1px solid var(--stroke);
+    padding:4px 9px;border-radius:8px;white-space:nowrap}
+
+  .footer{
+    margin-top:50px;padding-top:22px;border-top:1px solid var(--stroke);
+    display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap;
+    color:var(--faint);font-size:11.5px;
+  }
+  .footer b{color:var(--muted)}
+
+  .reveal{opacity:0;transform:translateY(18px);transition:opacity .7s ease,transform .7s ease}
+  .reveal.in{opacity:1;transform:none}
+
+  @media (max-width:1080px){
+    .shell{grid-template-columns:1fr;padding-top:92px}
+    .toc{display:none}
+    .kpis,.stats{grid-template-columns:repeat(2,1fr)}
+    .grid-3{grid-template-columns:repeat(2,1fr)}
+  }
+  @media (max-width:680px){
+    .grid-2,.grid-3,.channels{grid-template-columns:1fr}
+    .kpis,.stats{grid-template-columns:repeat(2,1fr)}
+    .topmeta .pill:nth-child(n+3){display:none}
+    .hero{padding:24px 20px;border-radius:20px}
+    .panel{padding:18px 16px;border-radius:16px}
+    .sec-num{width:40px;height:40px;font-size:14px}
+    .step{grid-template-columns:40px 1fr}
+    .step .eta{display:none}
+  }
+  @media print{
+    body{background:#fff;color:#111}
+    body::before,body::after,.topbar,.toc,#progress{display:none}
+    .shell{display:block;padding:0;max-width:none}
+    .panel,.hero,.kpi,.stat{background:#fff;border:1px solid #ddd;box-shadow:none;backdrop-filter:none;color:#111}
+    .hero h1{-webkit-text-fill-color:#111;background:none;color:#111}
+    p,li,td{color:#222}
+    .reveal{opacity:1;transform:none}
+  }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="brand">
+    <div class="mark">HS</div>
+    <div>
+      <b>HUMINT Shield</b>
+      <small>الملف التقني الشامل · Master Dossier</small>
+    </div>
+  </div>
+  <div class="topmeta">
+    <span class="pill"><span class="dot"></span> v1.0.0</span>
+    <span class="pill"><span class="dot amber"></span> main @ 52ab628</span>
+    <span class="pill">2026-10-30</span>
+  </div>
+</div>
+<div id="progress"></div>
+
+<div class="shell">
+
+  <!-- ================= SIDEBAR ================= -->
+  <aside class="toc" aria-label="فهرس التقرير">
+    <h4>Contents</h4>
+    <a href="#s1"><span>01</span> الملخص التنفيذي</a>
+    <a href="#s2"><span>02</span> الفكرة والمشكلة</a>
+    <a href="#s3"><span>03</span> رحلة التطوير</a>
+    <a href="#s4"><span>04</span> الأهداف والتقدم</a>
+    <a href="#s5"><span>05</span> آلية العمل والمنطق</a>
+    <a href="#s6"><span>06</span> التقنيات واللغات</a>
+    <a href="#s7"><span>07</span> الاعتماديات</a>
+    <a href="#s8"><span>08</span> الهيكلية والملفات</a>
+    <a href="#s9"><span>09</span> إحصائيات المشروع</a>
+    <a href="#s10"><span>10</span> حالة تكامل SMS</a>
+    <a href="#s11"><span>11</span> القيود والمخاطر</a>
+    <a href="#s12"><span>12</span> خارطة الطريق</a>
+  </aside>
+
+  <main>
+
+    <!-- ================= HERO ================= -->
+    <header class="hero reveal">
+      <div class="eyebrow">Technical Audit · Confidential</div>
+      <h1>HUMINT Shield<br />الملف التقني الشامل</h1>
+      <p class="sub">
+        تدقيق هندسي معمّق لمنصة التوعية الأمنية القائمة على محاكاة الهجمات الحقيقية.
+        يغطي هذا الملف البنية المعمارية، المنطق البرمجي لكل قناة، حزمة التقنيات،
+        الاعتماديات بإصداراتها الدقيقة، الهيكلية الكاملة للملفات، والإحصائيات الفعلية
+        المستخرجة من المستودع — وليس من الوثائق فقط.
+      </p>
+      <div class="chips">
+        <span class="chip"><i></i> 289 ملف مصدري</span>
+        <span class="chip"><i></i> 51,971 سطر كود</span>
+        <span class="chip"><i></i> 79 نقطة API</span>
+        <span class="chip"><i></i> 7 قنوات</span>
+        <span class="chip"><i></i> 11 جدول قاعدة بيانات</span>
+      </div>
+    </header>
+
+    <!-- ================= KPI STRIP ================= -->
+    <div class="kpis reveal">
+      <div class="kpi" style="--accent:var(--cyan)">
+        <div class="n"><span data-count="51971">0</span></div>
+        <div class="l">إجمالي أسطر الكود (LOC)</div>
+      </div>
+      <div class="kpi" style="--accent:var(--violet)">
+        <div class="n"><span data-count="79">0</span></div>
+        <div class="l">نقطة نهاية API تحت <span class="en-inline">/api/v1</span></div>
+      </div>
+      <div class="kpi" style="--accent:var(--emerald)">
+        <div class="n"><span data-count="402">0</span></div>
+        <div class="l">اختبار خلفي (Backend)</div>
+      </div>
+      <div class="kpi" style="--accent:var(--amber)">
+        <div class="n"><span data-count="183">0</span></div>
+        <div class="l">عمود قاعدة بيانات</div>
+      </div>
+    </div>
+
+    <!-- ================= 1. EXECUTIVE SUMMARY ================= -->
+    <section id="s1" class="reveal">
+      <div class="panel">
+        <div class="sec-head">
+          <div class="sec-num">01</div>
+          <div>
+            <h2>الملخص التنفيذي</h2>
+            <span class="en">Executive Summary</span>
+          </div>
+        </div>
+
+        <p class="lead">
+          <strong>HUMINT Shield</strong> منصة توعية أمنية <span class="en-inline">consent-based</span> متكاملة،
+          تجمع بين نظام إدارة تعلّم (LMS) كامل ومحرّك محاكاة هجمات متعدد القنوات.
+          الفكرة المحورية: بدلًا من تدريب نظري يُنسى، يتعرّض الموظف لسيناريو هجوم واقعي
+          داخل بيئة مُصرّح بها ومراقَبة، ثم يُوجَّه فورًا إلى تدريب مصغّر يشرح ما حدث.
+        </p>
+
+        <div class="grid-2" style="margin-top:20px">
+          <div class="mini">
+            <div class="tag">MATURITY</div>
+            <h5>مستوى النضج: منتج قابل للعرض (Demo-Ready / Pre-Production)</h5>
+            <p>النواة الوظيفية مكتملة ومُختبرة. القنوات المتقدمة (QR، Vishing، Pretexting، USB) مُثبتة
+            بتجارب حيّة على قاعدة بيانات فعلية. المتبقي تشغيلي وتكاملي، وليس معماريًا.</p>
+          </div>
+          <div class="mini">
+            <div class="tag">STRENGTH</div>
+            <h5>أقوى ما في المشروع: قابلية التتبع والعدالة</h5>
+            <p>كل تفاعل يُكتب في سجل <span class="en-inline">append-only</span> بدقة ميكروثانية،
+            وكل تغيير في مؤشر الخطر يمر عبر محرّك Elo حتمي (Deterministic) قابل للتدقيق،
+            مع منع التكرار (Idempotency) على مستوى كل حدث.</p>
+          </div>
+        </div>
+
+        <h3>أبرز الإنجازات التقنية</h3>
+        <ul>
+          <li><strong>محرّك Elo للتوعية:</strong> كل موظف يبدأ عند <code>1000</code>؛ أول نقرة <code>-32</code>، أول بلاغ <code>+32</code>، ونطاقات صعوبة مشتقة تختار القالب تلقائيًا.</li>
+          <li><strong>مولّد قوالب بالذكاء الاصطناعي:</strong> مزوّد متوافق مع OpenAI (Dahl Inference — DeepSeek أساسي و MiniMax احتياطي)، مع تعقيم HTML إجباري ورفض القوالب الوهمية.</li>
+          <li><strong>Quishing كامل:</strong> ملصقات A4 عربية عبر ReportLab، رموز QR بدقة 1200px، صفحة هبوط موبايل، بصمة جهاز خفيفة، وحل هوية (Identity Resolution) ثلاثي المستويات.</li>
+          <li><strong>محاكاة آمنة بالكامل:</strong> لا C2 حقيقي، لا تنفيذ أوامر، لا جمع كلمات مرور فعلي في قناة QR/USB — فقط إثبات مفهوم قابل للقياس.</li>
+          <li><strong>تقرير تنفيذي PDF:</strong> رسوم بيانية + أكثر 5 موظفين خطرًا + تشكيل عربي (Arabic shaping) عبر خطوط Amiri المضمّنة.</li>
+        </ul>
+
+        <div class="callout warn">
+          <div class="ico">⚠️</div>
+          <div>
+            <h5>ملاحظة تدقيقية مهمة</h5>
+            <p>الوثيقة <code>PROJECT_STATUS.md</code> تذكر نجاح <strong>405</strong> اختبارًا ونسبة تغطية
+            <strong>89.64%</strong>، بينما أحدث أثر تغطية مُولَّد في المستودع (<code>coverage.xml</code>)
+            يُظهر <strong>76.67%</strong> على 6,876 سطرًا قابلًا للتغطية. الفرق مرجّح أنه ناتج عن تشغيل جزئي
+            أو عن تحديث الكود بعد آخر تشغيل كامل. كما أن بيئة التدقيق الحالية لا تحتوي على
+            <code>pytest</code> مثبّتًا، لذا لم يُعَد تشغيل الحزمة. الأرقام أدناه تميّز بين «موثّق» و«مُتحقَّق».</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================= 2. IDEA & PROBLEM ================= -->
+    <section id="s2" class="reveal">
+      <div class="panel">
+        <div class="sec-head">
+          <div class="sec-num v">02</div>
+          <div>
+            <h2>الفكرة والمشكلة</h2>
+            <span class="en">The Idea &amp; The Problem</span>
+          </div>
+        </div>
+
+        <p class="lead">
+          في معظم الحوادث الأمنية، لم يُخترق الجدار الناري — بل <strong>الإنسان</strong>.
+          وهذا ليس ضعفًا في الذكاء، بل في <em>التعرّض</em>: الموظف لا يرى هجومًا حقيقيًا إلا عندما يكون حقيقيًا فعلًا.
+        </p>
+
+        <div class="grid-3">
+          <div class="mini">
+            <div class="tag">PROBLEM 01</div>
+            <h5>العنصر البشري هو الحلقة الأضعف</h5>
+            <p>التصيّد، الهندسة الاجتماعية، والـ Quishing تعتمد على سلوك بشري متوقّع: الاستعجال، السلطة، الخوف من العقاب.</p>
+          </div>
+          <div class="mini">
+            <div class="tag">PROBLEM 02</div>
+            <h5>التدريب التقليدي ممل وغير قابل للقياس</h5>
+            <p>فيديوهات إلزامية + اختبار اختيار من متعدد = معدل استيعاب منخفض، ولا يوجد مؤشر خطر فردي حقيقي.</p>
+          </div>
+          <div class="mini">
+            <div class="tag">PROBLEM 03</div>
+            <h5>المحاكاة غير الآمنة تُخيف المؤسسات</h5>
+            <p>أدوات الاختراق الفعلية (C2، Payloads) تخلق مسؤولية قانونية ومخاطر تشغيلية، فتُلغى المبادرات الأمنية.</p>
+          </div>
+        </div>
+
+        <h3>السؤال التصميمي الذي حكم كل قرار تقني</h3>
+        <p>
+          «كيف نصنع تجربة هجوم <strong>مقنعة بما يكفي</strong> لتُعلّم، و<strong>آمنة بما يكفي</strong>
+          لتُصرّح بها قانونيًا، و<strong>قابلة للقياس</strong> بما يكفي لتُدار؟»
+        </p>
+
+        <h3>الحل: محاكاة مُصرّح بها + قياس فوري + تدريب لحظي</h3>
+        <ul>
+          <li><strong>بيئة مُصرّح بها:</strong> عناوين بريد الشركة فقط، وسجل تدقيق لكل رسالة، وصفحة إفصاح شفافة بعد كل سيناريو.</li>
+          <li><strong>بدون استغلال حقيقي:</strong> لا جمع كلمات مرور فعلية في القنوات المتقدمة، ولا تنفيذ كود على جهاز الموظف.</li>
+          <li><strong>قياس كمّي:</strong> مؤشر Elo فردي + تصنيف سلوكي (Behavioral Category) + لوحة SOC حيّة.</li>
+          <li><strong>تدريب لحظي:</strong> من يقع في الفخ يُوجَّه مباشرة إلى تجربة تدريب مخصّصة، لا إلى صفحة عقاب.</li>
+        </ul>
+
+        <div class="callout ok">
+          <div class="ico">✅</div>
+          <div>
+            <h5>المبدأ الحاكم: «آمن افتراضيًا» (Safe by Default)</h5>
+            <p>كل قناة جديدة تُصمَّم بحيث تستطيع إثبات السلوك الخطر دون تنفيذه. هذا المبدأ هو سبب
+            التحوّل من محاكاة C2 إلى محاكاة ويب قابلة للتتبع، وهو ما يفسّر أيضًا حدود قناة USB الحالية.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================= 3. JOURNEY ================= -->
+    <section id="s3" class="reveal">
+      <div class="panel">
+        <div class="sec-head">
+          <div class="sec-num g">03</div>
+          <div>
+            <h2>رحلة التطوير</h2>
+            <span class="en">Development Journey — From Scratch to Now</span>
+          </div>
+        </div>
+
+        <p>التسلسل التالي مستخرج من تاريخ الـ commits ومن الـ migrations الفعلية، وليس من خطة نظرية.</p>
+
+        <div class="timeline">
+
+          <div class="tl-item">
+            <div class="tl-date">22 أكتوبر 2026 · Commit 7c5dd07</div>
+            <h4>المرحلة 1 — النواة: قاعدة البيانات، المصادقة، وقناة البريد</h4>
+            <p>
+              أُسِّس المشروع على FastAPI + SQLAlchemy غير المتزامن. بُنيت جداول المؤسسة والمستخدم
+              والموظف والقالب والحملة. أُضيف نظام JWT (Access + Refresh)، تشفير AES-256-GCM للحقول
+              الحساسة، وتهيئة أولية (Bootstrap Seeding) لمؤسسة ومدير و13 قالبًا مدمجًا.
+              ثم رُبطت قناة البريد عبر Brevo API مع Pixel تتبّع 1×1 وإعادة كتابة كل رابط إلى
+              <code>/phish/{uuid}</code>.
+            </p>
+            <div class="files">
+              <span class="tag-mono">alembic/0001</span>
+              <span class="tag-mono">alembic/0002</span>
+              <span class="tag-mono">services/brevo_service.py</span>
+              <span class="tag-mono">api/v1/auth.py</span>
+            </div>
+          </div>
+
+          <div class="tl-item">
+            <div class="tl-date">المرحلة 2 · Migrations 0003 → 0008</div>
+            <h4>المرحلة 2 — التصنيف السلوكي ومحرّك Elo</h4>
+            <p>
+              أُضيف سجل تفاعلات <span class="en-inline">append-only</span> (<code>training_interactions</code>)
+              ليحفظ كل حدث بدقة ميكروثانية بدلًا من عدّادات قابلة للفقدان. ثم بُني
+              <code>classification_engine.py</code> بأوزان واضحة (بلاغ +12، إهمال +3، فتح −5، نقرة −12،
+              إرسال بيانات −40) ونافذة زمنية 90 يومًا. بعده أُضيف <code>elo_engine.py</code> ونطاقات
+              الصعوبة، وربط المُشغِّل (Launcher) باختيار القالب تلقائيًا حسب شريحة الموظف.
+            </p>
+            <div class="files">
+              <span class="tag-mono">alembic/0003</span>
+              <span class="tag-mono">alembic/0008_elo_rating</span>
+              <span class="tag-mono">services/classification_engine.py</span>
+              <span class="tag-mono">services/elo_engine.py</span>
+            </div>
+          </div>
+
+          <div class="tl-item">
+            <div class="tl-date">المرحلة 3 · Commit b6ab0ba</div>
+            <h4>المرحلة 3 — توليد القوالب بالذكاء الاصطناعي (Dahl / DeepSeek)</h4>
+            <p>
+              أُضيفت نقطة <code>POST /ai/generate-template</code> تعتمد على واجهة متوافقة مع OpenAI،
+              بمزوّد Dahl Inference. النموذج الأساسي <span class="en-inline">DeepSeek-V4-Flash</span>
+              والاحتياطي <span class="en-inline">MiniMax-M2.7</span>. صُمّم المسار بحيث يعيد النموذج
+              نصًا فقط، ثم يُهرب ويُغلَّف في هيكل RTL آمن — فلا يستطيع النموذج إدخال HTML خطِر.
+              أخطاء المزوّد تُعاد كـ <code>424</code> عمدًا كي تمرّ عبر Cloudflare بدل أن تتحول إلى صفحة خطأ.
+            </p>
+            <div class="files">
+              <span class="tag-mono">services/ai_service.py</span>
+              <span class="tag-mono">services/html_sanitizer.py</span>
+              <span class="tag-mono">api/v1/ai.py</span>
+            </div>
+          </div>
+
+          <div class="tl-item">
+            <div class="tl-date">المرحلة 4 · Migrations 0009 → 0011</div>
+            <h4>المرحلة 4 — Quishing المتقدم والطُعم الديناميكي</h4>
+            <p>
+              بُني محرّك ملصقات كامل عبر ReportLab مع تشكيل عربي وخطوط Amiri، ورموز QR بدقة 1200px
+              وتصحيح أخطاء <code>ERROR_CORRECT_H</code>. ثم أُضيف محرّر بريد مرئي (Visual Email Builder)
+              بنظام Blocks وDrag &amp; Drop، وربط الهوية التجارية (Branding) بالمنظمة. أخيرًا جاءت
+              الهجرة <code>0011</code> لتضيف حل الهوية وبصمة الجهاز وسجل <code>qr_scans</code> المستقل.
+            </p>
+            <div class="files">
+              <span class="tag-mono">services/quishing_service.py</span>
+              <span class="tag-mono">services/email_design.py</span>
+              <span class="tag-mono">alembic/0011_qr_identity_resolution</span>
+            </div>
+          </div>
+
+          <div class="tl-item">
+            <div class="tl-date">29 أكتوبر 2026 · Commit 52ab628</div>
+            <h4>المرحلة 5 — لوحة محاكاة SOC وتمارين USB الآمنة</h4>
+            <p>
+              اكتملت القنوات المتقدمة: Vishing بصفحة مكالمة iPhone ومحاكاة صوتية، Pretexting على نمط
+              WhatsApp/Teams، وUSB HTML آمن يُصدر تحذيرًا فوريًا دون أي تنفيذ. أُضيفت لوحة SOC
+              (محاكاة محلية صريحة) ودليل دفاعي (<code>DEFENSIVE_PLAYBOOK.md</code>، 439 سطرًا)
+              مع واجهة قراءة وتحميل.
+            </p>
+            <div class="files">
+              <span class="tag-mono">services/usb_drop_service.py</span>
+              <span class="tag-mono">api/v1/webhooks/vonage.py</span>
+              <span class="tag-mono">pages/IncidentResponseSimulationPage.tsx</span>
+            </div>
+          </div>
+
+        </div>
+
+        <h3>نقطة التحوّل الحاسمة: من C2 إلى محاكاة ويب</h3>
+        <div class="grid-2">
+          <div class="mini" style="border-color:rgba(251,113,133,.25)">
+            <div class="tag" style="color:var(--rose)">REJECTED</div>
+            <h5>محاكاة C2 / Payload حقيقي</h5>
+            <p>تتطلب تنفيذ كود على جهاز الموظف، تعطيل مضاد الفيروسات أحيانًا، وتخلق مسؤولية قانونية
+            مباشرة. غير قابلة للقياس بشكل موحّد، وغير قابلة للتكرار بأمان.</p>
+          </div>
+          <div class="mini" style="border-color:rgba(52,211,153,.25)">
+            <div class="tag" style="color:var(--emerald)">ADOPTED</div>
+            <h5>محاكاة ويب قابلة للتتبع</h5>
+            <p>رابط فريد لكل موظف + صفحة هبوط + حدث تتبّع + سجل تدقيق + تدريب فوري. تُثبت نفس
+            السلوك الخطر (الثقة العمياء) دون أي أثر جانبي على الجهاز.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================= 4. OBJECTIVES ================= -->
+    <section id="s4" class="reveal">
+      <div class="panel">
+        <div class="sec-head">
+          <div class="sec-num">04</div>
+          <div>
+            <h2>الأهداف ومستوى التقدم</h2>
+            <span class="en">Objectives &amp; Completion Status</span>
+          </div>
+        </div>
+
+        <p>النِسب تعكس <strong>حالة الكود والتوثيق</strong>؛ وحيث توجد فجوة تشغيلية (مثل مفاتيح Vonage)
+        فهي مذكورة صراحةً في البند نفسه.</p>
+
+        <div class="obj">
+          <div class="obj-top"><b>قناة البريد الإلكتروني (Brevo)</b><span class="pct">100%</span></div>
+          <div class="bar"><div class="fill" style="--c1:#34d399;--c2:#22d3ee" data-w="100"></div></div>
+          <small>إرسال، تتبّع، إعادة كتابة الروابط، Pixel، وإعادة المحاولة — مكتملة ومُختبرة. التسليم الفعلي معطّل حاليًا بسبب قائمة IP المسموح بها في Brevo.</small>
+        </div>
+
+        <div class="obj">
+          <div class="obj-top"><b>محرّك Elo والتصنيف السلوكي</b><span class="pct">100%</span></div>
+          <div class="bar"><div class="fill" style="--c1:#34d399;--c2:#22d3ee" data-w="100"></div></div>
+          <small>حتمي، مُختبَر، ومربوط بالمُشغِّل وكل واجهات العرض.</small>
+        </div>
+
+        <div class="obj">
+          <div class="obj-top"><b>مولّد القوالب بالذكاء الاصطناعي</b><span class="pct">100%</span></div>
+          <div class="bar"><div class="fill" style="--c1:#34d399;--c2:#22d3ee" data-w="100"></div></div>
+          <small>مزوّد أساسي + احتياطي + تعقيم + مهل متدرّجة. جودة النموذج الأساسي تعتمد على تخصيص الحصة في Dahl.</small>
+        </div>
+
+        <div class="obj">
+          <div class="obj-top"><b>قناة QR / Quishing</b><span class="pct">100%</span></div>
+          <div class="bar"><div class="fill" style="--c1:#34d399;--c2:#22d3ee" data-w="100"></div></div>
+          <small>ملصقات، صفحة هبوط، حل هوية، بصمة جهاز، لوحة Radar — مُثبتة بتجربة حيّة (Elo 1000 → 975).</small>
+        </div>
+
+        <div class="obj">
+          <div class="obj-top"><b>Vishing + Pretexting + USB</b><span class="pct">100%</span></div>
+          <div class="bar"><div class="fill" style="--c1:#34d399;--c2:#22d3ee" data-w="100"></div></div>
+          <small>ثلاث قنوات مكتملة بسيناريوهات عربية ثابتة، نتائج نهائية (Terminal) ومنع تكرار Elo.</small>
+        </div>
+
+        <div class="obj">
+          <div class="obj-top"><b>لوحة القيادة وتحليل SOC</b><span class="pct">90%</span></div>
+          <div class="bar"><div class="fill" style="--c1:#22d3ee;--c2:#8b5cf6" data-w="90"></div></div>
+          <small>البورد الحيّ، الدوسييه، والتقرير التنفيذي مكتملة. لوحة SOC محاكاة محلية صريحة وليست تكامل EDR حقيقيًا.</small>
+        </div>
+
+        <div class="obj">
+          <div class="obj-top"><b>قناة SMS (Vonage)</b><span class="pct">85%</span></div>
+          <div class="bar"><div class="fill" style="--c1:#fbbf24;--c2:#fb7185" data-w="85"></div></div>
+          <small>الكود واختباراته مكتملة (32 اختبارًا). الفجوة تشغيلية بحتة: <strong>مفاتيح Vonage فارغة في <code>.env</code></strong>، ولم يُرسل أي SMS حقيقي ولم يُستقبل DLR فعلي.</small>
+        </div>
+
+        <div class="obj">
+          <div class="obj-top"><b>قناة WhatsApp (Vonage)</b><span class="pct">70%</span></div>
+          <div class="bar"><div class="fill" style="--c1:#fbbf24;--c2:#fb7185" data-w="70"></div></div>
+          <small>المسار البرمجي وwebhook للقراءة (Read Receipts) موجودان. ينقص: <code>VONAGE_WHATSAPP_FROM</code>، بيانات التطبيق، ورقم اختبار.</small>
+        </div>
+
+        <div class="obj">
+          <div class="obj-top"><b>قناة Voice / Vishing الحقيقية (اتصال هاتفي)</b><span class="pct">30%</span></div>
+          <div class="bar"><div class="fill" style="--c1:#fb7185;--c2:#f43f5e" data-w="30"></div></div>
+          <small>الحالي هو Vishing <em>داخل المتصفح</em> (صفحة + Speech Synthesis) — وليس اتصالًا هاتفيًا عبر Twilio/Vonage Voice. البنية جاهزة للتوسّع.</small>
+        </div>
+
+        <div class="obj">
+          <div class="obj-top"><b>DevOps الإنتاجي (PostgreSQL + Redis + Celery)</b><span class="pct">75%</span></div>
+          <div class="bar"><div class="fill" style="--c1:#22d3ee;--c2:#8b5cf6" data-w="75"></div></div>
+          <small>Docker Compose وNginx وDockerfiles جاهزة. التشغيل الحالي على SQLite؛ PostgreSQL غير مُشغَّل في هذه البيئة، وRedis/Celery غير مُتحقَّق منهما حيًّا.</small>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================= 5. SYSTEM LOGIC ================= -->
+    <section id="s5" class="reveal">
+      <div class="panel">
+        <div class="sec-head">
+          <div class="sec-num v">05</div>
+          <div>
+            <h2>آلية العمل والمنطق البرمجي</h2>
+            <span class="en">System Logic &amp; Data Flow</span>
+          </div>
+        </div>
+
+        <h3>5.1 المبدأ المعماري الموحّد</h3>
+        <p>
+          كل القنوات تتقاسم <strong>نفس الجداول الثلاثة</strong>:
+          <code>campaigns</code> (ما نريد تنفيذه) و<code>tracking_events</code> (حالة كل مستلم)
+          و<code>training_interactions</code> (كل حدث بترتيبه الزمني). الاختلاف بين القنوات محصور في
+          <code>campaigns.channel</code> و<code>campaigns.channel_config</code> (حقل JSON)، ثم في
+          مُرسِل واحد (Brevo أو Vonage) أو في مُولِّد أصل (Poster / HTML).
+          هذا التصميم هو ما يجعل إضافة قناة جديدة مسألة <em>إضافة مسار</em> لا <em>إعادة بناء</em>.
+        </p>
+
+        <h3>5.2 تدفق قناة البريد</h3>
+        <div class="flow">
+          <span class="node">Admin</span><span class="arw">←</span>
+          <span class="node">Template Engine<br /><small>design_json → HTML</small></span><span class="arw">←</span>
+          <span class="node p">Brevo API</span><span class="arw">←</span>
+          <span class="node">Tracking Pixel</span><span class="arw">←</span>
+          <span class="node g">Elo Engine</span><span class="arw">←</span>
+          <span class="node a">Dashboard</span>
+        </div>
+        <ol>
+          <li><strong>الاختيار:</strong> المُشغِّل يحسب شريحة Elo للموظف ويختار قالبًا من النطاق المناسب، مع دوران حسب <code>total_tests_received</code>.</li>
+          <li><strong>التركيب:</strong> يُعاد بناء HTML من <code>design_json</code> (المصدر الموثوق)، تُستبدل وسوم الدمج، ويُحقن الهوية البصرية.</li>
+          <li><strong>الحقن:</strong> كل رابط يُعاد كتابته إلى <code>{BASE_URL}/phish/{uuid}</code>، ويُضاف Pixel شفاف 1×1.</li>
+          <li><strong>الإرسال:</strong> Brevo API، مع إعادة محاولة أسّية (3 محاولات) وتمييز الأخطاء الدائمة 4xx.</li>
+          <li><strong>القياس:</strong> فتح ← <code>email_open</code>، نقرة ← <code>link_click</code>، إرسال نموذج ← <code>form_submitted</code>، بلاغ ← <code>phishing_reported</code>.</li>
+          <li><strong>الأثر:</strong> أول نقرة <code>-32</code> وأول بلاغ <code>+32</code>، مع منع التطبيق المزدوج على مستوى الصف.</li>
+        </ol>
+
+        <h3>5.3 تدفق قناة QR / Quishing</h3>
+        <div class="flow">
+          <span class="node">Admin يضبط الطُعم</span><span class="arw">←</span>
+          <span class="node p">توليد PDF (A4)</span><span class="arw">←</span>
+          <span class="node">الموظف يمسح</span><span class="arw">←</span>
+          <span class="node">Landing Page</span><span class="arw">←</span>
+          <span class="node g">بصمة + حل هوية</span><span class="arw">←</span>
+          <span class="node a">Radar Dashboard</span>
+        </div>
+        <ul>
+          <li><strong>الرمز:</strong> يشفر <code>{BASE_URL}/simulation/qr/{tracking_uuid}</code> مباشرة — لا وسيط، فلا تنكسر الملصقات المطبوعة عند تغيير المسارات.</li>
+          <li><strong>المسح:</strong> يُسجَّل <code>qr_scanned</code> بوزن صفر (محايد) لأنه لا يمثل سلوكًا خطرًا بعد.</li>
+          <li><strong>الإرسال:</strong> أول إرسال فقط يخصم <code>-25</code>، ويُمنع التكرار عبر <code>qr_penalty_applied</code>.</li>
+          <li><strong>السرية:</strong> الحقول السرية لا تُخزَّن. يُحفظ الطول والحقول غير السرية وبصمة السياق فقط، مع <code>capture_secret=False</code>.</li>
+          <li><strong>حل الهوية:</strong> بريد → اسم مستخدم/رقم موظف → تعيين يدوي → <code>unknown</code>. يسمح بمعالجة من يمسح ملصق زميله.</li>
+        </ul>
+
+        <h3>5.4 تدفق قنوات Vishing و Pretexting</h3>
+        <div class="flow">
+          <span class="node">رابط فريد</span><span class="arw">←</span>
+          <span class="node p">صفحة محاكاة</span><span class="arw">←</span>
+          <span class="node">اختيار المستخدم</span><span class="arw">←</span>
+          <span class="node g">نتيجة نهائية</span><span class="arw">←</span>
+          <span class="node a">Elo + تدريب</span>
+        </div>
+        <p>
+          لكل قناة نتيجتان متعارضتان: إفشاء بيانات (−30) أو بلاغ (+20) في Vishing؛ بطاقات مالية (−30)
+          أو رفض وبلاغ (+20) في Pretexting. النتيجة <strong>نهائية</strong>: أي محاولة ثانية تُقبل
+          وتُسجَّل كدليل، لكنها لا تغيّر Elo مرة أخرى.
+        </p>
+
+        <h3>5.5 تدفق USB الآمن</h3>
+        <p>
+          يُولَّد ملف <code>الرواتب_السرية.html</code> لكل مستلم (أو ZIP لمجموعة). عند الفتح يُطلق
+          طلب تتبّع واحدًا ويعرض تحذيرًا فوريًا. لا يوجد <code>&lt;form&gt;</code>، ولا وصول للملفات،
+          ولا ماكرو، ولا مكتبة خارجية، ولا تعليمات تشغيل تلقائي. أول فتح <code>-30</code>، وما بعده
+          يُسجَّل بدلتا صفر.
+        </p>
+
+        <div class="callout info">
+          <div class="ico">🔎</div>
+          <div>
+            <h5>لماذا هذا التصميم قابل للدفاع أمام لجنة أكاديمية؟</h5>
+            <p>لأن كل ادعاء سلوكي يقابله سطر في قاعدة بيانات: من، ماذا، متى (بدقة ميكروثانية)، من أي IP/UA،
+            وبأي بصمة سياق. ولا يوجد أي مسار يسمح باستخراج سر حقيقي من القنوات المتقدمة.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================= 6. TECH STACK ================= -->
+    <section id="s6" class="reveal">
+      <div class="panel">
+        <div class="sec-head">
+          <div class="sec-num g">06</div>
+          <div>
+            <h2>التقنيات واللغات المستخدمة</h2>
+            <span class="en">Tech Stack</span>
+          </div>
+        </div>
+
+        <div class="grid-2">
+          <div class="mini">
+            <div class="tag">FRONTEND</div>
+            <h5>React 18 + TypeScript + Vite</h5>
+            <p>واجهة عربية RTL بالكامل. MUI 5 مع Emotion و<code>stylis-plugin-rtl</code>،
+            حركة عبر Framer Motion، بيانات عبر TanStack Query وRedux Toolkit، رسوم عبر Recharts،
+            ومحرّر بريد مرئي عبر dnd-kit.</p>
+          </div>
+          <div class="mini">
+            <div class="tag">BACKEND</div>
+            <h5>FastAPI + SQLAlchemy 2 (Async)</h5>
+            <p>Pydantic v2 للتحقق، Alembic للهجرات، Celery + Redis للمهام،
+            ReportLab لتقارير PDF، qrcode لتوليد الرموز، وstructlog للسجلات المهيكلة.</p>
+          </div>
+          <div class="mini">
+            <div class="tag">DATA</div>
+            <h5>PostgreSQL (Prod) / SQLite (Dev)</h5>
+            <p>طبقة أنواع مخصّصة (<code>UUIDType</code>, <code>JSONBType</code>, <code>INETType</code>)
+            تجعل نفس النماذج تعمل على المحرّكين. تشفير AES-256-GCM على مستوى العمود.</p>
+          </div>
+          <div class="mini">
+            <div class="tag">INTEGRATIONS</div>
+            <h5>Brevo · Dahl Inference · Vonage · Cloudflare</h5>
+            <p>Brevo للبريد، Dahl (OpenAI-compatible) للذكاء الاصطناعي، Vonage لـ SMS/WhatsApp،
+            وCloudflare Tunnel للوصول العام السريع.</p>
+          </div>
+        </div>
+
+        <h3>اللغات بحسب حجم الشيفرة</h3>
+        <div class="tbl-wrap">
+          <table>
+            <thead>
+              <tr><th>اللغة / النوع</th><th>الملفات</th><th>أسطر الكود</th><th>الدور</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>Python</td><td class="num">126</td><td class="num">27,724</td><td>الخادم، الخدمات، الهجرات، الاختبارات</td></tr>
+              <tr><td>TypeScript / TSX</td><td class="num">73</td><td class="num">23,385</td><td>واجهة React، الأنواع، الاختبارات</td></tr>
+              <tr><td>CSS</td><td class="num">1</td><td class="num">273</td><td>الأنماط العامة</td></tr>
+              <tr><td>PowerShell</td><td class="num">2</td><td class="num">278</td><td>سكربتات التشغيل المحلي</td></tr>
+              <tr><td>YAML / Docker</td><td class="num">1</td><td class="num">124</td><td>تنسيق الخدمات</td></tr>
+              <tr><td>Shell / HTML / INI / TOML / Mako</td><td class="num">7</td><td class="num">187</td><td>الحاويات، القوالب، الإعدادات</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="tbl-note">الإجمالي: 210 ملف كود · 51,971 سطرًا. لا تشمل الأرقام <code>node_modules</code> أو <code>dist</code> أو ملفات <code>.pyc</code>.</p>
+
+        <div class="callout warn">
+          <div class="ico">🧩</div>
+          <div>
+            <h5>تصحيحان تقنيان مهمان</h5>
+            <p><strong>FingerprintJS غير مستخدمة.</strong> البصمة الحالية مكتوبة يدويًا داخل
+            <code>QrLureLandingPage.tsx</code> (دقة الشاشة، المنطقة الزمنية، اللغة، المنصة، عدد الأنوية،
+            الذاكرة، وزمن الإرسال) — أخف وأقل تدخلًا، ولا تعتمد على مكتبة خارجية.
+            <br /><strong>Chart.js مُعلَن عنه لكنه غير مستورد.</strong> الرسوم الفعلية تُنفَّذ بـ
+            <code>recharts</code>؛ وجود <code>chart.js</code> و<code>react-chartjs-2</code> في
+            <code>package.json</code> هو بقايا تبعية غير مستخدمة.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================= 7. DEPENDENCIES ================= -->
+    <section id="s7" class="reveal">
+      <div class="panel">
+        <div class="sec-head">
+          <div class="sec-num">07</div>
+          <div>
+            <h2>الاعتماديات والمكتبات</h2>
+            <span class="en">Dependencies &amp; Exact Versions</span>
+          </div>
+        </div>
+
+        <h3>7.1 الخادم — <code>backend/requirements.txt</code></h3>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>الحزمة</th><th>الإصدار</th><th>الوظيفة</th></tr></thead>
+            <tbody>
+              <tr><td class="mono">fastapi</td><td class="mono">0.115.6</td><td>إطار الـ API غير المتزامن</td></tr>
+              <tr><td class="mono">uvicorn[standard]</td><td class="mono">0.34.0</td><td>خادم ASGI</td></tr>
+              <tr><td class="mono">gunicorn</td><td class="mono">23.0.0</td><td>مدير عمّال الإنتاج</td></tr>
+              <tr><td class="mono">sqlalchemy[asyncio]</td><td class="mono">2.0.36</td><td>ORM غير متزامن</td></tr>
+              <tr><td class="mono">asyncpg</td><td class="mono">0.30.0</td><td>سائق PostgreSQL</td></tr>
+              <tr><td class="mono">aiosqlite</td><td class="mono">0.20.0</td><td>سائق SQLite للتطوير</td></tr>
+              <tr><td class="mono">alembic</td><td class="mono">1.14.0</td><td>هجرات قاعدة البيانات</td></tr>
+              <tr><td class="mono">pydantic</td><td class="mono">2.10.4</td><td>التحقق والمخططات</td></tr>
+              <tr><td class="mono">pydantic-settings</td><td class="mono">2.7.0</td><td>إعدادات من البيئة</td></tr>
+              <tr><td class="mono">python-jose[cryptography]</td><td class="mono">3.3.0</td><td>JWT</td></tr>
+              <tr><td class="mono">bcrypt</td><td class="mono">4.2.1</td><td>تجزئة كلمات المرور</td></tr>
+              <tr><td class="mono">cryptography</td><td class="mono">44.0.0</td><td>AES-256-GCM</td></tr>
+              <tr><td class="mono">celery[redis]</td><td class="mono">5.4.0</td><td>مهام خلفية</td></tr>
+              <tr><td class="mono">redis</td><td class="mono">5.2.1</td><td>Broker + عدّاد المعدّل</td></tr>
+              <tr><td class="mono">sib-api-v3-sdk</td><td class="mono">7.6.0</td><td>SDK الرسمي لـ Brevo</td></tr>
+              <tr><td class="mono">httpx</td><td class="mono">0.28.1</td><td>عميل HTTP (Dahl AI)</td></tr>
+              <tr><td class="mono">vonage</td><td class="mono">3.13.1</td><td>SMS + WhatsApp</td></tr>
+              <tr><td class="mono">reportlab</td><td class="mono">5.1.0</td><td>توليد PDF والملصقات</td></tr>
+              <tr><td class="mono">arabic-reshaper</td><td class="mono">3.0.1</td><td>تشكيل الحروف العربية</td></tr>
+              <tr><td class="mono">python-bidi</td><td class="mono">0.6.12</td><td>اتجاه النص (BiDi)</td></tr>
+              <tr><td class="mono">pillow</td><td class="mono">13.0.0</td><td>معالجة الصور والشعارات</td></tr>
+              <tr><td class="mono">qrcode[pil]</td><td class="mono">8.2</td><td>توليد QR عالي الدقة</td></tr>
+              <tr><td class="mono">structlog</td><td class="mono">24.4.0</td><td>سجلات مهيكلة</td></tr>
+              <tr><td class="mono">prometheus-fastapi-instrumentator</td><td class="mono">7.0.0</td><td>مقاييس <code>/metrics</code></td></tr>
+              <tr><td class="mono">tenacity</td><td class="mono">9.0.0</td><td>إعادة المحاولة</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>7.2 الواجهة — <code>frontend/package.json</code></h3>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>الحزمة</th><th>الإصدار</th><th>الوظيفة</th></tr></thead>
+            <tbody>
+              <tr><td class="mono">react</td><td class="mono">18.3.1</td><td>مكتبة الواجهة</td></tr>
+              <tr><td class="mono">react-dom</td><td class="mono">18.3.1</td><td>المُصيِّر</td></tr>
+              <tr><td class="mono">typescript</td><td class="mono">5.5.4</td><td>الأنواع الثابتة</td></tr>
+              <tr><td class="mono">vite</td><td class="mono">5.4.2</td><td>أداة البناء</td></tr>
+              <tr><td class="mono">@mui/material</td><td class="mono">5.15.20</td><td>مكوّنات الواجهة</td></tr>
+              <tr><td class="mono">@emotion/react / styled</td><td class="mono">11.11.4 / 11.11.5</td><td>محرّك الأنماط</td></tr>
+              <tr><td class="mono">framer-motion</td><td class="mono">^14.6.0</td><td>الحركة والانتقالات</td></tr>
+              <tr><td class="mono">chart.js</td><td class="mono">4.4.3</td><td>مُعلَن — غير مستخدم فعليًا</td></tr>
+              <tr><td class="mono">react-chartjs-2</td><td class="mono">5.2.0</td><td>مُعلَن — غير مستخدم فعليًا</td></tr>
+              <tr><td class="mono">recharts</td><td class="mono">^3.10.1</td><td>الرسوم المستخدمة فعليًا</td></tr>
+              <tr><td class="mono">@tanstack/react-query</td><td class="mono">5.51.23</td><td>جلب البيانات والتخزين المؤقت</td></tr>
+              <tr><td class="mono">@reduxjs/toolkit / react-redux</td><td class="mono">2.2.7 / 9.1.2</td><td>حالة المصادقة</td></tr>
+              <tr><td class="mono">react-router-dom</td><td class="mono">6.26.1</td><td>التوجيه</td></tr>
+              <tr><td class="mono">axios</td><td class="mono">1.7.4</td><td>عميل HTTP</td></tr>
+              <tr><td class="mono">react-hook-form + zod</td><td class="mono">7.52.2 / 3.23.8</td><td>النماذج والتحقق</td></tr>
+              <tr><td class="mono">@dnd-kit/*</td><td class="mono">6.1.0 / 8.0.0 / 3.2.2</td><td>السحب والإفلات في المحرّر</td></tr>
+              <tr><td class="mono">@fontsource/cairo / tajawal</td><td class="mono">^5.3.0</td><td>الخطوط العربية</td></tr>
+              <tr><td class="mono">canvas-confetti / lucide-react</td><td class="mono">^1.9.4 / ^1.61.0</td><td>تأثيرات وأيقونات</td></tr>
+              <tr><td class="mono">jest + testing-library</td><td class="mono">29.7.0</td><td>اختبارات الوحدة</td></tr>
+              <tr><td class="mono">@playwright/test</td><td class="mono">1.46.1</td><td>اختبارات E2E</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="tbl-note">النسخ المسبوقة بـ <code>^</code> تسمح بتحديثات ثانوية؛ المثبّتة بدقة (بدون <code>^</code>) محمية من الانحراف.</p>
+      </div>
+    </section>
+
+    <!-- ================= 8. STRUCTURE ================= -->
+    <section id="s8" class="reveal">
+      <div class="panel">
+        <div class="sec-head">
+          <div class="sec-num v">08</div>
+          <div>
+            <h2>الهيكلية الشاملة للمشروع</h2>
+            <span class="en">Project Structure &amp; File Tree</span>
+          </div>
+        </div>
+
+        <p>
+          تم مسح <strong>289 ملفًا مصدريًا</strong> بعد استثناء
+          <code>node_modules</code> و<code>.git</code> و<code>venv</code> و<code>dist</code> و<code>__pycache__</code>
+          و<code>coverage</code>. الجدول التالي يوزّعها بحسب المسؤولية الفعلية.
+        </p>
+
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>المجلد</th><th>الملفات</th><th>المسؤولية</th></tr></thead>
+            <tbody>
+              <tr><td class="mono">backend/app/api/v1</td><td class="num">18</td><td>طبقة الـ API: 79 نقطة نهاية موزّعة على 13 موجّهًا + webhooks</td></tr>
+              <tr><td class="mono">backend/app/services</td><td class="num">23</td><td>قلب المنطق: Elo، التصنيف، Quishing، AI، Brevo، Vonage، التتبع، التقارير</td></tr>
+              <tr><td class="mono">backend/app/models</td><td class="num">8</td><td>نماذج SQLAlchemy: 11 جدولًا و183 عمودًا</td></tr>
+              <tr><td class="mono">backend/app/schemas</td><td class="num">10</td><td>مخططات Pydantic للتحقق والتسلسل</td></tr>
+              <tr><td class="mono">backend/app/worker</td><td class="num">3</td><td>تهيئة Celery والمهام الخلفية</td></tr>
+              <tr><td class="mono">backend/app/scripts</td><td class="num">2</td><td>سكربتات التهيئة الأولية</td></tr>
+              <tr><td class="mono">backend/app/assets/fonts</td><td class="num">2</td><td>خطوط Amiri (Regular + Bold) لتشكيل PDF</td></tr>
+              <tr><td class="mono">backend/app (root)</td><td class="num">7</td><td>الإعدادات، قاعدة البيانات، الأمان، السجلات، نقطة الدخول</td></tr>
+              <tr><td class="mono">backend/alembic</td><td class="num">13</td><td>بيئة الهجرات + 11 هجرة متسلسلة (0001 → 0011)</td></tr>
+              <tr><td class="mono">backend/tests</td><td class="num">32</td><td>402 اختبارًا خلفيًا (31 ملف اختبار + conftest)</td></tr>
+              <tr><td class="mono">backend (root)</td><td class="num">28</td><td>Dockerfile، المتطلبات، السكربتات التشخيصية، قواعد البيانات المحلية</td></tr>
+              <tr><td class="mono">frontend/src/pages</td><td class="num">29</td><td>24 صفحة + 5 ملفات اختبار</td></tr>
+              <tr><td class="mono">frontend/src/components</td><td class="num">22</td><td>20 مكوّنًا (منها محرّر البريد المرئي) + اختباران</td></tr>
+              <tr><td class="mono">frontend/src/lib</td><td class="num">6</td><td>أدوات التنسيق، الأخطاء، محتوى المحاكاة، التوصيات الأمنية</td></tr>
+              <tr><td class="mono">frontend/src/api</td><td class="num">2</td><td>عميل Axios + تعريف نقاط النهاية</td></tr>
+              <tr><td class="mono">frontend/src/hooks · store · types</td><td class="num">3</td><td>المصادقة، حالة Redux، الأنواع المشتركة</td></tr>
+              <tr><td class="mono">frontend/src (root)</td><td class="num">5</td><td>App، main، theme، styles، تعريفات Vite</td></tr>
+              <tr><td class="mono">frontend/src/test</td><td class="num">2</td><td>إعداد Jest ووهميات العميل</td></tr>
+              <tr><td class="mono">frontend/e2e</td><td class="num">3</td><td>سيناريوهات Playwright (دخان، لقطات، دوسييه)</td></tr>
+              <tr><td class="mono">frontend (root)</td><td class="num">18</td><td>الإعدادات، Dockerfile، nginx، package-lock</td></tr>
+              <tr><td class="mono">docs</td><td class="num">32</td><td>6 مستندات + 26 لقطة شاشة/إثبات</td></tr>
+              <tr><td class="mono">nginx</td><td class="num">2</td><td>وكيل TLS طرفي وإعداداته</td></tr>
+              <tr><td class="mono">scripts</td><td class="num">3</td><td>تشغيل التطوير، نشر الرابط العام، التحقق من Brevo</td></tr>
+              <tr><td class="mono">(الجذر)</td><td class="num">14</td><td>README، الحالة، الدليل الدفاعي، Compose، الترخيص</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="tbl-note">المجموع: 289 ملفًا. أعداد المجلدات تشمل الملفات غير البرمجية (صور، PDF، قواعد بيانات محلية) لأنها جزء من المستودع.</p>
+
+        <h3>8.2 الملفات المحورية ومسؤولياتها</h3>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>الملف</th><th>المسؤولية</th></tr></thead>
+            <tbody>
+              <tr><td class="mono">services/elo_engine.py</td><td>يحسب درجة الخطر، نطاقات الصعوبة، ومستوى التهديد. حتمي وقابل للتدقيق.</td></tr>
+              <tr><td class="mono">services/classification_engine.py</td><td>يصنّف الموظف سلوكيًا (unaware / hesitant / competent / critical_risk) خلال 90 يومًا.</td></tr>
+              <tr><td class="mono">services/quishing_service.py</td><td>يولّد رموز QR بدقة 1200px وملصقات A4 عربية كاملة مع الشعار والطُعم.</td></tr>
+              <tr><td class="mono">services/campaign_launcher.py</td><td>يدير دورة حياة الحملة: تحقق، إنشاء صفوف التتبع، اختيار القالب التكيّفي، الإرسال، والتجميع.</td></tr>
+              <tr><td class="mono">services/template_service.py</td><td>يعيد بناء HTML من <code>design_json</code>، يستبدل الوسوم، يعيد كتابة الروابط، ويضيف Pixel.</td></tr>
+              <tr><td class="mono">services/email_design.py</td><td>محرّك عرض بريد متوافق مع عملاء البريد (جداول) + حقن الهوية البصرية.</td></tr>
+              <tr><td class="mono">services/html_sanitizer.py</td><td>تعقيم HTML بقائمة سماح صارمة: يمنع السكربتات والمعالجات وروابط <code>javascript:</code>.</td></tr>
+              <tr><td class="mono">services/tracking_service.py</td><td>يسجّل الفتح والنقر والإرسال والبلاغ، ويضمن عدم تطبيق Elo مرتين.</td></tr>
+              <tr><td class="mono">services/vonage_service.py</td><td>يرسل SMS (Unicode) وWhatsApp ويعيد معرّف الرسالة لربط الـ DLR.</td></tr>
+              <tr><td class="mono">services/vonage_webhook_service.py</td><td>يطبّق إيصالات التسليم/القراءة دون تراجع الحالة ومع منع تكرار آمن.</td></tr>
+              <tr><td class="mono">services/ai_service.py</td><td>يتصل بـ Dahl، يجرّب النموذج الاحتياطي، ينظّف مخرجات التفكير، ويتحقق من JSON.</td></tr>
+              <tr><td class="mono">services/usb_drop_service.py</td><td>ينتج HTML/ZIP آمنًا للتحذير فقط، دون أي تنفيذ أو جمع بيانات.</td></tr>
+              <tr><td class="mono">services/executive_report.py</td><td>يبني تقرير PDF تنفيذيًا بالعربية مع رسوم بيانية وأعلى 5 موظفي خطر.</td></tr>
+              <tr><td class="mono">api/v1/tracking.py</td><td>أكبر موجّه (16 نقطة): فتح، نقر، إرسال، QR، USB، Vishing، Pretexting.</td></tr>
+              <tr><td class="mono">api/v1/campaigns.py</td><td>13 نقطة: إنشاء، إطلاق، نتائج، بورد حيّ، نشاط، تصدير، مسح QR.</td></tr>
+              <tr><td class="mono">api/v1/webhooks/vonage.py</td><td>DLR للـ SMS (POST + GET) وحالة WhatsApp، مع تحقق رمز مشترك.</td></tr>
+              <tr><td class="mono">frontend/src/App.tsx</td><td>خريطة التوجيه: 25 مسارًا بين محمي وعام (محاكاة).</td></tr>
+              <tr><td class="mono">pages/QrLureLandingPage.tsx</td><td>صفحة الهبوط للموبايل + البصمة الخفيفة + حل الهوية.</td></tr>
+              <tr><td class="mono">components/email-editor/EmailVisualEditor.tsx</td><td>محرّر ثلاثي اللوحات مع iframe معزول وخصائص لكل كتلة.</td></tr>
+              <tr><td class="mono">models/email_campaign.py</td><td>أثقل ملف نماذج: الحملة + التتبع + التفاعلات + مسح QR.</td></tr>
+              <tr><td class="mono">alembic/versions/0011_qr_identity_resolution.py</td><td>أحدث هجرة: هوية، سجل QR، وعلامة خصم مرة واحدة.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>8.3 شجرة مبسّطة</h3>
+        <div class="flow" style="display:block;line-height:2.1;font-family:var(--mono);font-size:12px;direction:ltr;text-align:left;color:#b9c9e3">
+          <div>hument_project/</div>
+          <div>&nbsp;├── backend/ &nbsp;<span style="color:#64748b">FastAPI · 72 ملف تطبيق · 17,803 LOC</span></div>
+          <div>&nbsp;│&nbsp;&nbsp;&nbsp;├── app/api/v1/ &nbsp;<span style="color:#64748b">auth · campaigns · tracking · quishing · usb_drop · webhooks</span></div>
+          <div>&nbsp;│&nbsp;&nbsp;&nbsp;├── app/services/ &nbsp;<span style="color:#64748b">23 خدمة (Elo · AI · Quishing · Vonage · Brevo)</span></div>
+          <div>&nbsp;│&nbsp;&nbsp;&nbsp;├── app/models/ &nbsp;<span style="color:#64748b">11 جدولًا</span></div>
+          <div>&nbsp;│&nbsp;&nbsp;&nbsp;├── alembic/versions/ &nbsp;<span style="color:#64748b">0001 → 0011</span></div>
+          <div>&nbsp;│&nbsp;&nbsp;&nbsp;└── tests/ &nbsp;<span style="color:#64748b">31 ملفًا · 402 اختبارًا</span></div>
+          <div>&nbsp;├── frontend/ &nbsp;<span style="color:#64748b">React · 69 ملف مصدر · 23,389 LOC</span></div>
+          <div>&nbsp;│&nbsp;&nbsp;&nbsp;├── src/pages/ &nbsp;<span style="color:#64748b">24 صفحة</span></div>
+          <div>&nbsp;│&nbsp;&nbsp;&nbsp;├── src/components/ &nbsp;<span style="color:#64748b">20 مكوّنًا + محرّر البريد</span></div>
+          <div>&nbsp;│&nbsp;&nbsp;&nbsp;└── e2e/ &nbsp;<span style="color:#64748b">3 سيناريوهات Playwright</span></div>
+          <div>&nbsp;├── docs/ &nbsp;<span style="color:#64748b">أدلة وإثباتات ولقطات</span></div>
+          <div>&nbsp;├── nginx/ &nbsp;<span style="color:#64748b">TLS طرفي</span></div>
+          <div>&nbsp;├── scripts/ &nbsp;<span style="color:#64748b">تشغيل ونشر</span></div>
+          <div>&nbsp;└── docker-compose.yml &nbsp;<span style="color:#64748b">postgres · redis · backend · worker · beat · frontend</span></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================= 9. STATISTICS ================= -->
+    <section id="s9" class="reveal">
+      <div class="panel">
+        <div class="sec-head">
+          <div class="sec-num g">09</div>
+          <div>
+            <h2>إحصائيات المشروع</h2>
+            <span class="en">Project Statistics</span>
+          </div>
+        </div>
+
+        <div class="stats">
+          <div class="stat"><div class="big" data-count="51971">0</div><div class="cap">إجمالي أسطر الكود</div><div class="sub">210 ملف كود</div></div>
+          <div class="stat"><div class="big" data-count="289">0</div><div class="cap">ملف مصدري</div><div class="sub">بدون الاعتماديات</div></div>
+          <div class="stat"><div class="big" data-count="79">0</div><div class="cap">نقطة API</div><div class="sub">+ 3 مسارات نظام</div></div>
+          <div class="stat"><div class="big" data-count="11">0</div><div class="cap">جدول قاعدة بيانات</div><div class="sub">183 عمودًا</div></div>
+          <div class="stat"><div class="big" data-count="24">0</div><div class="cap">صفحة واجهة</div><div class="sub">+ 20 مكوّنًا</div></div>
+          <div class="stat"><div class="big" data-count="402">0</div><div class="cap">اختبار خلفي</div><div class="sub">31 ملفًا</div></div>
+          <div class="stat"><div class="big" data-count="30">0</div><div class="cap">اختبار واجهة</div><div class="sub">9 حزم Jest</div></div>
+          <div class="stat"><div class="big" data-count="11">0</div><div class="cap">هجرة Alembic</div><div class="sub">head: 0011</div></div>
+        </div>
+
+        <h3>9.2 تفصيل قاعدة البيانات</h3>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>الجدول</th><th>الأعمدة</th><th>الدور</th></tr></thead>
+            <tbody>
+              <tr><td class="mono">campaigns</td><td class="num">19</td><td>الحملة: القناة، الحالة، الإعدادات، العدّادات، التوقيتات</td></tr>
+              <tr><td class="mono">tracking_events</td><td class="num">41</td><td>حالة كل مستلم: التسليم، الفتح، النقر، الإرسال، الهوية، Elo</td></tr>
+              <tr><td class="mono">training_interactions</td><td class="num">10</td><td>سجل أحداث Append-only بدقة ميكروثانية</td></tr>
+              <tr><td class="mono">qr_scans</td><td class="num">15</td><td>سجل مسح QR المستقل (يدعم المجهول والتعيين اليدوي)</td></tr>
+              <tr><td class="mono">templates</td><td class="num">13</td><td>القوالب: HTML، تصميم مرئي، صعوبة، قناة</td></tr>
+              <tr><td class="mono">human_assets</td><td class="num">30</td><td>الموظف: Elo، التصنيف، العدّادات، الهاتف المشفّر</td></tr>
+              <tr><td class="mono">training_modules</td><td class="num">11</td><td>مكتبة التدريب المصغّر</td></tr>
+              <tr><td class="mono">training_assignments</td><td class="num">9</td><td>إسناد التدريب للموظفين</td></tr>
+              <tr><td class="mono">phishing_reports</td><td class="num">11</td><td>صندوق بلاغات التصيّد</td></tr>
+              <tr><td class="mono">organizations</td><td class="num">16</td><td>المؤسسة: السياسات، الهوية البصرية، الشعار</td></tr>
+              <tr><td class="mono">users</td><td class="num">8</td><td>المستخدمون والأدوار (admin / manager / viewer)</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="tbl-note">الإجمالي: 11 جدولًا · 183 عمودًا. لا توجد جداول مهجورة؛ كل جدول مستخدم في مسار قراءة أو كتابة.</p>
+
+        <h3>9.3 الاختبارات والتحقق</h3>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>المستوى</th><th>العدد</th><th>الأمر</th><th>الحالة</th></tr></thead>
+            <tbody>
+              <tr><td>Backend (pytest)</td><td class="num">402 دالة</td><td class="mono">python -m pytest -q</td><td><span class="badge">405 passed — موثّق</span></td></tr>
+              <tr><td>Frontend (Jest)</td><td class="num">30 اختبارًا</td><td class="mono">npm run test</td><td><span class="badge">30 passed — موثّق</span></td></tr>
+              <tr><td>E2E (Playwright)</td><td class="num">3 ملفات</td><td class="mono">npm run test:e2e</td><td><span class="badge">آخر تشغيل: passed</span></td></tr>
+              <tr><td>Lint / Types / Build</td><td class="num">3 بوابات</td><td class="mono">lint · typecheck · build</td><td><span class="badge">ناجحة — موثّق</span></td></tr>
+              <tr><td>Coverage (أثر)</td><td class="num">76.67%</td><td class="mono">coverage.xml</td><td><span class="badge" style="color:#fbbf24;border-color:rgba(251,191,36,.3);background:rgba(251,191,36,.1)">أقل من العتبة 80%</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="callout danger">
+          <div class="ico">📉</div>
+          <div>
+            <h5>تناقض يجب معالجته قبل العرض</h5>
+            <p>ملف <code>coverage.xml</code> يحتوي على 68 صنفًا و6,876 سطرًا قابلًا للتغطية، بنسبة
+            <strong>76.67%</strong> — أقل من عتبة <code>--cov-fail-under=80</code> المضبوطة في
+            <code>pyproject.toml</code>. إما أن الأثر قديم/جزئي، أو أن التشغيل الكامل الحالي سيفشل.
+            يوصى بتشغيل الحزمة كاملة في بيئة بها <code>pytest</code> وإرفاق المخرجات الفعلية.</p>
+          </div>
+        </div>
+
+        <h3>9.4 أثر الأعمال غير المُودَعة</h3>
+        <p>
+          المستودع عند <code>52ab628</code> لكن شجرة العمل تحتوي <strong>34 ملفًا معدّلًا غير مُودَع</strong>
+          (تشمل نماذج، مخططات، خدمات QR، وموجّهات API). هذا يعني أن «الحالة الحالية» للكود
+          لا تساوي «آخر commit»، ويجب توثيق الفرق قبل أي عرض رسمي.
+        </p>
+      </div>
+    </section>
+
+    <!-- ================= 10. SMS STATUS ================= -->
+    <section id="s10" class="reveal">
+      <div class="panel">
+        <div class="sec-head">
+          <div class="sec-num">10</div>
+          <div>
+            <h2>حالة تكامل SMS — تقييم صريح</h2>
+            <span class="en">SMS / Vonage Integration Status</span>
+          </div>
+        </div>
+
+        <div class="callout danger">
+          <div class="ico">🔴</div>
+          <div>
+            <h5>الخلاصة في سطر واحد</h5>
+            <p><strong>SMS مُنفَّذ بالكامل برمجيًا وجاهز للاختبار، لكنه غير مُشغَّل فعليًا:</strong>
+            مفاتيح <code>VONAGE_API_KEY</code> و<code>VONAGE_API_SECRET</code> <u>فارغة</u> في
+            <code>backend/.env</code>، ولم يُرسل أي رسالة حقيقية ولم يُستقبل أي DLR.</p>
+          </div>
+        </div>
+
+        <h3>ما هو موجود فعليًا (مكتمل)</h3>
+        <div class="grid-2">
+          <div class="mini">
+            <div class="tag">DELIVERY</div>
+            <h5>إرسال SMS عربي</h5>
+            <p>يستخدم SMS API القديم لأنه الوحيد الذي يدعم <code>type="unicode"</code> — إلزامي للعربية.
+            يتحقق من E.164، يزيل <code>+</code> عند الحدود فقط، ويطلب DLR لكل رسالة
+            (<code>status-report-req=1</code> + <code>callback</code>).</p>
+          </div>
+          <div class="mini">
+            <div class="tag">WEBHOOK</div>
+            <h5>استقبال DLR</h5>
+            <p><code>POST</code> و<code>GET</code> على <code>/api/v1/webhooks/vonage/dlr</code>،
+            يقبل JSON أو Form، ويستخرج المعرّف من خمسة مفاتيح محتملة.</p>
+          </div>
+          <div class="mini">
+            <div class="tag">STATE</div>
+            <h5>آلة حالة غير تراجعية</h5>
+            <p><code>submitted → accepted → delivered → read</code>، والفشل نهائي إلا إذا جاء
+            إيصال تسليم لاحق. التكرار لا يضر، والتأخر لا يمحو حالة أحدث.</p>
+          </div>
+          <div class="mini">
+            <div class="tag">SAFETY</div>
+            <h5>حاجز تهيئة مزدوج</h5>
+            <p>الـ API يرفض الإطلاق مبكرًا، و<em>المُشغِّل نفسه</em> يرفض أيضًا — لأن العمال الخلفيين
+            يتجاوزون فحص الـ API. لا توجد طريقة لإرسال حملة SMS بدون تهيئة صحيحة.</p>
+          </div>
+        </div>
+
+        <h3>حالة متغيّرات البيئة (فحص فعلي)</h3>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>المتغير</th><th>الحالة</th><th>الأثر</th></tr></thead>
+            <tbody>
+              <tr><td class="mono">VONAGE_API_KEY</td><td><span class="badge" style="color:#fb7185;border-color:rgba(251,113,133,.3);background:rgba(251,113,133,.1)">EMPTY</span></td><td>لا يمكن إنشاء أي عميل Vonage</td></tr>
+              <tr><td class="mono">VONAGE_API_SECRET</td><td><span class="badge" style="color:#fb7185;border-color:rgba(251,113,133,.3);background:rgba(251,113,133,.1)">EMPTY</span></td><td>لا مصادقة</td></tr>
+              <tr><td class="mono">VONAGE_SMS_FROM</td><td><span class="badge">SET</span></td><td>معرّف المرسل مضبوط</td></tr>
+              <tr><td class="mono">VONAGE_WHATSAPP_FROM</td><td><span class="badge" style="color:#fb7185;border-color:rgba(251,113,133,.3);background:rgba(251,113,133,.1)">EMPTY</span></td><td>WhatsApp غير جاهز</td></tr>
+              <tr><td class="mono">VONAGE_APPLICATION_ID / PRIVATE_KEY</td><td><span class="badge" style="color:#fb7185;border-color:rgba(251,113,133,.3);background:rgba(251,113,133,.1)">EMPTY</span></td><td>لا مصادقة JWT للتطبيق</td></tr>
+              <tr><td class="mono">VONAGE_WEBHOOK_TOKEN</td><td><span class="badge" style="color:#fb7185;border-color:rgba(251,113,133,.3);background:rgba(251,113,133,.1)">EMPTY</span></td><td>التحقق من الـ webhook معطّل (غير آمن للإنتاج)</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>ما ينقص للوصول إلى 100%</h3>
+        <ol>
+          <li>تعبئة <code>VONAGE_API_KEY</code> و<code>VONAGE_API_SECRET</code> من لوحة Vonage.</li>
+          <li>ضبط <code>VONAGE_WEBHOOK_TOKEN</code> بقيمة عشوائية طويلة، ثم تسجيل عنواني الـ webhook في اللوحة.</li>
+          <li>تشغيل <code>GET /api/v1/test/vonage/verify?channel=sms</code> والتأكد من <code>valid: true</code>.</li>
+          <li>إضافة رقم اختبار بصيغة E.164 إلى موظف، وإطلاق حملة SMS تجريبية واحدة.</li>
+          <li>تأكيد وصول DLR فعلي وظهور <code>delivery_status=delivered</code> و<code>delivered_at</code>.</li>
+        </ol>
+
+        <div class="callout warn">
+          <div class="ico">🌐</div>
+          <div>
+            <h5>اعتماد على BASE_URL</h5>
+            <p>رابط الـ callback يُبنى من <code>BASE_URL</code>. مع Cloudflare Quick Tunnel يتغيّر الرابط
+            عند كل إعادة تشغيل، لذا يجب تحديث <code>BASE_URL</code> و<code>FRONTEND_URL</code> و
+            <code>CORS_ORIGINS</code> وإعادة تسجيل الـ webhook في Vonage قبل أي اختبار.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================= 11. LIMITATIONS ================= -->
+    <section id="s11" class="reveal">
+      <div class="panel">
+        <div class="sec-head">
+          <div class="sec-num v">11</div>
+          <div>
+            <h2>القيود والمخاطر الحالية</h2>
+            <span class="en">Known Limitations &amp; Risk Register</span>
+          </div>
+        </div>
+
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>#</th><th>القيد</th><th>الأثر</th><th>الأولوية</th></tr></thead>
+            <tbody>
+              <tr><td class="num">1</td><td>مفاتيح Vonage فارغة</td><td>SMS/WhatsApp غير قابلين للتشغيل</td><td><span class="status s-off">حرجة</span></td></tr>
+              <tr><td class="num">2</td><td>Brevo يحجب عنوان IP الخارج</td><td>لا تسليم بريد حقيقي (خطأ <code>ip_allowlist</code>)</td><td><span class="status s-off">حرجة</span></td></tr>
+              <tr><td class="num">3</td><td>نفق Cloudflare مؤقت</td><td>الروابط المولّدة تموت بعد إعادة التشغيل</td><td><span class="status s-partial">عالية</span></td></tr>
+              <tr><td class="num">4</td><td>تغطية الاختبارات 76.67% مقابل عتبة 80%</td><td>بوابة الـ CI ستفشل إن أُعيد التشغيل</td><td><span class="status s-partial">عالية</span></td></tr>
+              <tr><td class="num">5</td><td>34 ملفًا غير مُودَع</td><td>«الحالة الحالية» لا تطابق أي commit</td><td><span class="status s-partial">عالية</span></td></tr>
+              <tr><td class="num">6</td><td>PostgreSQL غير مُشغَّل</td><td>الاختبارات تمت على SQLite فقط</td><td><span class="status s-partial">متوسطة</span></td></tr>
+              <tr><td class="num">7</td><td>حصة Dahl / 429 على النموذج الأساسي</td><td>الاعتماد على MiniMax الاحتياطي</td><td><span class="status s-partial">متوسطة</span></td></tr>
+              <tr><td class="num">8</td><td>Vishing عبر المتصفح فقط</td><td>لا اتصال هاتفي حقيقي بعد</td><td><span class="status s-partial">متوسطة</span></td></tr>
+              <tr><td class="num">9</td><td>ترخيص خط Amiri غير مضمّن</td><td>مشكلة قبل التوزيع العام</td><td><span class="status s-ready">منخفضة</span></td></tr>
+              <tr><td class="num">10</td><td>تبعيات غير مستخدمة (chart.js)</td><td>حجم حزمة أكبر قليلًا</td><td><span class="status s-ready">منخفضة</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="callout info">
+          <div class="ico">🛡️</div>
+          <div>
+            <h5>ملاحظة أمنية حول إدارة الأسرار</h5>
+            <p>المشروع يتعامل مع الأسرار بشكل صحيح: <code>.env</code> و<code>*.db</code> و<code>*.log</code>
+            و<code>dist/</code> مستثناة في <code>.gitignore</code>، والحقول الحساسة مشفّرة على مستوى العمود.
+            يجب الحفاظ على هذا النمط وعدم إدخال أي رمز وصول (Token) داخل رابط المستودع أو ملفات التتبّع.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================= 12. ROADMAP ================= -->
+    <section id="s12" class="reveal">
+      <div class="panel">
+        <div class="sec-head">
+          <div class="sec-num g">12</div>
+          <div>
+            <h2>خارطة الطريق — الخطوات التالية</h2>
+            <span class="en">Development Roadmap</span>
+          </div>
+        </div>
+
+        <p>
+          كل خطوة تتبع <strong>نفس معمارية قناة البريد</strong>: نقطة API → خدمة إرسال → صف تتبّع →
+          webhook للحالة → محرّك Elo → عرض في اللوحة. لا تغيير في المخطط مطلوب بفضل الحقول
+          العامة (<code>channel</code>, <code>channel_config</code>, <code>delivery_status</code>, <code>provider_message_id</code>).
+        </p>
+
+        <div class="road">
+          <div class="step">
+            <div class="idx">01</div>
+            <div>
+              <h5>إتمام تسليم SMS والتحقق من DLR</h5>
+              <p>تعبئة المفاتيح، تسجيل الـ webhook، إرسال فعلي، وتأكيد <code>delivered</code> + <code>delivered_at</code> في قاعدة البيانات.</p>
+            </div>
+            <span class="eta">جاهز للتنفيذ</span>
+          </div>
+          <div class="step">
+            <div class="idx">02</div>
+            <div>
+              <h5>قناة WhatsApp مع إيصالات القراءة</h5>
+              <p>تفعيل Messages API، ضبط المرسل وبيانات التطبيق، وتأكيد <code>read</code> عبر
+              <code>/webhooks/vonage/whatsapp-status</code>.</p>
+            </div>
+            <span class="eta">جاهز للتنفيذ</span>
+          </div>
+          <div class="step">
+            <div class="idx">03</div>
+            <div>
+              <h5>قناة Voice / Vishing حقيقية</h5>
+              <p>تكامل Twilio أو Vonage Voice، سكربت صوتي، شجرة قرار (DTMF)، وتسجيل النتيجة في نفس محرّك Elo.</p>
+            </div>
+            <span class="eta">تصميم مطلوب</span>
+          </div>
+          <div class="step">
+            <div class="idx">04</div>
+            <div>
+              <h5>القنوات المادية والمركّبة</h5>
+              <p>توسيع USB الحالي إلى سيناريوهات مركّبة (USB + QR + بريد) مع سلسلة هجوم موحّدة وقواعد إفصاح واضحة.</p>
+            </div>
+            <span class="eta">تصميم مطلوب</span>
+          </div>
+        </div>
+
+        <div class="callout ok">
+          <div class="ico">🚀</div>
+          <div>
+            <h5>توصية ما قبل العرض للجنة</h5>
+            <p>إغلاق ثلاث فجوات فقط يرفع المشروع من «Demo-Ready» إلى «Pilot-Ready»:
+            (1) مفاتيح Vonage، (2) نفق ثابت أو نطاق، (3) معالجة فرق التغطية و34 ملفًا غير مُودَع.
+            كل ما عدا ذلك تحسينات لا تحجب العرض.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <div class="footer">
+      <div>
+        <b>HUMINT Shield</b> · الملف التقني الشامل · أُعِدّ بتاريخ 2026-10-30<br />
+        المصدر: مسح مباشر للمستودع (289 ملفًا) + الهجرات + التوثيق التشغيلي.
+      </div>
+      <div>
+        الفرع <b>main</b> · آخر commit <b>52ab628</b> · Alembic head <b>0011</b>
+      </div>
+    </div>
+
+  </main>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  /* ---------- animated counters ---------- */
+  var counters = document.querySelectorAll("[data-count]");
+  var fmt = new Intl.NumberFormat("en-US");
+
+  function animate(el) {
+    if (el.dataset.done === "1") return;
+    el.dataset.done = "1";
+    var target = parseInt(el.dataset.count, 10) || 0;
+    var start = performance.now();
+    var dur = 1300;
+    function frame(now) {
+      var t = Math.min(1, (now - start) / dur);
+      var eased = 1 - Math.pow(1 - t, 3);
+      el.textContent = fmt.format(Math.round(target * eased));
+      if (t < 1) requestAnimationFrame(frame);
+      else el.textContent = fmt.format(target);
+    }
+    requestAnimationFrame(frame);
+  }
+
+  /* ---------- progress bars ---------- */
+  function fillBars(scope) {
+    (scope || document).querySelectorAll(".fill[data-w]").forEach(function (bar) {
+      bar.style.width = bar.dataset.w + "%";
+    });
+  }
+
+  /* ---------- reveal on scroll ---------- */
+  var observer = new IntersectionObserver(
+    function (entries) {
+      entries.forEach(function (entry) {
+        if (!entry.isIntersecting) return;
+        entry.target.classList.add("in");
+        entry.target.querySelectorAll("[data-count]").forEach(animate);
+        fillBars(entry.target);
+        observer.unobserve(entry.target);
+      });
+    },
+    { threshold: 0.12, rootMargin: "0px 0px -40px 0px" }
+  );
+
+  document.querySelectorAll(".reveal").forEach(function (el) { observer.observe(el); });
+
+  /* hero is visible immediately */
+  document.querySelectorAll(".kpis [data-count]").forEach(animate);
+
+  /* ---------- scroll progress ---------- */
+  var bar = document.getElementById("progress");
+  function onScroll() {
+    var h = document.documentElement;
+    var max = h.scrollHeight - h.clientHeight;
+    bar.style.width = (max > 0 ? (h.scrollTop / max) * 100 : 0) + "%";
+  }
+  window.addEventListener("scroll", onScroll, { passive: true });
+  onScroll();
+
+  /* ---------- active TOC ---------- */
+  var links = Array.prototype.slice.call(document.querySelectorAll(".toc a"));
+  var sections = links
+    .map(function (a) { return document.querySelector(a.getAttribute("href")); })
+    .filter(Boolean);
+
+  var navObserver = new IntersectionObserver(
+    function (entries) {
+      entries.forEach(function (entry) {
+        if (!entry.isIntersecting) return;
+        links.forEach(function (l) { l.classList.remove("active"); });
+        var active = links.find(function (l) {
+          return l.getAttribute("href") === "#" + entry.target.id;
+        });
+        if (active) active.classList.add("active");
+      });
+    },
+    { rootMargin: "-30% 0px -60% 0px" }
+  );
+  sections.forEach(function (s) { navObserver.observe(s); });
+
+  /* ---------- graceful font fallback ---------- */
+  if (document.fonts && document.fonts.ready) {
+    document.fonts.ready.then(function () { document.body.classList.add("fonts-ready"); });
+  }
+})();
+</script>
+</body>
+</html>

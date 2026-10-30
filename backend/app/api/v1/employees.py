@@ -345,7 +345,10 @@ async def update_employee(
 
 
 @router.delete(
-    "/{employee_id}", status_code=status.HTTP_204_NO_CONTENT, summary="Delete an employee"
+    "/{employee_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Delete an employee",
+    response_model=None,
 )
 async def delete_employee(
     org_id: uuid.UUID,

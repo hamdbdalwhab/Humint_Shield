@@ -237,6 +237,26 @@ async def custom_template(db: AsyncSession, organization: Organization) -> Email
 
 
 @pytest_asyncio.fixture
+async def qr_template(db: AsyncSession, organization: Organization) -> EmailTemplate:
+    """Create a single QR-channel template for quishing campaigns."""
+    template = EmailTemplate(
+        organization_id=organization.id,
+        name="قهوة مجانية",
+        subject="قهوة مجانية بانتظارك اليوم",
+        body_html="<p>امسح رمز QR لاستلام قسيمتك.</p>",
+        difficulty_level=4,
+        is_built_in=False,
+        is_active=True,
+        channel="qr",
+        available_variables=["company_name", "department"],
+    )
+    db.add(template)
+    await db.commit()
+    await db.refresh(template)
+    return template
+
+
+@pytest_asyncio.fixture
 async def training_modules(db: AsyncSession, organization: Organization) -> int:
     """Seed the demo training modules."""
     created = await seed_training_modules(db, organization.id)

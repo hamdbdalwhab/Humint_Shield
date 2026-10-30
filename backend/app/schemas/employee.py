@@ -27,6 +27,14 @@ def _normalize_phone(value: object) -> object:
     return phone
 
 
+def _normalize_optional_text(value: object) -> object:
+    """Trim an optional identifier and turn an empty string into ``None``."""
+    if value is None or not isinstance(value, str):
+        return value
+    text = value.strip()
+    return text or None
+
+
 class Paginated(BaseModel, Generic[T]):
     """A generic page of results."""
 
@@ -43,6 +51,8 @@ class EmployeeBase(BaseModel):
     email: EmailStr
     first_name: str = Field(min_length=1, max_length=100)
     last_name: str = Field(default="", max_length=100)
+    username: str | None = Field(default=None, max_length=150)
+    employee_id_external: str | None = Field(default=None, max_length=100)
     phone: str | None = Field(default=None, max_length=50)
     department: str | None = Field(default=None, max_length=100)
     job_title: str | None = Field(default=None, max_length=100)
@@ -55,6 +65,11 @@ class EmployeeBase(BaseModel):
     def _validate_phone(cls, value: object) -> object:
         return _normalize_phone(value)
 
+    @field_validator("username", "employee_id_external", mode="before")
+    @classmethod
+    def _validate_identifier(cls, value: object) -> object:
+        return _normalize_optional_text(value)
+
 
 class EmployeeCreate(EmployeeBase):
     """Payload for creating an employee."""
@@ -66,6 +81,8 @@ class EmployeeUpdate(BaseModel):
     email: EmailStr | None = None
     first_name: str | None = Field(default=None, min_length=1, max_length=100)
     last_name: str | None = Field(default=None, max_length=100)
+    username: str | None = Field(default=None, max_length=150)
+    employee_id_external: str | None = Field(default=None, max_length=100)
     phone: str | None = Field(default=None, max_length=50)
     department: str | None = Field(default=None, max_length=100)
     job_title: str | None = Field(default=None, max_length=100)
@@ -77,6 +94,11 @@ class EmployeeUpdate(BaseModel):
     @classmethod
     def _validate_phone(cls, value: object) -> object:
         return _normalize_phone(value)
+
+    @field_validator("username", "employee_id_external", mode="before")
+    @classmethod
+    def _validate_identifier(cls, value: object) -> object:
+        return _normalize_optional_text(value)
 
 
 class EmployeePublic(BaseModel):
@@ -94,6 +116,8 @@ class EmployeePublic(BaseModel):
     phone: str | None = None
     first_name: str
     last_name: str
+    username: str | None = None
+    employee_id_external: str | None = None
     department: str | None = None
     job_title: str | None = None
     access_level: int

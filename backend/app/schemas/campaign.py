@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
 
 from app.schemas.employee import EmployeePublic
 
@@ -141,6 +141,13 @@ class CampaignEmployeeResult(BaseModel):
     click_count: int = 0
     submission_count: int = 0
     submitted_identifier: str | None = None
+    submitted_username: str | None = None
+    submitted_email: str | None = None
+    password_submitted: bool = False
+    identity_resolution: str | None = None
+    identity_resolved_employee_id: uuid.UUID | None = None
+    identity_resolved_name: str | None = None
+    identity_resolved_email: str | None = None
     submitted_fields: dict[str, str] | None = None
     #: Every value the recipient typed, decrypted (includes the password).
     submitted_values: dict[str, str] | None = None
@@ -218,6 +225,13 @@ class EmployeeCampaignRecord(BaseModel):
     click_count: int = 0
     submission_count: int = 0
     submitted_identifier: str | None = None
+    submitted_username: str | None = None
+    submitted_email: str | None = None
+    password_submitted: bool = False
+    identity_resolution: str | None = None
+    identity_resolved_employee_id: uuid.UUID | None = None
+    identity_resolved_name: str | None = None
+    identity_resolved_email: str | None = None
     submitted_fields: dict[str, str] | None = None
     submitted_values: dict[str, str] | None = None
     client_context: dict[str, Any] | None = None
@@ -266,12 +280,62 @@ class CampaignActivity(BaseModel):
     events: list[InteractionPublic] = Field(default_factory=list)
 
 
+class QRScanPublic(BaseModel):
+    """One entry of the QR campaign's "Live scans" table.
+
+    ``employee_id`` is the identity resolved from the entered username/e-mail
+    (or assigned manually).  It is deliberately separate from
+    ``source_employee_id``, which is the owner of the QR poster that was used.
+    """
+
+    id: uuid.UUID
+    campaign_id: uuid.UUID
+    tracking_id: uuid.UUID | None = None
+    tracking_uuid: uuid.UUID | None = None
+    source_employee_id: uuid.UUID | None = None
+    source_employee_name: str | None = None
+    source_employee_email: str | None = None
+    employee_id: uuid.UUID | None = None
+    employee_name: str | None = None
+    employee_email: str | None = None
+    username: str | None = None
+    email: str | None = None
+    password_submitted: bool = False
+    identity_resolution: str = "unknown"
+    occurred_at: datetime
+    ip_address: str | None = None
+    user_agent: str | None = None
+    #: Canvas/WebGL/screen/CPU/timezone evidence collected on the landing page.
+    fingerprint: dict[str, Any] = Field(default_factory=dict)
+    fingerprint_hash: str | None = None
+    elo_delta: int = 0
+    penalty_applied: bool = False
+
+
+class QRScanAssignRequest(BaseModel):
+    """Administrator action for an unmatched QR scan."""
+
+    employee_id: uuid.UUID
+
+
+class QRScanAssignResponse(BaseModel):
+    """Result of assigning an unmatched scan to an employee."""
+
+    success: bool
+    message: str = ""
+    scan: QRScanPublic | None = None
+    elo_score: int | None = None
+    elo_delta: int = 0
+
+
 class CampaignResults(BaseModel):
     """Response from ``GET /email-campaigns/{id}/results``."""
 
     campaign: CampaignPublic
     stats: CampaignStats
     employees: list[CampaignEmployeeResult]
+    #: QR campaigns only: every submitted scan, including unknown identities.
+    scans: list[QRScanPublic] = Field(default_factory=list)
 
 
 class TrackingCompleteResponse(BaseModel):
@@ -315,6 +379,42 @@ class ReportSafeResponse(BaseModel):
     immunity_score: float | None = None
     behavioral_category: str | None = None
     already_reported_safe: bool = False
+
+
+class QRSubmissionRequest(BaseModel):
+    """Body for ``POST /track/qr/submit``.
+
+    The browser must never transmit the typed password value.  The field is
+    accepted for compatibility with clients that still include it, but it is
+    deliberately ignored by the endpoint and never written to the database.
+    Only the boolean ``password_submitted`` (and non-secret browser evidence)
+    is retained.
+    """
+
+    campaign_id: uuid.UUID
+    tracking_uuid: uuid.UUID | None = None
+    username: str = Field(min_length=1, max_length=150)
+    email: EmailStr
+    #: Accepted for contract compatibility only.  Never logged or persisted.
+    password: str | None = Field(default=None, max_length=1024)
+    password_submitted: bool = True
+    fingerprint_data: dict[str, Any] = Field(default_factory=dict)
+    fields: dict[str, str] = Field(default_factory=dict)
+
+
+class QRSubmissionResponse(BaseModel):
+    """Result of a QR/quishing credential submission."""
+
+    success: bool
+    first_time: bool = False
+    unknown: bool = False
+    message: str = ""
+    identity_resolution: str | None = None
+    resolved_employee_id: uuid.UUID | None = None
+    resolved_employee_name: str | None = None
+    tracking_uuid: uuid.UUID | None = None
+    elo_delta: int = 0
+    elo_score: int | None = None
 
 
 class TrainingSubmission(BaseModel):
@@ -375,12 +475,22 @@ class SimulationChoiceResponse(BaseModel):
 
 
 class QRPosterRequest(BaseModel):
-    """Optional copy overrides for a quishing poster pack."""
+    """Optional copy and branding overrides for a quishing poster pack."""
 
     headline: str | None = Field(default=None, max_length=180)
     body: str | None = Field(default=None, max_length=1200)
     footer: str | None = Field(default=None, max_length=240)
     pretext_key: str | None = Field(default=None, max_length=60)
+    #: One of ``coffee``, ``bonus``, ``nomination``, ``hr`` or ``wifi``.
+    lure_type: str | None = Field(default=None, max_length=40)
+    company_name: str | None = Field(default=None, max_length=160)
+    department: str | None = Field(default=None, max_length=160)
+    #: ``2026-05`` or a free-text month label for the nomination lure.
+    month_label: str | None = Field(default=None, max_length=80)
+    primary_color: str | None = Field(default=None, max_length=20)
+    accent_color: str | None = Field(default=None, max_length=20)
+    #: ``data:image/png;base64,...`` (max ~1.5 MB decoded).
+    logo_data_url: str | None = Field(default=None, max_length=2_100_000)
 
 
 class USBPDFRequest(BaseModel):

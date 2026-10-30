@@ -7,6 +7,10 @@
  * risk score. Clicking any row opens the dossier with the complete ledger and the
  * values the employee typed.
  */
+import Dialog from '@mui/material/Dialog';
+import DialogActions from '@mui/material/DialogActions';
+import DialogContent from '@mui/material/DialogContent';
+import DialogTitle from '@mui/material/DialogTitle';
 import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
@@ -34,6 +38,7 @@ import CodeIcon from '@mui/icons-material/Code';
 import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import CheckIcon from '@mui/icons-material/Check';
 import PictureAsPdfIcon from '@mui/icons-material/PictureAsPdf';
+import PersonAddAlt1Icon from '@mui/icons-material/PersonAddAlt1';
 import QrCode2Icon from '@mui/icons-material/QrCode2';
 import UsbIcon from '@mui/icons-material/Usb';
 import CheckCircleOutlineIcon from '@mui/icons-material/CheckCircleOutline';
@@ -58,10 +63,28 @@ import { StatCard } from '@/components/StatCard';
 import { useAuth } from '@/hooks/useAuth';
 import { errorMessage } from '@/lib/errors';
 import { formatDateTime, formatPercent } from '@/lib/format';
-import type { BehavioralCategory, CampaignEmployeeResult, DeliveryStatus } from '@/types';
+import type {
+  BehavioralCategory,
+  CampaignEmployeeResult,
+  DeliveryStatus,
+  QRScan,
+} from '@/types';
 
 const REFRESH_INTERVAL_MS = 5000;
 const ACTIVITY_REFRESH_INTERVAL_MS = 10000;
+
+function deviceSummary(scan: QRScan): string {
+  const fp = scan.fingerprint ?? {};
+  const parts: string[] = [];
+  const screen = fp.screen ?? fp.viewport;
+  if (screen) parts.push(String(screen));
+  if (fp.cpu_cores) parts.push(`${fp.cpu_cores} cores`);
+  if (fp.device_memory_gb) parts.push(`${fp.device_memory_gb}GB RAM`);
+  if (fp.timezone) parts.push(String(fp.timezone));
+  if (fp.webgl_renderer) parts.push(String(fp.webgl_renderer).slice(0, 48));
+  if (!parts.length && scan.user_agent) parts.push(scan.user_agent.slice(0, 48));
+  return parts.join(' · ') || '—';
+}
 
 const CATEGORY_META: Record<
   BehavioralCategory,
@@ -199,6 +222,9 @@ export function CampaignDetailPage() {
   const [usbBusy, setUsbBusy] = useState(false);
   const [usbHtmlBusy, setUsbHtmlBusy] = useState(false);
   const [copiedEmployeeId, setCopiedEmployeeId] = useState<string | null>(null);
+  const [assignScan, setAssignScan] = useState<QRScan | null>(null);
+  const [assignEmployeeId, setAssignEmployeeId] = useState('');
+  const [assignBusy, setAssignBusy] = useState(false);
 
   const resultsQuery = useQuery({
     queryKey: ['campaign-results', organizationId, campaignId],
@@ -275,16 +301,37 @@ export function CampaignDetailPage() {
       const url = URL.createObjectURL(blob);
       const anchor = document.createElement('a');
       anchor.href = url;
-      anchor.download = `qr_posters_${campaignId}.pdf`;
+      anchor.download = `campaign-${campaignId}-poster.pdf`;
       document.body.appendChild(anchor);
       anchor.click();
       document.body.removeChild(anchor);
       window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-      toast.success('QR poster pack downloaded');
+      toast.success('Campaign poster downloaded');
     } catch (error) {
       toast.error(errorMessage(error));
     } finally {
       setQrBusy(false);
+    }
+  }
+
+  async function handleAssignScan() {
+    if (!organizationId || !campaignId || !assignScan || !assignEmployeeId) return;
+    setAssignBusy(true);
+    try {
+      const result = await campaignsApi.assignScan(
+        organizationId,
+        campaignId,
+        assignScan.id,
+        assignEmployeeId,
+      );
+      toast.success(result.message || 'تم ربط المسح بالموظف.');
+      setAssignScan(null);
+      setAssignEmployeeId('');
+      await resultsQuery.refetch();
+    } catch (error) {
+      toast.error(errorMessage(error));
+    } finally {
+      setAssignBusy(false);
     }
   }
 
@@ -342,6 +389,7 @@ export function CampaignDetailPage() {
 
   const { campaign, stats } = resultsQuery.data;
   const allEmployees = resultsQuery.data.employees;
+  const scans = resultsQuery.data.scans ?? [];
   const isPhoneChannel = campaign.channel === 'sms' || campaign.channel === 'whatsapp';
   const isQrChannel = campaign.channel === 'qr';
   const isUsbChannel = campaign.channel === 'usb';
@@ -412,7 +460,7 @@ export function CampaignDetailPage() {
                 disabled={qrBusy}
                 aria-busy={qrBusy}
               >
-                {qrBusy ? 'Generating posters…' : 'Download QR Posters'}
+                {qrBusy ? 'Generating poster...' : 'Download Campaign Poster'}
               </Button>
             ) : null}
             {isUsbChannel ? (
@@ -552,6 +600,7 @@ export function CampaignDetailPage() {
         >
           <Tab label={`Recipients (${allEmployees.length})`} />
           <Tab label="Live activity" />
+          {isQrChannel ? <Tab label={`Live scans — الرادار (${scans.length})`} /> : null}
         </Tabs>
 
         {tab === 0 ? (
@@ -762,7 +811,172 @@ export function CampaignDetailPage() {
             ) : null}
           </CardContent>
         ) : null}
+        {tab === 2 && isQrChannel ? (
+          <CardContent>
+            <Stack
+              direction={{ xs: 'column', sm: 'row' }}
+              justifyContent="space-between"
+              alignItems={{ xs: 'stretch', sm: 'center' }}
+              sx={{ mb: 2 }}
+            >
+              <Box>
+                <Typography variant="h3" sx={{ fontSize: '1.05rem' }}>
+                  الرادار — Live scans
+                </Typography>
+                <Typography variant="caption" color="text.secondary">
+                  كل إرسال لنموذج الدخول، بما في ذلك الهويات غير المعروفة · تحديث كل{' '}
+                  {REFRESH_INTERVAL_MS / 1000} ثانية
+                </Typography>
+              </Box>
+              <Chip
+                color={scans.some((scan) => !scan.employee_id) ? 'warning' : 'success'}
+                label={`${scans.filter((scan) => !scan.employee_id).length} غير معروف`}
+              />
+            </Stack>
+            {scans.length === 0 ? (
+              <Typography color="text.secondary" variant="body2">
+                لا توجد مسحات بعد. اطبع الملصقات من زر «Download Campaign Poster» ووزّعها.
+              </Typography>
+            ) : (
+              <TableContainer>
+                <Table size="small">
+                  <TableHead>
+                    <TableRow>
+                      <TableCell>الوقت</TableCell>
+                      <TableCell>الموظف</TableCell>
+                      <TableCell>اسم المستخدم المُدخل</TableCell>
+                      <TableCell>البريد المُدخل</TableCell>
+                      <TableCell>تفاصيل الجهاز</TableCell>
+                      <TableCell>IP</TableCell>
+                      <TableCell align="center">الإجراء</TableCell>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {scans.map((scan) => (
+                      <TableRow key={scan.id} hover>
+                        <TableCell sx={{ fontFamily: 'monospace', whiteSpace: 'nowrap' }}>
+                          {formatDateTime(scan.occurred_at)}
+                        </TableCell>
+                        <TableCell>
+                          {scan.employee_name ? (
+                            <Stack spacing={0.2}>
+                              <Typography variant="body2" sx={{ fontWeight: 700 }}>
+                                {scan.employee_name}
+                              </Typography>
+                              <Typography variant="caption" color="text.secondary">
+                                {scan.identity_resolution === 'manual'
+                                  ? 'ربط يدوي'
+                                  : 'مطابقة تلقائية'}
+                                {scan.penalty_applied ? ' · −25 Elo' : ''}
+                              </Typography>
+                            </Stack>
+                          ) : (
+                            <Chip size="small" color="warning" label="Unknown" />
+                          )}
+                        </TableCell>
+                        <TableCell sx={{ fontFamily: 'monospace' }}>
+                          {scan.username || '—'}
+                        </TableCell>
+                        <TableCell sx={{ fontFamily: 'monospace' }}>
+                          {scan.email || '—'}
+                        </TableCell>
+                        <TableCell>
+                          <Tooltip
+                            title={JSON.stringify(scan.fingerprint ?? {}, null, 2).slice(0, 1200)}
+                          >
+                            <Stack spacing={0.2}>
+                              <Typography variant="caption">{deviceSummary(scan)}</Typography>
+                              {scan.fingerprint_hash ? (
+                                <Typography
+                                  variant="caption"
+                                  color="text.secondary"
+                                  sx={{ fontFamily: 'monospace' }}
+                                >
+                                  #{scan.fingerprint_hash.slice(0, 12)}
+                                </Typography>
+                              ) : null}
+                            </Stack>
+                          </Tooltip>
+                        </TableCell>
+                        <TableCell sx={{ fontFamily: 'monospace' }}>{scan.ip_address || '—'}</TableCell>
+                        <TableCell align="center">
+                          {scan.employee_id ? (
+                            <Tooltip title="مرتبط بموظف">
+                              <CheckIcon fontSize="small" color="success" />
+                            </Tooltip>
+                          ) : (
+                            <Button
+                              size="small"
+                              variant="outlined"
+                              color="warning"
+                              startIcon={<PersonAddAlt1Icon />}
+                              onClick={() => {
+                                setAssignScan(scan);
+                                setAssignEmployeeId('');
+                              }}
+                            >
+                              Assign
+                            </Button>
+                          )}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </TableContainer>
+            )}
+          </CardContent>
+        ) : null}
       </Card>
+
+      <Dialog
+        open={Boolean(assignScan)}
+        onClose={() => (assignBusy ? undefined : setAssignScan(null))}
+        fullWidth
+        maxWidth="sm"
+      >
+        <DialogTitle>ربط المسح بموظف — Assign to employee</DialogTitle>
+        <DialogContent>
+          <Stack spacing={2} sx={{ pt: 1 }}>
+            <Alert severity="info">
+              سيُربط هذا المسح بالموظف المحدد، ويُخصم 25 نقطة Elo مرة واحدة إن لم يكن قد
+              خُصمت سابقاً في هذه الحملة.
+            </Alert>
+            <Box sx={{ fontFamily: 'monospace', fontSize: '0.8rem' }}>
+              <div>username: {assignScan?.username || '—'}</div>
+              <div>email: {assignScan?.email || '—'}</div>
+              <div>device: {assignScan ? deviceSummary(assignScan) : '—'}</div>
+              <div>ip: {assignScan?.ip_address || '—'}</div>
+            </Box>
+            <TextField
+              select
+              fullWidth
+              label="اختر الموظف"
+              value={assignEmployeeId}
+              onChange={(event) => setAssignEmployeeId(event.target.value)}
+            >
+              {allEmployees.map((employee) => (
+                <MenuItem key={employee.employee_id} value={employee.employee_id}>
+                  {employee.name} — {employee.email}
+                </MenuItem>
+              ))}
+            </TextField>
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setAssignScan(null)} disabled={assignBusy}>
+            إلغاء
+          </Button>
+          <Button
+            variant="contained"
+            onClick={() => void handleAssignScan()}
+            disabled={assignBusy || !assignEmployeeId}
+            startIcon={assignBusy ? <CircularProgress size={16} /> : <PersonAddAlt1Icon />}
+          >
+            ربط وتطبيق الخصم
+          </Button>
+        </DialogActions>
+      </Dialog>
 
       <RecipientDossierDialog
         open={Boolean(detailFor)}

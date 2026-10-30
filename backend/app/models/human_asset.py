@@ -29,6 +29,10 @@ class HumanAsset(Base):
         UUIDType, ForeignKey("organizations.id", ondelete="CASCADE"), index=True, nullable=False
     )
     email: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    #: Corporate sign-in name, when different from the e-mail local part.
+    username: Mapped[str | None] = mapped_column(String(150), index=True)
+    #: HR/payroll employee number printed on badges and pay slips.
+    employee_id_external: Mapped[str | None] = mapped_column(String(100), index=True)
     phone: Mapped[str | None] = mapped_column(EncryptedString(64))
     first_name: Mapped[str] = mapped_column(String(100), nullable=False, default="")
     last_name: Mapped[str] = mapped_column(String(100), nullable=False, default="")

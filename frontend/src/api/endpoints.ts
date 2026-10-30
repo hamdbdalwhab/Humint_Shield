@@ -31,6 +31,9 @@ import type {
   LiveBoard,
   Paginated,
   PhishingReport,
+  QRScan,
+  QRSubmissionPayload,
+  QRSubmissionResult,
   RuntimeConfig,
   ReportSafeResponse,
   SimulationChoiceResponse,
@@ -308,6 +311,24 @@ export const campaignsApi = {
     );
     return data as Blob;
   },
+  async scans(orgId: string, id: string): Promise<QRScan[]> {
+    const { data } = await http.get<QRScan[]>(
+      `/api/v1/organizations/${orgId}/email-campaigns/${id}/scans`,
+    );
+    return data;
+  },
+  async assignScan(
+    orgId: string,
+    id: string,
+    scanId: string,
+    employeeId: string,
+  ): Promise<{ success: boolean; message: string; scan: QRScan | null }> {
+    const { data } = await http.post(
+      `/api/v1/organizations/${orgId}/email-campaigns/${id}/scans/${scanId}/assign`,
+      { employee_id: employeeId },
+    );
+    return data;
+  },
   async generateUsbPdf(id: string, employeeId?: string): Promise<Blob> {
     const { data } = await http.post(
       `/api/v1/campaigns/${id}/generate-usb-pdf`,
@@ -417,6 +438,19 @@ export const trackingApi = {
   async context(trackingUuid: string): Promise<TrackingContext> {
     const { data } = await http.get<TrackingContext>(
       `/api/v1/track/context/${trackingUuid}`,
+    );
+    return data;
+  },
+  async qrCampaignContext(campaignId: string): Promise<TrackingContext> {
+    const { data } = await http.get<TrackingContext>(
+      `/api/v1/track/qr/campaign/${campaignId}/context`,
+    );
+    return data;
+  },
+  async submitQr(payload: QRSubmissionPayload): Promise<QRSubmissionResult> {
+    const { data } = await http.post<QRSubmissionResult>(
+      '/api/v1/track/qr/submit',
+      payload,
     );
     return data;
   },

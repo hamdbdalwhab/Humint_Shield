@@ -15,7 +15,7 @@ class EmailTemplateBase(BaseModel):
 
     name: str = Field(min_length=1, max_length=255)
     subject: str = Field(min_length=1, max_length=500)
-    channel: str = Field(default="email", pattern="^(email|sms|whatsapp)$")
+    channel: str = Field(default="email", pattern="^(email|sms|whatsapp|qr)$")
     difficulty_level: int = Field(default=5, ge=1, le=10)
     is_active: bool = True
 
@@ -46,7 +46,7 @@ class EmailTemplateUpdate(BaseModel):
     subject: str | None = Field(default=None, min_length=1, max_length=500)
     body_html: str | None = Field(default=None, min_length=1)
     design_json: EmailDesign | None = None
-    channel: str | None = Field(default=None, pattern="^(email|sms|whatsapp)$")
+    channel: str | None = Field(default=None, pattern="^(email|sms|whatsapp|qr)$")
     difficulty_level: int | None = Field(default=None, ge=1, le=10)
     is_active: bool | None = None
     available_variables: list[str] | None = None
@@ -101,7 +101,7 @@ class TemplateTestSendRequest(BaseModel):
     subject: str = Field(min_length=1, max_length=500)
     body_html: str | None = Field(default=None, min_length=1)
     design_json: EmailDesign | None = None
-    channel: str = Field(default="email", pattern="^(email|sms|whatsapp)$")
+    channel: str = Field(default="email", pattern="^(email|sms|whatsapp|qr)$")
 
     @model_validator(mode="after")
     def _content_required(self) -> "TemplateTestSendRequest":

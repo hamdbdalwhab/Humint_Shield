@@ -143,6 +143,7 @@ def _template(
     body: str,
     difficulty: int,
     variables: list[str],
+    channel: str = "email",
 ) -> dict[str, Any]:
     """Assemble a built-in template definition."""
     return {
@@ -151,6 +152,7 @@ def _template(
         "body_html": _email_shell(body),
         "difficulty_level": difficulty,
         "available_variables": variables,
+        "channel": channel,
     }
 
 
@@ -654,6 +656,71 @@ BUILT_IN_TEMPLATES: list[dict[str, Any]] = [
             + "<p>IT Department · {{company_name}}</p>"
         ),
     ),
+    # ------------------------------------------------------------------ #
+    # Built-in QR/quishing lure templates.  Each one is a printable poster
+    # scenario; the campaign wizard filters templates by channel = 'qr'.
+    # ------------------------------------------------------------------ #
+    _template(
+        name="قهوة مجانية",
+        subject="قهوة مجانية بانتظارك اليوم",
+        difficulty=3,
+        variables=["company_name", "department"],
+        channel="qr",
+        body=(
+            _heading("قهوة مجانية بانتظارك اليوم")
+            + "<p>بمناسبة أسبوع الامتنان، تقدّم كافتيريا الشركة مشروباً ساخناً مجاناً "
+            "لكل موظف. امسح رمز QR الموجود على الملصق لاستلام قسيمتك قبل الساعة "
+            "الثالثة عصراً.</p>"
+        ),
+    ),
+    _template(
+        name="مكافأة مالية",
+        subject="تم اعتماد مكافأة الأداء",
+        difficulty=5,
+        variables=["company_name", "department"],
+        channel="qr",
+        body=(
+            _heading("تم اعتماد مكافأة الأداء")
+            + "<p>يسر الإدارة المالية إبلاغك باعتماد مكافأة الأداء لهذا الربع. امسح رمز "
+            "QR للتحقق من بياناتك وتأكيد استلام المكافأة قبل إغلاق دورة الرواتب.</p>"
+        ),
+    ),
+    _template(
+        name="ترشيح لأفضل موظف",
+        subject="ترشيحك لأفضل موظف هذا الشهر",
+        difficulty=4,
+        variables=["company_name", "department"],
+        channel="qr",
+        body=(
+            _heading("ترشيحك لأفضل موظف")
+            + "<p>تم ترشيحك ضمن قائمة أفضل الموظفين لهذا الشهر. امسح رمز QR للاطلاع "
+            "على تفاصيل الترشيح وتأكيد قبولك قبل إعلان النتائج.</p>"
+        ),
+    ),
+    _template(
+        name="تحديث بيانات HR",
+        subject="تحديث بيانات الموظف مطلوب",
+        difficulty=4,
+        variables=["company_name", "department"],
+        channel="qr",
+        body=(
+            _heading("تحديث بيانات الموظف مطلوب")
+            + "<p>يتطلب نظام الموارد البشرية تحديث بياناتك الشخصية وبيانات الاتصال. "
+            "امسح رمز QR لإكمال التحديث قبل نهاية الأسبوع لتجنّب تعليق الخدمات.</p>"
+        ),
+    ),
+    _template(
+        name="شبكة الواي فاي",
+        subject="دخول سريع إلى شبكة الشركة",
+        difficulty=3,
+        variables=["company_name", "department"],
+        channel="qr",
+        body=(
+            _heading("دخول سريع إلى شبكة الشركة")
+            + "<p>شبكة Wi-Fi للزوار تتطلب تسجيل الدخول مرة واحدة على الأجهزة الجديدة. "
+            "امسح رمز QR لتفعيل الاتصال بالإنترنت داخل مبنى الإدارة.</p>"
+        ),
+    ),
     _ms365_template(),
     _hr_portal_template(),
     _ceo_template(),
@@ -761,6 +828,8 @@ async def seed_builtin_templates(db: AsyncSession, organization_id) -> int:
                 current.difficulty_level = definition["difficulty_level"]
                 current.available_variables = list(definition["available_variables"])
                 upgraded += 1
+            if definition.get("channel") and current.channel != definition["channel"]:
+                current.channel = definition["channel"]
             if not current.design_json:
                 current.design_json = legacy_design_payload(current.body_html)
             continue
@@ -773,6 +842,7 @@ async def seed_builtin_templates(db: AsyncSession, organization_id) -> int:
                 design_json=legacy_design_payload(definition["body_html"]),
                 difficulty_level=definition["difficulty_level"],
                 available_variables=list(definition["available_variables"]),
+                channel=definition.get("channel", "email"),
                 is_built_in=True,
                 is_active=True,
             )

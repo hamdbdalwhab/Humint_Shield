@@ -26,6 +26,8 @@ from app.models import (
     User,
 )
 from app.schemas import (
+    QRSubmissionRequest,
+    QRSubmissionResponse,
     ReportSafeResponse,
     SimulationChoiceRequest,
     SimulationChoiceResponse,
@@ -37,6 +39,7 @@ from app.schemas import (
 from app.services.attack_chain import build_compromised_assets
 from app.services.email_design import branding_from_organization
 from app.services.elo_engine import threat_level_for_elo
+from app.services.quishing_service import normalize_lure_type, resolve_poster_copy
 from app.services.template_service import TRANSPARENT_GIF
 from app.services.tracking_service import TrackingService
 
@@ -120,6 +123,33 @@ async def track_context(
         sender_name = "IT Service Desk"
 
     branding = branding_from_organization(organization, get_settings().base_url)
+    qr_branding: dict[str, object] | None = None
+    if channel == "qr":
+        poster = resolve_poster_copy(
+            config,
+            company_name=organization.name,
+            department="",
+            primary_color=branding.primary_color,
+            logo=organization.brand_logo_data,
+        )
+        qr_branding = {
+            "lure_type": poster.lure_type,
+            "company_name": poster.company_name,
+            "department": poster.department,
+            "month_label": poster.month_label,
+            "label": poster.label,
+            "headline": poster.headline,
+            "body": poster.body,
+            "cta": poster.cta,
+            "primary_color": poster.primary_color,
+            "accent_color": poster.accent_color,
+            "logo_url": (
+                config.get("qr", {}).get("logo_data_url")
+                if isinstance(config.get("qr"), dict)
+                else None
+            )
+            or branding.logo_url,
+        }
     return {
         "found": True,
         "first_name": employee.first_name or "",
@@ -130,12 +160,14 @@ async def track_context(
         "subject": (template.subject if template is not None else "Security notification"),
         "sender_name": sender_name,
         "campaign_name": campaign.name,
+        "campaign_id": str(campaign.id),
         "channel": channel,
         "channel_config": config,
         "skin": skin,
         "credential_provider": skin,
         "brand_primary_color": branding.primary_color,
         "brand_logo_url": branding.logo_url,
+        "qr_branding": qr_branding,
         "form_submitted": tracking.submitted_at is not None,
         "already_completed": tracking.completed_at is not None,
         "quiz_score": tracking.quiz_score,
@@ -533,35 +565,206 @@ async def track_visit(
     return TrainingInteractionResponse(success=True, message="Visit recorded.")
 
 
+@router.post(
+    "/qr/submit",
+    response_model=QRSubmissionResponse,
+    summary="Record a QR/quishing credential submission and resolve identity",
+)
+async def track_qr_submit(
+    payload: QRSubmissionRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> QRSubmissionResponse:
+    """Record a quishing form submission.
+
+    The typed password is never accepted into storage: the request schema
+    ignores it and only ``password_submitted`` is retained.  The entered
+    username/e-mail are matched against ``human_assets`` (e-mail first, then
+    username/employee number) and the once-only -25 Elo penalty is applied.
+    Unknown identities are stored as an Unknown scan with their device
+    fingerprint so an administrator can assign them later.
+    """
+    try:
+        result = await TrackingService().submit_qr_scan(
+            db,
+            campaign_id=payload.campaign_id,
+            username=payload.username,
+            email=payload.email,
+            password_submitted=bool(payload.password_submitted),
+            fields=payload.fields,
+            fingerprint_data=payload.fingerprint_data,
+            ip_address=_client_ip(request),
+            user_agent=request.headers.get("user-agent"),
+            tracking_uuid=payload.tracking_uuid,
+        )
+        if result is None:
+            await db.rollback()
+            return QRSubmissionResponse(
+                success=False, message="Campaign or tracking link not found"
+            )
+        await db.commit()
+    except ValueError as exc:
+        await db.rollback()
+        return QRSubmissionResponse(success=False, message=str(exc))
+    except Exception as exc:  # noqa: BLE001 - never break the landing page
+        await db.rollback()
+        logger.error("track_qr_submit_failed", error=str(exc))
+        return QRSubmissionResponse(
+            success=False, message="Unable to record the submission"
+        )
+
+    employee = result.employee
+    return QRSubmissionResponse(
+        success=True,
+        first_time=result.first_time,
+        unknown=employee is None,
+        message=(
+            "بياناتك قيد المراجعة."
+            if employee is None
+            else "تم التحقق من بياناتك بنجاح."
+        ),
+        identity_resolution=result.identity_resolution,
+        resolved_employee_id=employee.id if employee is not None else None,
+        resolved_employee_name=employee.full_name if employee is not None else None,
+        tracking_uuid=(
+            result.tracking.tracking_uuid if result.tracking is not None else None
+        ),
+        elo_delta=result.elo_delta,
+        elo_score=(
+            int(employee.elo_score) if employee is not None and employee.elo_score is not None else None
+        ),
+    )
+
+
+def _qr_branding_payload(
+    config: dict, organization: Organization
+) -> dict[str, object]:
+    """Resolve the public QR branding payload for a campaign/organization."""
+    branding = branding_from_organization(organization, get_settings().base_url)
+    poster = resolve_poster_copy(
+        config,
+        company_name=organization.name,
+        department="",
+        primary_color=branding.primary_color,
+        logo=organization.brand_logo_data,
+    )
+    qr_config = config.get("qr")
+    logo_data_url = (
+        qr_config.get("logo_data_url") if isinstance(qr_config, dict) else None
+    )
+    return {
+        "lure_type": poster.lure_type,
+        "company_name": poster.company_name,
+        "department": poster.department,
+        "month_label": poster.month_label,
+        "label": poster.label,
+        "headline": poster.headline,
+        "body": poster.body,
+        "cta": poster.cta,
+        "primary_color": poster.primary_color,
+        "accent_color": poster.accent_color,
+        "logo_url": logo_data_url or branding.logo_url,
+    }
+
+
+@router.get(
+    "/qr/campaign/{campaign_id}/context",
+    summary="Public context for a generic QR campaign poster",
+)
+async def qr_campaign_context(
+    campaign_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, object]:
+    """Return the branding/lure context for a generic (no-recipient) poster.
+
+    The campaign UUID is printed on the poster, so it is public by design.  No
+    employee data is ever returned.
+    """
+    if not _valid_uuid(campaign_id):
+        return {"found": False}
+    campaign = await db.get(EmailCampaign, uuid.UUID(campaign_id))
+    if campaign is None or (campaign.channel or "").strip().lower() != "qr":
+        return {"found": False}
+    organization = await db.get(Organization, campaign.organization_id)
+    if organization is None:  # pragma: no cover - FK guarantees existence
+        return {"found": False}
+    config = campaign.channel_config or {}
+    branding = branding_from_organization(organization, get_settings().base_url)
+    return {
+        "found": True,
+        "campaign_id": str(campaign.id),
+        "campaign_name": campaign.name,
+        "company_name": organization.name,
+        "channel": "qr",
+        "channel_config": config,
+        "qr_branding": _qr_branding_payload(config, organization),
+        "brand_primary_color": branding.primary_color,
+        "brand_logo_url": branding.logo_url,
+    }
+
+
 @router.get(
     "/qr/{tracking_uuid}",
-    summary="Quishing scan tracker (302 to the simulated mobile sign-in page)",
+    summary="Quishing scan tracker (302 to the matching lure landing page)",
 )
 async def track_qr_scan(
     tracking_uuid: str,
     request: Request,
     db: AsyncSession = Depends(get_db),
 ) -> RedirectResponse:
-    """Log a QR scan and redirect to the mobile sign-in simulation.
+    """Log a QR scan and redirect to the lure-specific mobile sign-in page.
 
-    The scan itself is score-neutral.  The quishing failure penalty (-25 Elo)
-    is applied exactly once when the recipient submits the credential form via
-    ``POST /track/submit/{tracking_uuid}``.
+    The printed poster encodes either a generic campaign id (new behaviour) or
+    a legacy per-recipient tracking UUID.  Campaign ids redirect to
+    ``/qr/{lure}/c/{campaign_id}``; legacy UUIDs keep the old
+    ``/qr/{lure}/{tracking_uuid}`` route.  Scans are score-neutral; the -25 Elo
+    penalty is applied once on form submission.
     """
     settings = get_settings()
+    base_url = settings.base_url.rstrip("/")
+    lure_type = "hr"
+    target_suffix = f"/qr/{lure_type}/{tracking_uuid}"
+
     if _valid_uuid(tracking_uuid):
-        try:
-            await TrackingService().log_qr_scan(
-                tracking_uuid,
-                _client_ip(request),
-                request.headers.get("user-agent"),
-                db,
+        identifier = uuid.UUID(tracking_uuid)
+        campaign = await db.get(EmailCampaign, identifier)
+        if campaign is not None and (campaign.channel or "").strip().lower() == "qr":
+            config = campaign.channel_config or {}
+            qr_config = config.get("qr")
+            qr_values = dict(qr_config) if isinstance(qr_config, dict) else {}
+            lure_type = normalize_lure_type(
+                qr_values.get("lure_type") or qr_values.get("pretext_key")
             )
-            await db.commit()
-        except Exception as exc:  # noqa: BLE001 - redirect regardless
-            await db.rollback()
-            logger.error("track_qr_failed", tracking_uuid=tracking_uuid, error=str(exc))
-    target = f"{settings.base_url.rstrip('/')}/simulation/qr/{tracking_uuid}"
+            target_suffix = f"/qr/{lure_type}/c/{campaign.id}"
+        else:
+            try:
+                row = await TrackingService().log_qr_scan(
+                    tracking_uuid,
+                    _client_ip(request),
+                    request.headers.get("user-agent"),
+                    db,
+                )
+                await db.commit()
+                if row is not None:
+                    campaign = await db.get(EmailCampaign, row.campaign_id)
+                    config = (
+                        campaign.channel_config if campaign is not None else None
+                    ) or {}
+                    qr_config = config.get("qr")
+                    qr_values = (
+                        dict(qr_config) if isinstance(qr_config, dict) else {}
+                    )
+                    lure_type = normalize_lure_type(
+                        qr_values.get("lure_type") or qr_values.get("pretext_key")
+                    )
+                    target_suffix = f"/qr/{lure_type}/{tracking_uuid}"
+            except Exception as exc:  # noqa: BLE001 - redirect regardless
+                await db.rollback()
+                logger.error(
+                    "track_qr_failed", tracking_uuid=tracking_uuid, error=str(exc)
+                )
+
+    target = f"{base_url}{target_suffix}"
     return RedirectResponse(url=target, status_code=status.HTTP_302_FOUND, headers=NO_CACHE_HEADERS)
 
 

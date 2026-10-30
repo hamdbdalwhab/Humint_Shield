@@ -45,7 +45,12 @@ if (Test-Port 8000) {
     Write-Host '[backend ] already listening on :8000 - skipped' -ForegroundColor Yellow
 } else {
     Write-Host '[backend ] starting uvicorn ...' -ForegroundColor Green
-    Start-Process -FilePath 'py' `
+    $pythonExe = if (Test-Path (Join-Path $backend '.venv\Scripts\python.exe')) {
+        Join-Path $backend '.venv\Scripts\python.exe'
+    } else {
+        'py'
+    }
+    Start-Process -FilePath $pythonExe `
         -ArgumentList '-m', 'uvicorn', 'app.main:app', '--host', '127.0.0.1', '--port', '8000' `
         -WorkingDirectory $backend
 }
@@ -81,7 +86,7 @@ if ($Tunnel) {
     } else {
         Write-Host '[tunnel  ] opening public quick tunnel ...' -ForegroundColor Green
         Start-Process -FilePath $Cloudflared `
-            -ArgumentList 'tunnel', '--url', 'http://localhost:8000', '--no-autoupdate' `
+            -ArgumentList 'tunnel', '--url', 'http://127.0.0.1:8000', '--no-autoupdate' `
             -WorkingDirectory $root
         Write-Host '[tunnel  ] read the https://<random>.trycloudflare.com address from the new window' -ForegroundColor Yellow
         Write-Host '[tunnel  ] then put it in backend\.env as BASE_URL and restart the backend' -ForegroundColor Yellow

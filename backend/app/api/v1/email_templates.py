@@ -60,7 +60,7 @@ async def list_templates(
     org_id: uuid.UUID,
     search: str | None = Query(None, max_length=200),
     is_active: bool | None = Query(None),
-    channel: str | None = Query(None, pattern="^(email|sms|whatsapp)$"),
+    channel: str | None = Query(None, pattern="^(email|sms|whatsapp|qr)$"),
     db: AsyncSession = Depends(get_db),
     organization=Depends(get_organization_or_404),
     user: User = Depends(get_current_user),
@@ -71,7 +71,7 @@ async def list_templates(
         org_id: Organization id.
         search: Optional case-insensitive filter on name/subject.
         is_active: Optional active-flag filter.
-        channel: Optional channel filter (email/sms/whatsapp).
+        channel: Optional channel filter (email/sms/whatsapp/qr).
         db: Active session.
         organization: Resolved organization.
         user: Authenticated user.
@@ -233,6 +233,7 @@ async def update_template(
     "/{template_id}",
     status_code=status.HTTP_204_NO_CONTENT,
     summary="Delete a custom email template",
+    response_model=None,
 )
 async def delete_template(
     org_id: uuid.UUID,

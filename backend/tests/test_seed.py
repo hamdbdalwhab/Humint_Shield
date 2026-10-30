@@ -16,7 +16,7 @@ from app.services.seed import (
 
 async def test_eight_builtin_templates_defined() -> None:
     """Exactly thirteen built-in templates are defined."""
-    assert len(BUILT_IN_TEMPLATES) == 13
+    assert len(BUILT_IN_TEMPLATES) == 18
 
 
 async def test_required_templates_present() -> None:
@@ -31,14 +31,23 @@ async def test_required_templates_present() -> None:
         "Employee Bonus Announcement",
         "Emergency Meeting Notice",
         "Mandatory Software Update",
+        "قهوة مجانية",
+        "مكافأة مالية",
+        "ترشيح لأفضل موظف",
+        "تحديث بيانات HR",
+        "شبكة الواي فاي",
     }
     assert required <= names
-    assert len(names) == 13
+    assert len(names) == 18
 
 
 async def test_every_template_has_tracking_link() -> None:
     """Every built-in template contains a tracked call to action."""
     for template in BUILT_IN_TEMPLATES:
+        if template.get("channel") == "qr":
+            # QR lures are printed posters; they contain no tracking link.
+            assert template["subject"]
+            continue
         assert "{{tracking_url}}" in template["body_html"]
         assert template["subject"]
         assert 1 <= template["difficulty_level"] <= 10
@@ -52,12 +61,12 @@ async def test_seed_builtin_templates_is_idempotent(
     await db.commit()
     second = await seed_builtin_templates(db, organization.id)
     await db.commit()
-    assert first == 13
+    assert first == 18
     assert second == 0
     count = await db.scalar(
         select(func.count(EmailTemplate.id)).where(EmailTemplate.organization_id == organization.id)
     )
-    assert count == 13
+    assert count == 18
 
 
 async def test_seed_training_modules_idempotent(
@@ -108,7 +117,7 @@ async def test_phone_is_encrypted_at_rest(
 async def test_ensure_bootstrap_data_creates_everything(db: AsyncSession) -> None:
     """Bootstrap creates the org, admin, templates and modules."""
     summary = await ensure_bootstrap_data(db)
-    assert summary["templates_created"] == 13
+    assert summary["templates_created"] == 18
     assert summary["modules_created"] == 4
 
     org_count = await db.scalar(select(func.count(Organization.id)))
@@ -117,7 +126,7 @@ async def test_ensure_bootstrap_data_creates_everything(db: AsyncSession) -> Non
     module_count = await db.scalar(select(func.count(TrainingModule.id)))
     assert org_count == 1
     assert user_count == 1
-    assert template_count == 13
+    assert template_count == 18
     assert module_count == 4
 
 

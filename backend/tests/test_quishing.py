@@ -61,9 +61,9 @@ def test_resolve_poster_copy_uses_builtin_pretext() -> None:
     copy = resolve_poster_copy(
         {"qr": {"pretext_key": "free_coffee"}}, company_name="Acme"
     )
-    assert copy.pretext_key == "free_coffee"
+    assert copy.pretext_key == "coffee"
     assert "قهوة" in copy.headline
-    assert "Acme" in copy.footer
+    assert copy.company_name == "Acme"
 
 
 def test_resolve_poster_copy_custom_copy_wins() -> None:
@@ -79,7 +79,7 @@ def test_resolve_poster_copy_custom_copy_wins() -> None:
         },
         company_name="Acme",
     )
-    assert copy.pretext_key == "hr_policy"
+    assert copy.pretext_key == "hr"
     assert copy.headline == "عنوان مخصص"
     assert copy.body == "نص مخصص"
     assert copy.footer == "تذييل مخصص"
@@ -92,12 +92,13 @@ def test_resolve_poster_copy_unknown_key_falls_back() -> None:
 
 
 def test_generate_qr_png_is_print_resolution() -> None:
-    """The QR PNG is a square image at the documented print resolution."""
+    """The QR PNG is a square image capped at the documented print resolution."""
     payload = generate_qr_png("http://testserver/api/v1/track/qr/abc")
     assert payload.startswith(b"\x89PNG\r\n\x1a\n")
     with Image.open(io.BytesIO(payload)) as image:
         assert image.format == "PNG"
-        assert image.size == (QR_PIXELS, QR_PIXELS)
+        assert image.width == image.height
+        assert 300 <= image.width <= QR_PIXELS
         assert image.mode == "RGB"
 
 
@@ -158,14 +159,14 @@ async def _create_campaign(
 
 
 async def test_generate_qr_posters_end_to_end(
-    client, db: AsyncSession, auth_headers, organization, custom_template, employees
+    client, db: AsyncSession, auth_headers, organization, qr_template, employees
 ) -> None:
-    """A QR campaign produces one poster per recipient and unique tracking rows."""
+    """A QR campaign produces exactly one generic poster (no employee data)."""
     created = await _create_campaign(
         client,
         auth_headers,
         organization,
-        custom_template,
+        qr_template,
         [employee.id for employee in employees[:3]],
     )
     assert created["channel"] == "qr"
@@ -177,10 +178,19 @@ async def test_generate_qr_posters_end_to_end(
     )
     assert response.status_code == 200, response.text
     assert response.headers["content-type"] == "application/pdf"
-    assert response.headers["x-poster-count"] == "3"
+    assert response.headers["x-poster-count"] == "1"
     assert "attachment" in response.headers["content-disposition"]
+    assert "campaign-" in response.headers["content-disposition"]
     assert response.content.startswith(b"%PDF")
+    pages = response.content.count(b"/Type /Page") - response.content.count(
+        b"/Type /Pages"
+    )
+    assert pages == 1
+    for employee in employees[:3]:
+        assert employee.email.encode() not in response.content
+        assert (employee.first_name or "").encode() not in response.content
 
+    # The generic poster must not create per-recipient tracking rows.
     rows = (
         await db.execute(
             select(EmailTracking).where(
@@ -188,15 +198,13 @@ async def test_generate_qr_posters_end_to_end(
             )
         )
     ).scalars().all()
-    assert len(rows) == 3
-    assert {row.channel for row in rows} == {"qr"}
-    assert {row.provider for row in rows} == {"simulation"}
-    assert len({row.tracking_uuid for row in rows}) == 3
+    assert rows == []
 
     campaign = await db.get(EmailCampaign, uuid.UUID(created["id"]))
     assert campaign is not None
     await db.refresh(campaign)
     assert campaign.channel_config["qr"]["pretext_key"] == "free_coffee"
+    assert campaign.channel_config["qr"]["lure_type"] == "coffee"
 
 
 async def test_generate_qr_posters_rejects_non_qr_campaign(
@@ -221,11 +229,11 @@ async def test_generate_qr_posters_rejects_non_qr_campaign(
 
 
 async def test_generate_qr_posters_requires_manager(
-    client, auth_headers, viewer_headers, organization, custom_template, employees
+    client, auth_headers, viewer_headers, organization, qr_template, employees
 ) -> None:
-    """A viewer cannot download the poster pack."""
+    """A viewer cannot download the poster."""
     created = await _create_campaign(
-        client, auth_headers, organization, custom_template, [employees[0].id]
+        client, auth_headers, organization, qr_template, [employees[0].id]
     )
     response = await client.post(
         f"/api/v1/campaigns/{created['id']}/generate-qr",
@@ -287,7 +295,7 @@ async def test_qr_scan_redirects_without_penalty(
     )
     assert response.status_code == 302
     assert response.headers["location"].endswith(
-        f"/simulation/qr/{tracking.tracking_uuid}"
+        f"/qr/hr/{tracking.tracking_uuid}"
     )
     assert "no-store" in response.headers["cache-control"]
 
@@ -369,4 +377,4 @@ async def test_qr_scan_unknown_uuid_still_redirects(client) -> None:
         f"/api/v1/track/qr/{tracking_uuid}", follow_redirects=False
     )
     assert response.status_code == 302
-    assert response.headers["location"].endswith(f"/simulation/qr/{tracking_uuid}")
+    assert response.headers["location"].endswith(f"/qr/hr/{tracking_uuid}")

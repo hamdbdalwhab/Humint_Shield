@@ -15,12 +15,14 @@ text.
 from __future__ import annotations
 
 import json
+import hashlib
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
@@ -30,6 +32,7 @@ from app.models import (
     EmailTracking,
     HumanAsset,
     PhishingReport,
+    QRScan,
     TrainingInteraction,
 )
 from app.security import EncryptionError, decrypt_value, encrypt_value
@@ -101,6 +104,30 @@ EVENT_USB_OPENED = "usb_opened"
 EVENT_CREDENTIAL_DISCLOSED = "credential_disclosed"
 EVENT_FINANCIAL_FRAUD = "financial_fraud"
 EVENT_REPORTED_PHISH = "reported_phish"
+EVENT_QR_IDENTITY_ASSIGNED = "qr_identity_assigned"
+
+#: Identity resolution outcomes stored on tracking rows and QR scans.
+IDENTITY_MATCHED_EMAIL = "matched_email"
+IDENTITY_MATCHED_USERNAME = "matched_username"
+IDENTITY_UNKNOWN = "unknown"
+IDENTITY_MANUAL = "manual"
+
+
+@dataclass(slots=True)
+class QRSubmissionResult:
+    """Result of one QR/quishing credential submission.
+
+    ``tracking`` is ``None`` for a campaign-level scan whose entered identity
+    could not be linked to an existing recipient row.  ``scan`` is always the
+    :class:`QRScan` ledger row used by the admin Live scans table.
+    """
+
+    scan: QRScan
+    tracking: EmailTracking | None
+    employee: HumanAsset | None
+    identity_resolution: str
+    elo_delta: int
+    first_time: bool
 
 
 def sanitize_submitted_fields(fields: object) -> dict[str, str]:
@@ -774,6 +801,402 @@ class TrackingService:
             elo_delta=elo_delta,
         )
         return row
+
+    # ------------------------------------------------------------------ #
+    # QR/quishing identity resolution and Live scans
+    # ------------------------------------------------------------------ #
+    async def resolve_qr_identity(
+        self,
+        db: AsyncSession,
+        organization_id: uuid.UUID,
+        *,
+        email: str | None,
+        username: str | None,
+    ) -> tuple[HumanAsset | None, str]:
+        """Resolve the identity entered on a QR portal.
+
+        The contract is deliberately deterministic: e-mail wins, then the
+        username/employee number.  Both lookups are case-insensitive and scoped
+        to the campaign's organization.
+        """
+        email_normalized = (email or "").strip().lower()
+        if email_normalized:
+            employee = await db.scalar(
+                select(HumanAsset)
+                .where(
+                    HumanAsset.organization_id == organization_id,
+                    func.lower(HumanAsset.email) == email_normalized,
+                )
+                .order_by(HumanAsset.created_at.asc())
+                .limit(1)
+            )
+            if employee is not None:
+                return employee, IDENTITY_MATCHED_EMAIL
+
+        username_normalized = (username or "").strip().lower()
+        if username_normalized:
+            employee = await db.scalar(
+                select(HumanAsset)
+                .where(
+                    HumanAsset.organization_id == organization_id,
+                    or_(
+                        func.lower(func.coalesce(HumanAsset.username, ""))
+                        == username_normalized,
+                        func.lower(func.coalesce(HumanAsset.employee_id_external, ""))
+                        == username_normalized,
+                    ),
+                )
+                .order_by(HumanAsset.created_at.asc())
+                .limit(1)
+            )
+            if employee is not None:
+                return employee, IDENTITY_MATCHED_USERNAME
+
+        return None, IDENTITY_UNKNOWN
+
+    async def submit_qr_scan(
+        self,
+        db: AsyncSession,
+        *,
+        campaign_id: uuid.UUID,
+        username: str,
+        email: str,
+        password_submitted: bool,
+        fields: dict[str, str] | None,
+        fingerprint_data: dict[str, Any] | None,
+        ip_address: str | None,
+        user_agent: str | None,
+        tracking_uuid: uuid.UUID | str | None = None,
+        client: dict[str, Any] | None = None,
+    ) -> QRSubmissionResult | None:
+        """Record a QR form submission, resolve its identity and apply -25 once.
+
+        A tracking UUID is optional.  When present (the normal per-recipient
+        poster flow), the matching tracking row is updated and the event is
+        written to the interaction ledger.  When absent (a campaign-level QR
+        link), the matching employee's tracking row is reused if one exists;
+        otherwise the scan is still stored as an Unknown scan in ``qr_scans`` so
+        an administrator can inspect the entered values and assign it later.
+
+        The password value is never accepted by this method; only the
+        ``password_submitted`` boolean reaches storage.
+        """
+        campaign = await db.get(EmailCampaign, campaign_id)
+        if campaign is None:
+            return None
+        channel = (campaign.channel or "email").strip().lower()
+        if channel != "qr":
+            raise ValueError("QR submissions are only valid for qr campaigns")
+
+        row: EmailTracking | None = None
+        if tracking_uuid:
+            uid = self._coerce_uuid(tracking_uuid)
+            if uid is None:
+                return None
+            row = await self._locked_tracking(db, EmailTracking.tracking_uuid, uid)
+            if row is None:
+                return None
+            if row.campaign_id != campaign.id:
+                raise ValueError("tracking link does not belong to this campaign")
+            if (row.channel or "").strip().lower() != "qr":
+                raise ValueError("tracking link does not belong to a qr campaign")
+
+        employee, resolution = await self.resolve_qr_identity(
+            db,
+            campaign.organization_id,
+            email=email,
+            username=username,
+        )
+
+        # Campaign-level links have no tracking UUID in the path.  Reuse the
+        # resolved employee's existing recipient row when the launcher created
+        # one; unknown visitors continue without a tracking row.
+        if row is None and employee is not None:
+            row = await db.scalar(
+                select(EmailTracking).where(
+                    EmailTracking.campaign_id == campaign.id,
+                    EmailTracking.employee_id == employee.id,
+                )
+            )
+            if row is not None and self._supports_for_update(db):
+                row = await self._locked_tracking(db, EmailTracking.id, row.id)
+            if row is not None and (row.channel or "").strip().lower() != "qr":
+                row = None
+
+        now = _now()
+        first_time = row is not None and row.submitted_at is None
+        # Deterministic SHA-256 over the canonical device evidence.  Stored
+        # inside the fingerprint payload so the admin radar can group repeat
+        # devices without ever exposing the raw canvas/WebGL strings.
+        fingerprint_payload: dict[str, Any] = (
+            dict(fingerprint_data) if isinstance(fingerprint_data, dict) else {}
+        )
+        if fingerprint_payload:
+            canonical = json.dumps(
+                fingerprint_payload,
+                sort_keys=True,
+                separators=(",", ":"),
+                default=str,
+            )
+            fingerprint_payload["fingerprint_hash"] = hashlib.sha256(
+                canonical.encode("utf-8")
+            ).hexdigest()
+        scan = QRScan(
+            organization_id=campaign.organization_id,
+            campaign_id=campaign.id,
+            tracking_id=row.id if row is not None else None,
+            employee_id=employee.id if employee is not None else None,
+            username=username.strip()[:150] or None,
+            email=email.strip().lower()[:255] or None,
+            password_submitted=bool(password_submitted),
+            identity_resolution=resolution,
+            fingerprint_data=fingerprint_payload or None,
+            ip_address=ip_address,
+            user_agent=(user_agent or None) and user_agent[:2000],
+            occurred_at=now,
+        )
+        db.add(scan)
+
+        # Do not persist secret-looking form fields.  The password value is not
+        # passed into this method at all; this guard covers a malicious client
+        # that puts a password into ``fields``.
+        safe_fields = sanitize_submitted_fields(fields or {})
+        safe_fields.update(
+            {
+                "username": username.strip()[:MAX_FIELD_VALUE_LENGTH],
+                "email": email.strip().lower()[:MAX_FIELD_VALUE_LENGTH],
+                "password_submitted": "true" if password_submitted else "false",
+            }
+        )
+        client_context: dict[str, Any] = {}
+        if fingerprint_payload:
+            client_context.update(fingerprint_payload)
+        if isinstance(client, dict):
+            client_context.update(client)
+
+        elo_delta = 0
+        penalty_applied = False
+        if row is not None:
+            row.submission_count = (row.submission_count or 0) + 1
+            if first_time:
+                row.submitted_at = now
+            row.submitted_identifier = (email.strip().lower() or username.strip())[:255] or None
+            row.submitted_username = username.strip()[:150] or None
+            row.submitted_email = email.strip().lower()[:255] or None
+            row.password_submitted = bool(password_submitted)
+            # The new QR flow records a boolean only, never a length.
+            row.password_length = None
+            row.identity_resolution = resolution
+            row.identity_resolved_employee_id = employee.id if employee is not None else None
+            row.submitted_fields = safe_fields
+            row.submitted_payload_encrypted = encrypt_payload(safe_fields)
+            row.submitted_password_encrypted = None
+            row.client_context = client_context or None
+            row.last_ip_address = ip_address or row.last_ip_address
+            row.last_user_agent = (user_agent or row.last_user_agent or "")[:2000] or None
+            await self._ensure_visit(db, row, now)
+
+            if first_time and employee is not None and not row.qr_penalty_applied:
+                employee.total_credential_submissions = (
+                    employee.total_credential_submissions or 0
+                ) + 1
+                employee.last_test_date = now
+                employee.elo_score = apply_elo_delta(
+                    employee.elo_score, QR_CREDENTIAL_ELO_DELTA
+                )
+                row.qr_penalty_applied = True
+                penalty_applied = True
+                elo_delta = QR_CREDENTIAL_ELO_DELTA
+
+            self._record_interaction(
+                db,
+                row,
+                EVENT_CREDENTIAL_SUBMITTED,
+                now,
+                ip_address,
+                user_agent,
+                {
+                    "channel": "qr",
+                    "submission_count": row.submission_count,
+                    "field_names": sorted(safe_fields.keys()),
+                    "password_submitted": bool(password_submitted),
+                    "password_length": None,
+                    "password_stored": False,
+                    "identity_resolution": resolution,
+                    "resolved_employee_id": (
+                        str(employee.id) if employee is not None else None
+                    ),
+                    "resolved_employee_name": (
+                        employee.full_name if employee is not None else None
+                    ),
+                    "submitted_username": row.submitted_username,
+                    "submitted_email": row.submitted_email,
+                    "elo_delta": elo_delta,
+                    "qr_scan_id": str(scan.id),
+                    "client": client_context,
+                },
+                payload_encrypted=row.submitted_payload_encrypted,
+            )
+        elif employee is not None:
+            # There is no tracking row, but the entered identity is known.  The
+            # penalty is still tied to the employee, once per campaign.
+            prior_penalty = await db.scalar(
+                select(QRScan.id)
+                .where(
+                    QRScan.campaign_id == campaign.id,
+                    QRScan.employee_id == employee.id,
+                    QRScan.penalty_applied.is_(True),
+                )
+                .limit(1)
+            )
+            if prior_penalty is None:
+                employee.total_credential_submissions = (
+                    employee.total_credential_submissions or 0
+                ) + 1
+                employee.last_test_date = now
+                employee.elo_score = apply_elo_delta(
+                    employee.elo_score, QR_CREDENTIAL_ELO_DELTA
+                )
+                penalty_applied = True
+                elo_delta = QR_CREDENTIAL_ELO_DELTA
+
+        scan.elo_delta = elo_delta
+        scan.penalty_applied = penalty_applied
+
+        if employee is not None and (first_time or row is None) and penalty_applied:
+            await db.flush()
+            await self._classify(employee.id, db)
+
+        await db.flush()
+        logger.info(
+            "qr_credential_submitted",
+            tracking_uuid=str(row.tracking_uuid) if row is not None else None,
+            campaign_id=str(campaign.id),
+            scan_id=str(scan.id),
+            identity_resolution=resolution,
+            resolved_employee_id=str(employee.id) if employee is not None else None,
+            password_submitted=bool(password_submitted),
+            first_time=first_time,
+            elo_delta=elo_delta,
+        )
+        return QRSubmissionResult(
+            scan=scan,
+            tracking=row,
+            employee=employee,
+            identity_resolution=resolution,
+            elo_delta=elo_delta,
+            first_time=first_time,
+        )
+
+    async def assign_qr_scan(
+        self,
+        scan_id: uuid.UUID,
+        employee_id: uuid.UUID,
+        db: AsyncSession,
+        *,
+        actor: str = "administrator",
+        ip_address: str | None = None,
+        user_agent: str | None = None,
+    ) -> tuple[QRScan, HumanAsset, bool] | None:
+        """Manually link an unmatched scan to an employee.
+
+        The once-only -25 QR penalty is applied to the assigned employee when
+        no earlier scan in the same campaign already applied it.  Reassigning a
+        scan never reverses or duplicates an existing penalty.
+        """
+        scan = await db.get(QRScan, scan_id)
+        if scan is None:
+            return None
+        campaign = await db.get(EmailCampaign, scan.campaign_id)
+        employee = await db.get(HumanAsset, employee_id)
+        if campaign is None or employee is None:
+            return None
+        if employee.organization_id != campaign.organization_id:
+            raise ValueError("employee belongs to another organization")
+
+        penalty_applied = False
+        elo_delta = 0
+        if not scan.penalty_applied:
+            prior_penalty = await db.scalar(
+                select(QRScan.id)
+                .where(
+                    QRScan.campaign_id == scan.campaign_id,
+                    QRScan.employee_id == employee.id,
+                    QRScan.penalty_applied.is_(True),
+                    QRScan.id != scan.id,
+                )
+                .limit(1)
+            )
+            if prior_penalty is None:
+                employee.total_credential_submissions = (
+                    employee.total_credential_submissions or 0
+                ) + 1
+                employee.last_test_date = scan.occurred_at or _now()
+                employee.elo_score = apply_elo_delta(
+                    employee.elo_score, QR_CREDENTIAL_ELO_DELTA
+                )
+                penalty_applied = True
+                elo_delta = QR_CREDENTIAL_ELO_DELTA
+                await db.flush()
+                await self._classify(employee.id, db)
+
+        scan.employee_id = employee.id
+        scan.identity_resolution = IDENTITY_MANUAL
+        if penalty_applied:
+            scan.penalty_applied = True
+            scan.elo_delta = elo_delta
+
+        tracking: EmailTracking | None = None
+        if scan.tracking_id is not None:
+            tracking = await db.get(EmailTracking, scan.tracking_id)
+        if tracking is None:
+            tracking = await db.scalar(
+                select(EmailTracking).where(
+                    EmailTracking.campaign_id == scan.campaign_id,
+                    EmailTracking.employee_id == employee.id,
+                )
+            )
+            if tracking is not None:
+                scan.tracking_id = tracking.id
+
+        if tracking is not None:
+            tracking.identity_resolution = IDENTITY_MANUAL
+            tracking.identity_resolved_employee_id = employee.id
+            tracking.submitted_username = (
+                tracking.submitted_username or scan.username
+            )
+            tracking.submitted_email = tracking.submitted_email or scan.email
+            if tracking.submitted_at is None:
+                tracking.submitted_at = scan.occurred_at
+                tracking.submission_count = max(1, tracking.submission_count or 0)
+                tracking.password_submitted = scan.password_submitted
+            if penalty_applied:
+                tracking.qr_penalty_applied = True
+            self._record_interaction(
+                db,
+                tracking,
+                EVENT_QR_IDENTITY_ASSIGNED,
+                _now(),
+                ip_address,
+                user_agent,
+                {
+                    "scan_id": str(scan.id),
+                    "employee_id": str(employee.id),
+                    "employee_name": employee.full_name,
+                    "actor": actor,
+                    "elo_delta": elo_delta,
+                },
+            )
+
+        await db.flush()
+        logger.info(
+            "qr_scan_assigned",
+            scan_id=str(scan.id),
+            employee_id=str(employee.id),
+            actor=actor,
+            penalty_applied=penalty_applied,
+        )
+        return scan, employee, penalty_applied
 
     async def log_simulation_report(
         self,

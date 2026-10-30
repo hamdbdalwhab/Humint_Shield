@@ -9,13 +9,13 @@ from app.models import Organization
 async def test_list_builtin_templates(
     client, auth_headers, organization, builtin_templates
 ) -> None:
-    """The thirteen built-in templates are listed."""
+    """The eighteen built-in templates are listed."""
     response = await client.get(
         f"/api/v1/organizations/{organization.id}/email-templates", headers=auth_headers
     )
     assert response.status_code == 200
     templates = response.json()
-    assert len(templates) == 13
+    assert len(templates) == 18
     assert all(template["is_built_in"] for template in templates)
     names = {template["name"] for template in templates}
     assert "Urgent Password Change" in names

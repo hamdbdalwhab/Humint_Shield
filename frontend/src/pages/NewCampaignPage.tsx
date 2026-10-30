@@ -53,7 +53,7 @@ import { PageHeader } from '@/components/PageHeader';
 import { useAuth } from '@/hooks/useAuth';
 import { errorMessage } from '@/lib/errors';
 import { formatDateTime } from '@/lib/format';
-import type { Employee } from '@/types';
+import type { Employee, QrLureType } from '@/types';
 
 const STEPS = ['التفاصيل', 'المستهدفون', 'المراجعة'];
 
@@ -69,26 +69,39 @@ const CHANNEL_LABELS: Record<WizardChannel, string> = {
   usb: 'فلاشة USB — HTML/PDF توعوي (توزيع يدوي)',
 };
 
-const QR_PRECEPTS: { value: string; label: string; hint: string }[] = [
+const QR_TEMPLATE_LURES: Record<string, string> = {
+  'قهوة مجانية': 'coffee',
+  'مكافأة مالية': 'bonus',
+  'ترشيح لأفضل موظف': 'nomination',
+  'تحديث بيانات HR': 'hr',
+  'شبكة الواي فاي': 'wifi',
+};
+
+const QR_LURES: { value: string; label: string; hint: string }[] = [
   {
-    value: 'it_security',
-    label: 'تحديث أمني إلزامي',
-    hint: 'انتحال فريق أمن المعلومات وطلب إعادة التحقق خلال 24 ساعة.',
+    value: 'coffee',
+    label: 'قهوة مجانية — Free Coffee',
+    hint: 'قسيمة مشروب مجاني من كافتيريا الشركة. مناسبة للأماكن المشتركة.',
   },
   {
-    value: 'hr_policy',
-    label: 'سياسة الموارد البشرية',
-    hint: 'انتحال الموارد البشرية وتحديث سياسة العمل عن بُعد.',
+    value: 'bonus',
+    label: 'مكافأة مالية — Salary Raise / Bonus',
+    hint: 'إقرار مكافأة أداء من الإدارة المالية مع طلب تأكيد البيانات.',
   },
   {
-    value: 'finance_bonus',
-    label: 'مكافأة مالية',
-    hint: 'انتحال الإدارة المالية وإقرار مكافأة ربع سنوية.',
+    value: 'nomination',
+    label: 'ترشيح لأفضل موظف — Top Employee',
+    hint: 'ترشيح شهري رسمي. يتطلب تحديد الشهر الظاهر على الملصق.',
   },
   {
-    value: 'free_coffee',
-    label: 'قهوة مجانية',
-    hint: 'عرض ترفيهي من كافتيريا الشركة — الأكثر فاعلية في اختبارات USB/QR.',
+    value: 'hr',
+    label: 'تحديث بيانات الموارد البشرية — HR Update',
+    hint: 'بوابة الموارد البشرية تطلب تحديث بيانات الموظف.',
+  },
+  {
+    value: 'wifi',
+    label: 'تسجيل دخول الواي فاي — Wi-Fi Access',
+    hint: 'بوابة شبكة ضيوف تتطلب التحقق من الهوية مرة واحدة.',
   },
 ];
 
@@ -114,7 +127,14 @@ export function NewCampaignPage() {
   const [step, setStep] = useState(0);
   const [name, setName] = useState('');
   const [channel, setChannel] = useState<WizardChannel>('email');
-  const [qrPretext, setQrPretext] = useState('it_security');
+  const [qrPretext, setQrPretext] = useState('hr');
+  const [qrCompany, setQrCompany] = useState('');
+  const [qrDepartment, setQrDepartment] = useState('');
+  const [qrMonth, setQrMonth] = useState('');
+  const [qrPrimary, setQrPrimary] = useState('#0F6CBD');
+  const [qrAccent, setQrAccent] = useState('#1F3A5F');
+  const [qrLogo, setQrLogo] = useState<string>('');
+  const [qrLogoError, setQrLogoError] = useState<string | null>(null);
   const [templateId, setTemplateId] = useState('');
   const [difficulty, setDifficulty] = useState(5);
   const [selected, setSelected] = useState<Map<string, Employee>>(new Map());
@@ -129,10 +149,31 @@ export function NewCampaignPage() {
   const quickSendRef = useRef(false);
   const [launchError, setLaunchError] = useState<string | null>(null);
 
+  function handleQrLogo(file: File | null): void {
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      setQrLogoError('اختر ملف صورة (PNG أو JPG أو SVG).');
+      return;
+    }
+    if (file.size > 1_500_000) {
+      setQrLogoError('حجم الشعار يجب أن يكون أقل من 1.5 ميغابايت.');
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      setQrLogo(String(reader.result ?? ''));
+      setQrLogoError(null);
+    };
+    reader.onerror = () => setQrLogoError('تعذّر قراءة ملف الشعار.');
+    reader.readAsDataURL(file);
+  }
+
   const templateChannel =
-    channel === 'qr' || channel === 'usb' || channel === 'vishing' || channel === 'pretexting'
-      ? 'email'
-      : channel;
+    channel === 'qr'
+      ? 'qr'
+      : channel === 'usb' || channel === 'vishing' || channel === 'pretexting'
+        ? 'email'
+        : channel;
 
   const templatesQuery = useQuery({
     queryKey: ['templates', organizationId, templateChannel],
@@ -187,6 +228,22 @@ export function NewCampaignPage() {
     if (firstTemplate) setTemplateId(firstTemplate.id);
   }, [preselectId, templateId, templatesQuery.data]);
 
+  // QR campaigns only offer QR templates; select the first one automatically
+  // so the operator sees a valid scenario immediately after switching channel.
+  useEffect(() => {
+    if (channel !== 'qr' || templateId) return;
+    const firstTemplate = templatesQuery.data?.[0];
+    if (firstTemplate) setTemplateId(firstTemplate.id);
+  }, [channel, templateId, templatesQuery.data]);
+
+  // Keep the QR lure builder in sync with the selected built-in QR template.
+  useEffect(() => {
+    if (channel !== 'qr' || !templateId) return;
+    const template = templatesQuery.data?.find((item) => item.id === templateId);
+    const lure = template ? QR_TEMPLATE_LURES[template.name] : undefined;
+    if (lure) setQrPretext(lure);
+  }, [channel, templateId, templatesQuery.data]);
+
   useEffect(() => {
     if (!preselectId || quickSendRef.current) return;
     if (!name || !templateId || !preselectQuery.data) return;
@@ -216,10 +273,23 @@ export function NewCampaignPage() {
   const launchMutation = useMutation({
     mutationFn: async () => {
       if (!organizationId) throw new Error('No organization');
+      if (channel === 'qr' && !qrCompany.trim()) {
+        throw new Error('اسم الشركة مطلوب لإنشاء ملصق QR.');
+      }
       const targets = Array.from(selected.keys());
       const channelConfig =
         channel === 'qr'
-          ? { qr: { pretext_key: qrPretext } }
+          ? {
+              qr: {
+                lure_type: qrPretext as QrLureType,
+                company_name: qrCompany.trim(),
+                department: qrDepartment.trim(),
+                month_label: qrPretext === 'nomination' ? qrMonth : '',
+                primary_color: qrPrimary,
+                accent_color: qrAccent,
+                logo_data_url: qrLogo || undefined,
+              },
+            }
           : channel === 'vishing'
             ? {
                 vishing: {
@@ -491,7 +561,7 @@ export function NewCampaignPage() {
                 }}
                 helperText={
                   isQrChannel
-                    ? 'حملة QR لا ترسل رسائل: بعد الإطلاق تُنزّل ملف PDF به ملصق لكل موظف، برمز فريد ورابط تتبع إلى صفحة دخول الجوال. القالب يُستخدم كمرجع للسيناريو فقط.'
+                    ? 'حملة QR لا ترسل رسائل: بعد الإطلاق تُنزّل ملصقاً واحداً (PDF) يحمل رمز QR عاماً للحملة. اطبع نسخة واحدة وعلّقها في الموقع المستهدف. القالب يُستخدم كمرجع للطُعم فقط.'
                     : isUsbChannel
                       ? 'حملة USB لا ترسل رسائل: بعد الإطلاق تُنزّل ملف HTML آمن باسم الرواتب_السرية.html، وتنسخه على فلاشات مصرّح بها. كل ملف يحمل رابط تتبع فريداً. القالب يُستخدم كمرجع للسيناريو فقط.'
                       : isVishingChannel || isPretextingChannel
@@ -524,23 +594,140 @@ export function NewCampaignPage() {
                 </Alert>
               ) : null}
               {isQrChannel ? (
-                <TextField
-                  select
-                  label="سيناريو الملصق"
-                  fullWidth
-                  value={qrPretext}
-                  onChange={(event) => setQrPretext(event.target.value)}
-                  helperText={
-                    QR_PRECEPTS.find((pretext) => pretext.value === qrPretext)?.hint ??
-                    'اختر القصة التي ستظهر على الملصق المطبوع.'
-                  }
+                <Box
+                  sx={{
+                    p: 2,
+                    borderRadius: 2,
+                    border: '1px solid',
+                    borderColor: 'divider',
+                    bgcolor: 'action.hover',
+                  }}
                 >
-                  {QR_PRECEPTS.map((pretext) => (
-                    <MenuItem key={pretext.value} value={pretext.value}>
-                      {pretext.label}
-                    </MenuItem>
-                  ))}
-                </TextField>
+                  <Typography variant="subtitle1" sx={{ fontWeight: 800, mb: 1.5 }}>
+                    إعداد الطُعم — Lure Builder
+                  </Typography>
+                  <Stack spacing={1.8}>
+                    <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5}>
+                      <TextField
+                        required
+                        fullWidth
+                        size="small"
+                        label="اسم الشركة"
+                        value={qrCompany}
+                        onChange={(event) => setQrCompany(event.target.value)}
+                        placeholder="مثال: شركة النور للتجارة"
+                      />
+                      <TextField
+                        fullWidth
+                        size="small"
+                        label="القسم المستهدف (اختياري)"
+                        value={qrDepartment}
+                        onChange={(event) => setQrDepartment(event.target.value)}
+                        placeholder="مثال: الموارد البشرية"
+                      />
+                    </Stack>
+                    <TextField
+                      select
+                      required
+                      fullWidth
+                      size="small"
+                      label="نوع الطُعم — Lure Type"
+                      value={qrPretext}
+                      onChange={(event) => setQrPretext(event.target.value)}
+                      helperText={
+                        QR_LURES.find((lure) => lure.value === qrPretext)?.hint ??
+                        'اختر القصة التي ستظهر على الملصق المطبوع.'
+                      }
+                    >
+                      {QR_LURES.map((lure) => (
+                        <MenuItem key={lure.value} value={lure.value}>
+                          {lure.label}
+                        </MenuItem>
+                      ))}
+                    </TextField>
+                    {qrPretext === 'nomination' ? (
+                      <TextField
+                        required
+                        fullWidth
+                        size="small"
+                        type="month"
+                        label="شهر الترشيح"
+                        value={qrMonth}
+                        onChange={(event) => setQrMonth(event.target.value)}
+                        InputLabelProps={{ shrink: true }}
+                        helperText="يظهر الشهر على الملصق وفي صفحة الترشيح."
+                      />
+                    ) : null}
+                    <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5}>
+                      <TextField
+                        fullWidth
+                        size="small"
+                        type="color"
+                        label="اللون الأساسي"
+                        value={qrPrimary}
+                        onChange={(event) => setQrPrimary(event.target.value)}
+                        InputLabelProps={{ shrink: true }}
+                      />
+                      <TextField
+                        fullWidth
+                        size="small"
+                        type="color"
+                        label="اللون الثانوي"
+                        value={qrAccent}
+                        onChange={(event) => setQrAccent(event.target.value)}
+                        InputLabelProps={{ shrink: true }}
+                      />
+                    </Stack>
+                    <Box
+                      onDragOver={(event) => event.preventDefault()}
+                      onDrop={(event) => {
+                        event.preventDefault();
+                        handleQrLogo(event.dataTransfer.files?.[0] ?? null);
+                      }}
+                      sx={{
+                        p: 2,
+                        borderRadius: 2,
+                        border: '1px dashed',
+                        borderColor: 'divider',
+                        textAlign: 'center',
+                        cursor: 'pointer',
+                      }}
+                      component="label"
+                    >
+                      <input
+                        hidden
+                        type="file"
+                        accept="image/png,image/jpeg,image/svg+xml,image/webp"
+                        onChange={(event) => handleQrLogo(event.target.files?.[0] ?? null)}
+                      />
+                      {qrLogo ? (
+                        <Stack spacing={1} alignItems="center">
+                          <Box
+                            component="img"
+                            src={qrLogo}
+                            alt="شعار الشركة"
+                            sx={{ maxHeight: 64, maxWidth: 180, objectFit: 'contain' }}
+                          />
+                          <Button
+                            size="small"
+                            color="error"
+                            onClick={(event) => {
+                              event.preventDefault();
+                              setQrLogo('');
+                            }}
+                          >
+                            إزالة الشعار
+                          </Button>
+                        </Stack>
+                      ) : (
+                        <Typography variant="body2" color="text.secondary">
+                          اسحب شعار الشركة هنا أو اضغط للاختيار (PNG / JPG / SVG — حتى 1.5MB)
+                        </Typography>
+                      )}
+                    </Box>
+                    {qrLogoError ? <Alert severity="error">{qrLogoError}</Alert> : null}
+                  </Stack>
+                </Box>
               ) : null}
               <TextField
                 select
@@ -552,7 +739,11 @@ export function NewCampaignPage() {
                   const nextId = event.target.value as string;
                   setTemplateId(nextId);
                   const template = templatesQuery.data?.find((item) => item.id === nextId);
-                  if (template) setDifficulty(template.difficulty_level);
+                  if (template) {
+                    setDifficulty(template.difficulty_level);
+                    const lure = QR_TEMPLATE_LURES[template.name];
+                    if (lure) setQrPretext(lure);
+                  }
                 }}
                 disabled={templatesQuery.isLoading}
                 helperText={
@@ -562,9 +753,11 @@ export function NewCampaignPage() {
                       : channel === 'email'
                         ? 'لا توجد قوالب بريد نشطة — أنشئ قالباً من صفحة القوالب أولاً.'
                         : `لا توجد قوالب ${channel === 'sms' ? 'SMS' : 'واتساب'} نشطة — أنشئ قالباً من صفحة القوالب واختر القناة الصحيحة.`
-                    : isManualChannel
-                      ? 'قالب البريد يُستخدم كمرجع للسيناريو فقط؛ لا تُرسل أي رسالة بريد في هذه الحملة.'
-                      : 'القالب يحدد قصة المرسل والموضوع ونص الرسالة.'
+                    : channel === 'qr'
+                      ? 'قالب QR يُستخدم كمرجع للطُعم والسيناريو فقط؛ لا تُرسل أي رسالة.'
+                      : isManualChannel
+                        ? 'قالب البريد يُستخدم كمرجع للسيناريو فقط؛ لا تُرسل أي رسالة بريد في هذه الحملة.'
+                        : 'القالب يحدد قصة المرسل والموضوع ونص الرسالة.'
                 }
               >
                 {(templatesQuery.data ?? []).map((template) => (
@@ -1038,11 +1231,11 @@ export function NewCampaignPage() {
 
               {isQrChannel ? (
                 <Alert severity="info">
-                  سيتم تجهيز <strong>{selected.size} ملصق QR</strong> بسيناريو «
-                  {QR_PRECEPTS.find((pretext) => pretext.value === qrPretext)?.label}». كل ملصق
-                  يحمل رمزاً فريداً يفتح صفحة المحاكاة مباشرة؛ المسح لا يخصم نقاطاً، وأول إرسال
-                  لبيانات الدخول يخصم 25 نقطة Elo ثم يحوّل الموظف إلى صفحة الاختراق فالتدريب.
-                  نزّل ملف PDF من صفحة الحملة بعد الإطلاق.
+                  سيتم تجهيز <strong>{selected.size} ملصق QR</strong> بطُعم «
+                  {QR_LURES.find((lure) => lure.value === qrPretext)?.label}» لصالح{' '}
+                  <strong>{qrCompany || 'الشركة'}</strong>. كل ملصق يحمل رمزاً فريداً يفتح
+                  صفحة الدخول المطابقة للطُعم؛ المسح لا يخصم نقاطاً، وأول إرسال لبيانات
+                  الدخول يخصم 25 نقطة Elo. كلمة المرور لا تُخزَّن أبداً.
                 </Alert>
               ) : isUsbChannel ? (
                 <Alert severity="info">

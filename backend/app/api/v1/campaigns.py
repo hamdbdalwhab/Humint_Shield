@@ -18,7 +18,9 @@ from app.models import (
     SIMULATION_CHANNELS,
     EmailCampaign,
     EmailTemplate,
+    EmailTracking,
     HumanAsset,
+    QRScan,
     User,
 )
 from app.schemas import (
@@ -31,11 +33,15 @@ from app.schemas import (
     LaunchFailure,
     LaunchResult,
     LiveBoard,
+    QRScanAssignRequest,
+    QRScanAssignResponse,
+    QRScanPublic,
 )
 from app.services.brevo_email_service import BrevoEmailService
 from app.services.campaign_launcher import CampaignLaunchError, CampaignLauncher
 from app.services.interaction_report import InteractionReportService
 from app.services.live_board import LiveBoardService
+from app.services.tracking_service import TrackingService
 from app.services.vonage_service import is_e164_phone
 
 logger = get_logger(__name__)
@@ -60,6 +66,158 @@ async def _get_campaign(
     return campaign
 
 
+async def _qr_scan_public_rows(
+    db: AsyncSession, campaign: EmailCampaign
+) -> list[QRScanPublic]:
+    """Load the campaign's QR scans and resolve display names in two queries."""
+    scans = (
+        await db.execute(
+            select(QRScan)
+            .where(QRScan.campaign_id == campaign.id)
+            .order_by(QRScan.occurred_at.desc())
+        )
+    ).scalars().all()
+    if not scans:
+        return []
+
+    tracking_ids = [scan.tracking_id for scan in scans if scan.tracking_id]
+    tracking_by_id: dict[uuid.UUID, EmailTracking] = {}
+    if tracking_ids:
+        rows = (
+            await db.execute(
+                select(EmailTracking).where(EmailTracking.id.in_(tracking_ids))
+            )
+        ).scalars().all()
+        tracking_by_id = {row.id: row for row in rows}
+
+    employee_ids = {
+        employee_id
+        for employee_id in [
+            *(scan.employee_id for scan in scans),
+            *(
+                tracking_by_id[scan.tracking_id].employee_id
+                for scan in scans
+                if scan.tracking_id and scan.tracking_id in tracking_by_id
+            ),
+        ]
+        if employee_id
+    }
+    employees: dict[uuid.UUID, HumanAsset] = {}
+    if employee_ids:
+        rows = (
+            await db.execute(
+                select(HumanAsset).where(HumanAsset.id.in_(employee_ids))
+            )
+        ).scalars().all()
+        employees = {row.id: row for row in rows}
+
+    result: list[QRScanPublic] = []
+    for scan in scans:
+        tracking = tracking_by_id.get(scan.tracking_id) if scan.tracking_id else None
+        employee = employees.get(scan.employee_id) if scan.employee_id else None
+        source = employees.get(tracking.employee_id) if tracking is not None else None
+        fingerprint = scan.fingerprint_data if isinstance(scan.fingerprint_data, dict) else {}
+        result.append(
+            QRScanPublic(
+                id=scan.id,
+                campaign_id=scan.campaign_id,
+                tracking_id=scan.tracking_id,
+                tracking_uuid=tracking.tracking_uuid if tracking is not None else None,
+                source_employee_id=source.id if source is not None else None,
+                source_employee_name=source.full_name if source is not None else None,
+                source_employee_email=source.email if source is not None else None,
+                employee_id=scan.employee_id,
+                employee_name=employee.full_name if employee is not None else None,
+                employee_email=employee.email if employee is not None else None,
+                username=scan.username,
+                email=scan.email,
+                password_submitted=bool(scan.password_submitted),
+                identity_resolution=scan.identity_resolution or "unknown",
+                occurred_at=scan.occurred_at,
+                ip_address=scan.ip_address,
+                user_agent=scan.user_agent,
+                fingerprint=fingerprint,
+                fingerprint_hash=fingerprint.get("fingerprint_hash"),
+                elo_delta=scan.elo_delta or 0,
+                penalty_applied=bool(scan.penalty_applied),
+            )
+        )
+    return result
+
+
+@router.get(
+    "/{campaign_id}/scans",
+    response_model=list[QRScanPublic],
+    summary="QR campaign live scans (the Radar)",
+)
+async def campaign_qr_scans(
+    org_id: uuid.UUID,
+    campaign_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    organization=Depends(get_organization_or_404),
+    user: User = Depends(get_current_user),
+) -> list[QRScanPublic]:
+    """Return every QR form submission, including unknown identities."""
+    campaign = await _get_campaign(db, org_id, campaign_id)
+    return await _qr_scan_public_rows(db, campaign)
+
+
+@router.post(
+    "/{campaign_id}/scans/{scan_id}/assign",
+    response_model=QRScanAssignResponse,
+    summary="Assign an unknown QR scan to an employee",
+)
+async def assign_campaign_qr_scan(
+    org_id: uuid.UUID,
+    campaign_id: uuid.UUID,
+    scan_id: uuid.UUID,
+    payload: QRScanAssignRequest,
+    db: AsyncSession = Depends(get_db),
+    organization=Depends(get_organization_or_404),
+    user: User = Depends(require_roles("admin", "manager")),
+) -> QRScanAssignResponse:
+    """Manually link an Unknown scan and apply the once-only -25 Elo penalty."""
+    campaign = await _get_campaign(db, org_id, campaign_id)
+    scan = await db.get(QRScan, scan_id)
+    if scan is None or scan.campaign_id != campaign.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Scan not found")
+    employee = await db.get(HumanAsset, payload.employee_id)
+    if employee is None or employee.organization_id != org_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found"
+        )
+    try:
+        result = await TrackingService().assign_qr_scan(
+            scan.id,
+            employee.id,
+            db,
+            actor=user.username or "administrator",
+            ip_address=None,
+            user_agent=None,
+        )
+        if result is None:
+            await db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Scan not found"
+            )
+        await db.commit()
+    except ValueError as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
+
+    refreshed = await _qr_scan_public_rows(db, campaign)
+    scan_public = next((row for row in refreshed if row.id == scan_id), None)
+    return QRScanAssignResponse(
+        success=True,
+        message="تم ربط المسح بالموظف وتطبيق خصم Elo عند الحاجة.",
+        scan=scan_public,
+        elo_score=int(employee.elo_score) if employee.elo_score is not None else None,
+        elo_delta=scan_public.elo_delta if scan_public is not None else 0,
+    )
+
+
 async def _validate_template(
     db: AsyncSession,
     org_id: uuid.UUID,
@@ -78,8 +236,21 @@ async def _validate_template(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Template is not active"
         )
+    if channel == "qr":
+        # QR campaigns use a dedicated, printable lure template.  They must
+        # never silently reuse an email template.
+        template_channel = template.channel or "email"
+        if template_channel != "qr":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "QR campaigns require a QR template; "
+                    f"template channel is '{template_channel}'"
+                ),
+            )
+        return template
     if channel in SIMULATION_CHANNELS:
-        # QR/vishing/pretexting reuse an active email template as their
+        # Vishing/pretexting/USB reuse an active email template as their
         # scenario reference; they do not deliver through the email provider.
         return template
     if (template.channel or "email") != channel:
@@ -287,7 +458,10 @@ async def update_campaign(
 
 
 @router.delete(
-    "/{campaign_id}", status_code=status.HTTP_204_NO_CONTENT, summary="Delete a draft campaign"
+    "/{campaign_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Delete a draft campaign",
+    response_model=None,
 )
 async def delete_campaign(
     org_id: uuid.UUID,
@@ -461,6 +635,7 @@ async def campaign_results(
         campaign=CampaignPublic.model_validate(data["campaign"]),
         stats=data["stats"],
         employees=data["employees"],
+        scans=await _qr_scan_public_rows(db, campaign),
     )
 
 

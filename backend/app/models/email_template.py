@@ -19,9 +19,9 @@ DEFAULT_VARIABLES = [
 ]
 
 #: Channels supported by the unified campaign schema. ``sms`` and ``whatsapp``
-#: are reserved for the Vonage transport; sending is intentionally blocked until
-#: that provider is configured.
-CHANNELS = ("email", "sms", "whatsapp")
+#: are reserved for the Vonage transport; ``qr`` templates carry the printed
+#: quishing lure (one generic poster per campaign) and are never emailed.
+CHANNELS = ("email", "sms", "whatsapp", "qr")
 DEFAULT_CHANNEL = "email"
 
 

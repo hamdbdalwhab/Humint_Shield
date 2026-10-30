@@ -335,16 +335,86 @@ export interface AIGeneratedTemplate {
   model?: string;
 }
 
+export type QrLureType = 'coffee' | 'bonus' | 'nomination' | 'hr' | 'wifi';
+
+export interface QrBranding {
+  lure_type: QrLureType;
+  company_name: string;
+  department: string;
+  month_label: string;
+  label: string;
+  headline: string;
+  body: string;
+  cta: string;
+  primary_color: string;
+  accent_color: string;
+  logo_url: string | null;
+}
+
+export interface QRScan {
+  id: string;
+  campaign_id: string;
+  tracking_id: string | null;
+  tracking_uuid: string | null;
+  source_employee_id: string | null;
+  source_employee_name: string | null;
+  source_employee_email: string | null;
+  employee_id: string | null;
+  employee_name: string | null;
+  employee_email: string | null;
+  username: string | null;
+  email: string | null;
+  password_submitted: boolean;
+  identity_resolution: string;
+  occurred_at: string;
+  ip_address: string | null;
+  user_agent: string | null;
+  fingerprint: Record<string, unknown>;
+  fingerprint_hash: string | null;
+  elo_delta: number;
+  penalty_applied: boolean;
+}
+
+export interface QRSubmissionPayload {
+  campaign_id: string;
+  tracking_uuid?: string;
+  username: string;
+  email: string;
+  password_submitted: boolean;
+  fingerprint_data: Record<string, unknown>;
+  fields?: Record<string, string>;
+}
+
+export interface QRSubmissionResult {
+  success: boolean;
+  first_time: boolean;
+  unknown: boolean;
+  message: string;
+  identity_resolution: string | null;
+  resolved_employee_id: string | null;
+  resolved_employee_name: string | null;
+  tracking_uuid: string | null;
+  elo_delta: number;
+  elo_score: number | null;
+}
+
 export interface CampaignChannelConfig {
   /** Credential-page skin used by the email landing page. */
   credential_provider?: CredentialProvider;
-  /** Quishing poster copy and built-in Arabic pretext key. */
+  /** Quishing poster copy, lure type and branding. */
   qr?: {
     pretext_key?: string;
+    lure_type?: QrLureType;
     headline?: string;
     body?: string;
     footer?: string;
     label?: string;
+    company_name?: string;
+    department?: string;
+    month_label?: string;
+    primary_color?: string;
+    accent_color?: string;
+    logo_data_url?: string;
   };
   /** Optional vishing scenario copy; the fixed training script is used when absent. */
   vishing?: {
@@ -469,6 +539,8 @@ export interface CampaignResults {
   campaign: Campaign;
   stats: CampaignStats;
   employees: CampaignEmployeeResult[];
+  /** QR campaigns only: every form submission, including Unknown scans. */
+  scans?: QRScan[];
 }
 
 /** Live-board funnel status: the engagement funnel plus the form-render stage. */
@@ -834,8 +906,11 @@ export interface TrackingContext {
   subject?: string;
   sender_name?: string;
   campaign_name?: string;
+  campaign_id?: string;
   channel?: CampaignChannel;
   channel_config?: CampaignChannelConfig | null;
+  /** Resolved lure/branding for the QR landing page. */
+  qr_branding?: QrBranding | null;
   skin?: CredentialProvider;
   credential_provider?: CredentialProvider;
   brand_primary_color?: string;

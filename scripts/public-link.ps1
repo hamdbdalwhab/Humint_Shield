@@ -101,7 +101,12 @@ function Restart-Backend() {
     Write-Step 'starting backend ...'
     # The output must go to files: a detached child that inherits this script's
     # stdout would keep the caller's pipe open and make the script look stuck.
-    Start-Process -FilePath 'py' `
+    $pythonExe = if (Test-Path (Join-Path $backend '.venv\Scripts\python.exe')) {
+        Join-Path $backend '.venv\Scripts\python.exe'
+    } else {
+        'py'
+    }
+    Start-Process -FilePath $pythonExe `
         -ArgumentList '-m', 'uvicorn', 'app.main:app', '--host', '127.0.0.1', '--port', '8000' `
         -WorkingDirectory $backend `
         -RedirectStandardOutput (Join-Path $root '.backend.out.log') `
@@ -137,7 +142,7 @@ if (Test-Path $logFile) { Remove-Item $logFile -Force }
 
 Write-Step 'opening a free quick tunnel ...'
 Start-Process -FilePath $exe `
-    -ArgumentList 'tunnel', '--url', 'http://localhost:8000', '--no-autoupdate' `
+    -ArgumentList 'tunnel', '--url', 'http://127.0.0.1:8000', '--no-autoupdate' `
     -RedirectStandardError $logFile `
     -RedirectStandardOutput (Join-Path $root '.tunnel.out.log') `
     -WindowStyle Hidden

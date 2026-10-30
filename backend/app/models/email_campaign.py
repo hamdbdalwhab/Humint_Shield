@@ -143,6 +143,29 @@ class EmailTracking(Base):
     submission_count: Mapped[int] = mapped_column(Integer, default=0)
     #: Whatever identifier the recipient typed (usually their work email).
     submitted_identifier: Mapped[str | None] = mapped_column(String(255))
+    #: Identity values entered on the QR landing form.  Unlike the legacy
+    #: ``submitted_identifier`` these are kept separately because the portal
+    #: now asks for both a username/employee number and a corporate e-mail.
+    submitted_username: Mapped[str | None] = mapped_column(String(150))
+    submitted_email: Mapped[str | None] = mapped_column(String(255))
+    #: True when a password was typed.  The value itself is never stored for
+    #: QR/quishing rows.
+    password_submitted: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="0", nullable=False
+    )
+    #: How the entered identity was matched to an employee: ``matched_email``,
+    #: ``matched_username``, ``manual`` or ``unknown``.
+    identity_resolution: Mapped[str | None] = mapped_column(String(30))
+    #: Employee resolved from the values entered on the QR form.  This is kept
+    #: separately from ``employee_id`` (the recipient whose poster was scanned)
+    #: because someone can scan another person's poster.
+    identity_resolved_employee_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUIDType, index=True
+    )
+    #: Whether the once-only -25 quishing penalty has been applied.
+    qr_penalty_applied: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="0", nullable=False
+    )
     #: Non-secret form fields exactly as entered (kept for quick display/CSV).
     submitted_fields: Mapped[dict | None] = mapped_column(JSONBType)
     #: Length of the password that was typed.
@@ -298,3 +321,62 @@ class TrainingInteraction(Base):
 
     def __repr__(self) -> str:  # pragma: no cover - debug helper
         return f"<TrainingInteraction {self.event_type!r} at={self.occurred_at!r}>"
+
+
+class QRScan(Base):
+    """One credential-form submission from a QR/quishing landing page.
+
+    This is the canonical "Live scans" record for QR campaigns.  Unlike the
+    legacy :class:`EmailTracking` row it can exist without a pre-created
+    recipient row, which lets a campaign-level QR link still record an
+    unmatched ("Unknown scan") attempt for an administrator to assign later.
+
+    No secret is ever stored here.  ``password_submitted`` is a boolean only.
+    """
+
+    __tablename__ = "qr_scans"
+    __table_args__ = (
+        Index("ix_qr_scans_campaign_time", "campaign_id", "occurred_at"),
+        Index("ix_qr_scans_employee_time", "employee_id", "occurred_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUIDType, primary_key=True, default=generate_uuid)
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUIDType, ForeignKey("organizations.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    campaign_id: Mapped[uuid.UUID] = mapped_column(
+        UUIDType, ForeignKey("campaigns.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    #: The recipient tracking row whose poster/QR was used, when one exists.
+    tracking_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUIDType, ForeignKey("tracking_events.id", ondelete="SET NULL"), index=True
+    )
+    #: The employee resolved from the entered e-mail/username, or an employee
+    #: assigned manually by an administrator.
+    employee_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUIDType, ForeignKey("human_assets.id", ondelete="SET NULL"), index=True
+    )
+    username: Mapped[str | None] = mapped_column(String(150))
+    email: Mapped[str | None] = mapped_column(String(255))
+    password_submitted: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="0", nullable=False
+    )
+    #: ``matched_email``, ``matched_username``, ``manual`` or ``unknown``.
+    identity_resolution: Mapped[str] = mapped_column(
+        String(30), default="unknown", server_default="unknown", nullable=False
+    )
+    #: Browser evidence such as screen size, timezone and submission delay.
+    fingerprint_data: Mapped[dict | None] = mapped_column(JSONBType)
+    #: The -25 Elo delta, recorded once per employee/campaign.
+    elo_delta: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    penalty_applied: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="0", nullable=False
+    )
+    ip_address: Mapped[str | None] = mapped_column(INETType)
+    user_agent: Mapped[str | None] = mapped_column(Text)
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, server_default=func.now(), nullable=False
+    )
+
+    def __repr__(self) -> str:  # pragma: no cover - debug helper
+        return f"<QRScan {self.id} campaign={self.campaign_id} resolution={self.identity_resolution!r}>"

@@ -259,14 +259,14 @@ async def test_generate_usb_pdf_single_recipient(
 
 
 async def test_generate_usb_pdf_rejects_non_usb_campaign(
-    client, auth_headers, organization, custom_template, employees
+    client, auth_headers, organization, qr_template, employees
 ) -> None:
     """Email/QR campaigns cannot be turned into USB documents."""
     created = await _create_campaign(
         client,
         auth_headers,
         organization,
-        custom_template,
+        qr_template,
         [employees[0].id],
         channel="qr",
         channel_config={"qr": {"pretext_key": "it_security"}},

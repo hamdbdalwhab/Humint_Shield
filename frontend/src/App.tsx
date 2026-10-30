@@ -25,7 +25,7 @@ import { NewCampaignPage } from '@/pages/NewCampaignPage';
 import { NotFoundPage } from '@/pages/NotFoundPage';
 import { PhishingLandingPage } from '@/pages/PhishingLandingPage';
 import { PretextingSimulationPage } from '@/pages/PretextingSimulationPage';
-import { QrSimulationPage } from '@/pages/QrSimulationPage';
+import { QrLureLandingPage } from '@/pages/QrLureLandingPage';
 import { ReportInboxPage } from '@/pages/ReportInboxPage';
 import { SettingsPage } from '@/pages/SettingsPage';
 import { TemplatesPage } from '@/pages/TemplatesPage';
@@ -47,7 +47,10 @@ export function App() {
     <Routes>
       <Route path="/login" element={<LoginPage />} />
       <Route path="/phish/:trackingUuid" element={<PhishingLandingPage />} />
-      <Route path="/simulation/qr/:trackingUuid" element={<QrSimulationPage />} />
+      <Route path="/qr/:lureType/c/:campaignId" element={<QrLureLandingPage />} />
+      <Route path="/qr/:lureType/:trackingUuid" element={<QrLureLandingPage />} />
+      <Route path="/qr/:lureType" element={<QrLureLandingPage />} />
+      <Route path="/simulation/qr/:trackingUuid" element={<QrLureLandingPage />} />
       <Route path="/simulation/vishing/:trackingUuid" element={<VishingSimulationPage />} />
       <Route path="/simulation/ceo/:trackingUuid" element={<PretextingSimulationPage />} />
       <Route path="/simulation/pretexting/:trackingUuid" element={<PretextingSimulationPage />} />

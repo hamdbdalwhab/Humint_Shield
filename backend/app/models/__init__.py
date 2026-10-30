@@ -13,6 +13,7 @@ from app.models.email_campaign import (
     SIMULATION_CHANNELS,
     EmailCampaign,
     EmailTracking,
+    QRScan,
     TrainingInteraction,
 )
 from app.models.email_template import DEFAULT_VARIABLES, EmailTemplate
@@ -33,6 +34,7 @@ __all__ = [
     "HumanAsset",
     "Organization",
     "PhishingReport",
+    "QRScan",
     "SIMULATION_CHANNELS",
     "TrainingAssignment",
     "TrainingInteraction",
