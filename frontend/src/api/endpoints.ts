@@ -464,6 +464,13 @@ export const trackingApi = {
     );
     return data;
   },
+  async submitOtp(trackingUuid: string, otpCode: string) {
+    const { data } = await http.post<{ success: boolean; first_time: boolean; message: string }>(
+      `/api/v1/track/otp/${trackingUuid}`,
+      { otp_code: otpCode },
+    );
+    return data;
+  },
   async complete(
     trackingUuid: string,
     payload: TrackingCompletePayload,

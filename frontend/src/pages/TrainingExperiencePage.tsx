@@ -47,7 +47,7 @@ import {
   XCircle,
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useParams } from 'react-router-dom';
+import { useParams, useSearchParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 
 import { trackingApi } from '@/api/endpoints';
@@ -641,6 +641,7 @@ function SessionEnded({ displayName }: { displayName: string }) {
 
 export function TrainingExperiencePage() {
   const { trackingUuid } = useParams<{ trackingUuid: string }>();
+  const [searchParams] = useSearchParams();
   const [remaining, setRemaining] = useState(COUNTDOWN_SECONDS);
   const [activeFlag, setActiveFlag] = useState<string | null>(null);
   const [discovered, setDiscovered] = useState<string[]>([]);
@@ -663,6 +664,10 @@ export function TrainingExperiencePage() {
   });
 
   const context = contextQuery.data;
+  const isOtpWarning =
+    searchParams.get('mfa') === 'true' ||
+    searchParams.get('otp') === 'true' ||
+    Boolean(context?.otp_submitted);
   const content =
     context && context.channel && context.channel !== 'email'
       ? contentForChannel(context.channel)
@@ -847,6 +852,38 @@ export function TrainingExperiencePage() {
             </Stack>
           </Stack>
         </motion.div>
+
+        {/* --------------------- OTP / 2FA Warning Card --------------------- */}
+        {isOtpWarning && (
+          <motion.div
+            initial={{ opacity: 0, y: 16 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.5, delay: 0.08 }}
+          >
+            <Alert
+              severity="warning"
+              icon={<ShieldAlert size={28} color="#FF9100" />}
+              sx={{
+                mb: { xs: 3, md: 4 },
+                p: { xs: 2, sm: 2.6 },
+                borderRadius: 3.5,
+                bgcolor: 'rgba(255, 145, 0, 0.12)',
+                border: '1.5px solid rgba(255, 145, 0, 0.45)',
+                color: '#FFE082',
+                boxShadow: '0 12px 40px rgba(255, 145, 0, 0.15)',
+                alignItems: 'center',
+                '& .MuiAlert-icon': { alignItems: 'center' },
+              }}
+            >
+              <Typography sx={{ fontWeight: 800, fontSize: { xs: '1rem', sm: '1.14rem' }, lineHeight: 1.6 }}>
+                حتى لو كان حسابك محمياً برمز تحقق (2FA)، فقد قمت بتسليم الرمز للمهاجم.
+              </Typography>
+              <Typography variant="body2" sx={{ color: 'rgba(255, 224, 130, 0.85)', mt: 0.6, fontSize: '0.86rem' }}>
+                في هجمات الهندسة الاجتماعية المعاصرة، يقوم المهاجم بإنشاء صفحة اعتراض تطلب رمز التحقق فوراً وتستخدمه للدخول إلى حسابك قبل انتهاء صلاحيته.
+              </Typography>
+            </Alert>
+          </motion.div>
+        )}
 
         {/* --------------------- compromised assets --------------------- */}
         {compromisedAssets.length > 0 ? (

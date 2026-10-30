@@ -16,7 +16,7 @@ import Typography from '@mui/material/Typography';
 import { motion } from 'framer-motion';
 import { ArrowLeft, ShieldAlert, Terminal, TriangleAlert } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 
 import { trackingApi } from '@/api/endpoints';
@@ -101,6 +101,7 @@ function MatrixRain() {
 export function HackedPage() {
   const { trackingUuid } = useParams<{ trackingUuid: string }>();
   const navigate = useNavigate();
+  const location = useLocation();
   const [visibleChars, setVisibleChars] = useState(0);
   const [interrupted, setInterrupted] = useState(false);
 
@@ -349,7 +350,10 @@ export function HackedPage() {
                 color="error"
                 endIcon={<ArrowLeft size={17} />}
                 onClick={() =>
-                  navigate(`/training-experience/${trackingUuid}`, { replace: true })
+                  navigate(
+                    `/training-experience/${trackingUuid}${location.search || ''}`,
+                    { replace: true },
+                  )
                 }
                 sx={{ mt: 1.6, fontWeight: 900, borderRadius: 2 }}
               >

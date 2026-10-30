@@ -27,6 +27,7 @@ def personalize_template(
     tracking_uuid: str,
     *,
     base_url: str | None = None,
+    short_code: str | None = None,
 ) -> dict[str, str]:
     """Render a template for one employee.
 
@@ -36,6 +37,7 @@ def personalize_template(
         organization: Organization supplying ``company_name``.
         tracking_uuid: Per-recipient UUID embedded in the pixel and links.
         base_url: Override for the public base URL.
+        short_code: Optional short code for link shortener.
 
     Returns:
         ``{"subject": str, "html_content": str}`` ready for the provider.
@@ -47,6 +49,7 @@ def personalize_template(
         organization,
         tracking_uuid,
         base_url=base_url,
+        short_code=short_code,
     )
 
 

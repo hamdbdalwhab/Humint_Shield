@@ -137,6 +137,7 @@ export function NewCampaignPage() {
   const [qrLogoError, setQrLogoError] = useState<string | null>(null);
   const [templateId, setTemplateId] = useState('');
   const [difficulty, setDifficulty] = useState(5);
+  const [autoRetestFailed, setAutoRetestFailed] = useState(false);
   const [selected, setSelected] = useState<Map<string, Employee>>(new Map());
   const [search, setSearch] = useState('');
   const [department, setDepartment] = useState('');
@@ -317,6 +318,7 @@ export function NewCampaignPage() {
           channel,
           channel_config: channelConfig,
           difficulty_level: difficulty,
+          auto_retest_failed: autoRetestFailed,
           target_employee_ids: targets,
         });
         campaignId = campaign.id;
@@ -328,6 +330,7 @@ export function NewCampaignPage() {
           template_id: templateId,
           channel,
           channel_config: channelConfig,
+          auto_retest_failed: autoRetestFailed,
           target_employee_ids: targets,
         });
       }
@@ -827,6 +830,37 @@ export function NewCampaignPage() {
                   onChange={(_event, value) => setDifficulty(value as number)}
                 />
               </Box>
+
+              <Box
+                sx={{
+                  p: 2,
+                  borderRadius: 2,
+                  border: '1px solid',
+                  borderColor: 'divider',
+                  bgcolor: 'action.hover',
+                }}
+              >
+                <FormControlLabel
+                  control={
+                    <Switch
+                      checked={autoRetestFailed}
+                      onChange={(event) => setAutoRetestFailed(event.target.checked)}
+                      color="primary"
+                    />
+                  }
+                  label={
+                    <Box sx={{ ml: 1 }}>
+                      <Typography sx={{ fontWeight: 700, fontSize: '0.92rem' }}>
+                        إعادة الاختبار التلقائي للموظفين غير المجتازين (Auto-Retest Failed Employees)
+                      </Typography>
+                      <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block' }}>
+                        تشغيل حملة تنقيط تلقائية بعد 72 ساعة من انتهاء الحملة تستهدف الموظفين الذين فشلوا (نقروا أو أدخلوا بياناتهم أو تجاهلوا الرسالة) بقالب أعلى صعوبة.
+                      </Typography>
+                    </Box>
+                  }
+                />
+              </Box>
+
               <Stack direction="row" justifyContent="flex-end">
                 <Button variant="contained" disabled={!canLeaveStepOne} onClick={() => setStep(1)}>
                   متابعة إلى المستهدفين
@@ -1084,6 +1118,10 @@ export function NewCampaignPage() {
                   </Typography>
                   <Typography variant="body2">
                     <strong>المستهدفون:</strong> {selected.size} موظفاً
+                  </Typography>
+                  <Typography variant="body2">
+                    <strong>إعادة الاختبار التلقائي:</strong>{' '}
+                    {autoRetestFailed ? 'مفعل (بعد 72 ساعة للموظفين غير المجتازين)' : 'معطل'}
                   </Typography>
                 </Stack>
               </Box>

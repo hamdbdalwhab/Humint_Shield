@@ -441,6 +441,7 @@ export interface Campaign {
   channel: CampaignChannel;
   channel_config: CampaignChannelConfig | null;
   status: CampaignStatus;
+  auto_retest_failed?: boolean;
   target_employee_ids: string[];
   total_targets: number;
   sent_count: number;
@@ -461,6 +462,7 @@ export interface CampaignCreate {
   channel?: CampaignChannel;
   channel_config?: CampaignChannelConfig | null;
   difficulty_level: number;
+  auto_retest_failed?: boolean;
   target_employee_ids: string[];
 }
 
@@ -916,6 +918,7 @@ export interface TrackingContext {
   brand_primary_color?: string;
   brand_logo_url?: string | null;
   form_submitted?: boolean;
+  otp_submitted?: boolean;
   already_completed?: boolean;
   quiz_score?: number | null;
   quiz_total?: number | null;

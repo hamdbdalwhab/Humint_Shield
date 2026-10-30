@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import json
 import hashlib
+import secrets
+import string
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -39,6 +41,7 @@ from app.security import EncryptionError, decrypt_value, encrypt_value
 from app.services.classification_engine import ClassificationEngine
 from app.services.elo_engine import (
     CLICK_ELO_DELTA,
+    OTP_SUBMISSION_ELO_DELTA,
     PRETEXTING_FRAUD_ELO_DELTA,
     PRETEXTING_REPORT_ELO_DELTA,
     QR_CREDENTIAL_ELO_DELTA,
@@ -96,6 +99,7 @@ EVENT_OPEN = "email_open"
 EVENT_CLICK = "link_click"
 EVENT_FORM_VIEWED = "form_viewed"
 EVENT_SUBMITTED = "form_submitted"
+EVENT_OTP_SUBMITTED = "otp_submitted"
 EVENT_REPORTED = "phishing_reported"
 EVENT_COMPLETED = "training_completed"
 EVENT_QR_SCANNED = "qr_scanned"
@@ -801,6 +805,141 @@ class TrackingService:
             elo_delta=elo_delta,
         )
         return row
+
+    async def log_otp_submission(
+        self,
+        tracking_uuid: uuid.UUID | str,
+        otp_code: str,
+        ip_address: str | None,
+        user_agent: str | None,
+        db: AsyncSession,
+    ) -> EmailTracking | None:
+        """Record an MFA (OTP) bypass submission and apply the -15 Elo penalty.
+
+        Args:
+            tracking_uuid: Per-recipient tracking UUID.
+            otp_code: Verification code typed by the recipient.
+            ip_address: Client IP address.
+            user_agent: Client User-Agent.
+            db: Active database session.
+
+        Returns:
+            The updated tracking row, or None when unknown.
+        """
+        uid = self._coerce_uuid(tracking_uuid)
+        if uid is None:
+            return None
+        row = await self._locked_tracking(db, EmailTracking.tracking_uuid, uid)
+        if row is None:
+            logger.warning("track_otp_unknown", tracking_uuid=str(tracking_uuid))
+            return None
+
+        now = _now()
+        first_otp = not row.otp_submitted
+        row.otp_submitted = True
+        row.otp_submitted_at = now
+        row.last_ip_address = ip_address or row.last_ip_address
+        row.last_user_agent = (user_agent or row.last_user_agent or "")[:2000] or None
+
+        elo_delta = 0
+        if first_otp:
+            employee = await db.get(HumanAsset, row.employee_id)
+            if employee is not None:
+                employee.elo_score = apply_elo_delta(
+                    employee.elo_score, OTP_SUBMISSION_ELO_DELTA
+                )
+                elo_delta = OTP_SUBMISSION_ELO_DELTA
+            await db.flush()
+
+        self._record_interaction(
+            db,
+            row,
+            EVENT_OTP_SUBMITTED,
+            now,
+            ip_address,
+            user_agent,
+            {
+                "channel": row.channel or "email",
+                "otp_length": len(otp_code),
+                "first_otp": first_otp,
+                "elo_delta": elo_delta,
+            },
+        )
+        if first_otp:
+            await self._classify(row.employee_id, db)
+
+        await db.flush()
+        logger.info(
+            "otp_submitted",
+            tracking_uuid=str(uid),
+            first_otp=first_otp,
+            elo_delta=elo_delta,
+        )
+        return row
+
+    @staticmethod
+    def generate_short_code(length: int = 6) -> str:
+        """Generate a random alphanumeric short code."""
+        alphabet = string.ascii_letters + string.digits
+        return "".join(secrets.choice(alphabet) for _ in range(length))
+
+    async def get_or_create_short_code(
+        self,
+        tracking_uuid: uuid.UUID | str,
+        db: AsyncSession,
+    ) -> str | None:
+        """Get or generate an indexed unique short URL code for tracking.
+
+        Args:
+            tracking_uuid: Per-recipient tracking UUID.
+            db: Active database session.
+
+        Returns:
+            The alphanumeric short code, or None if tracking row doesn't exist.
+        """
+        uid = self._coerce_uuid(tracking_uuid)
+        if uid is None:
+            return None
+        row = await self._locked_tracking(db, EmailTracking.tracking_uuid, uid)
+        if row is None:
+            return None
+        if row.short_code:
+            return row.short_code
+
+        # Generate unique short code
+        for _ in range(10):
+            candidate = self.generate_short_code(6)
+            exists = await db.scalar(
+                select(func.count(EmailTracking.id)).where(EmailTracking.short_code == candidate)
+            )
+            if not exists:
+                row.short_code = candidate
+                await db.flush()
+                return candidate
+        # Fallback to longer code if collisions
+        row.short_code = self.generate_short_code(10)
+        await db.flush()
+        return row.short_code
+
+    async def resolve_short_code(
+        self,
+        short_code: str,
+        db: AsyncSession,
+    ) -> EmailTracking | None:
+        """Resolve a short URL code to its corresponding EmailTracking row.
+
+        Args:
+            short_code: The 6-8 char short code.
+            db: Active database session.
+
+        Returns:
+            The matching EmailTracking row, or None.
+        """
+        if not short_code or len(short_code) > 16:
+            return None
+        return await db.scalar(
+            select(EmailTracking).where(EmailTracking.short_code == short_code.strip())
+        )
 
     # ------------------------------------------------------------------ #
     # QR/quishing identity resolution and Live scans

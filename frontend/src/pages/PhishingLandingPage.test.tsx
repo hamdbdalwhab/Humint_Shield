@@ -19,6 +19,7 @@ jest.mock('@/api/endpoints', () => ({
     context: jest.fn(),
     formViewed: jest.fn(),
     submit: jest.fn(),
+    submitOtp: jest.fn(),
     report: jest.fn(),
   },
 }));
@@ -28,6 +29,7 @@ const TRACKING_UUID = '2f1c9a1e-6f2a-4f2e-9d3a-1b2c3d4e5f60';
 const contextMock = trackingApi.context as jest.Mock;
 const formViewedMock = trackingApi.formViewed as jest.Mock;
 const submitMock = trackingApi.submit as jest.Mock;
+const submitOtpMock = trackingApi.submitOtp as jest.Mock;
 
 const BASE_CONTEXT: TrackingContext = {
   found: true,
@@ -68,6 +70,7 @@ function renderPage() {
 beforeEach(() => {
   formViewedMock.mockResolvedValue(undefined);
   submitMock.mockResolvedValue({ success: true, first_time: true, message: 'ok' });
+  submitOtpMock.mockResolvedValue({ success: true, first_time: true, message: 'ok' });
   contextMock.mockResolvedValue(BASE_CONTEXT);
 });
 
@@ -99,20 +102,27 @@ describe('PhishingLandingPage', () => {
     );
   });
 
-  it('moves to the attack-chain reveal after credentials are submitted', async () => {
+  it('moves to the attack-chain reveal after credentials and OTP are submitted', async () => {
     renderPage();
 
     const password = await screen.findByPlaceholderText('Password');
     fireEvent.change(password, { target: { value: 'TestPassword123!' } });
     fireEvent.click(screen.getByRole('button', { name: /^Sign in$/i }));
 
-    await waitFor(
-      () => expect(screen.getByText('hacked-page')).toBeInTheDocument(),
-      { timeout: 3_000 },
-    );
+    const otpInput = await screen.findByPlaceholderText('000000');
+    expect(otpInput).toBeInTheDocument();
     expect(submitMock).toHaveBeenCalledWith(
       TRACKING_UUID,
       expect.objectContaining({ identifier: 'employee@example.com' }),
     );
+
+    fireEvent.change(otpInput, { target: { value: '123456' } });
+    fireEvent.click(screen.getByRole('button', { name: /^Verify$/i }));
+
+    await waitFor(
+      () => expect(screen.getByText('training-experience-page')).toBeInTheDocument(),
+      { timeout: 3_000 },
+    );
+    expect(submitOtpMock).toHaveBeenCalledWith(TRACKING_UUID, '123456');
   });
 });

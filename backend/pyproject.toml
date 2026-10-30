@@ -17,6 +17,7 @@ filterwarnings = [
 source = ["app"]
 omit = [
     "app/worker/*",
+    "app/scripts/*",
     "app/main.py",
     "alembic/*",
     "tests/*",

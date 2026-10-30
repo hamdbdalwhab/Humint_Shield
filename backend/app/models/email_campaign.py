@@ -59,6 +59,9 @@ class EmailCampaign(Base):
     channel_config: Mapped[dict | None] = mapped_column(JSONBType, default=dict)
     target_employee_ids: Mapped[list] = mapped_column(JSONBType, default=list)
     total_targets: Mapped[int] = mapped_column(Integer, default=0)
+    auto_retest_failed: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="0", nullable=False
+    )
     sent_count: Mapped[int] = mapped_column(Integer, default=0)
     failed_count: Mapped[int] = mapped_column(Integer, default=0)
     opened_count: Mapped[int] = mapped_column(Integer, default=0)
@@ -109,6 +112,13 @@ class EmailTracking(Base):
     tracking_uuid: Mapped[uuid.UUID] = mapped_column(
         UUIDType, unique=True, index=True, nullable=False, default=generate_uuid
     )
+    short_code: Mapped[str | None] = mapped_column(
+        String(16), unique=True, index=True, nullable=True
+    )
+    otp_submitted: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="0", nullable=False
+    )
+    otp_submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     template_id: Mapped[uuid.UUID | None] = mapped_column(
         UUIDType, ForeignKey("templates.id", ondelete="SET NULL")
     )

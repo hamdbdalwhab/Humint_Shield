@@ -133,6 +133,7 @@ class TemplatePersonalizer:
         tracking_uuid: uuid.UUID | str,
         base_url: str | None = None,
         extra_vars: dict[str, str] | None = None,
+        short_code: str | None = None,
     ) -> dict[str, str]:
         """Compute the variable mapping for a recipient.
 
@@ -143,6 +144,7 @@ class TemplatePersonalizer:
             tracking_uuid: Per-recipient tracking UUID.
             base_url: Application base URL (defaults to settings).
             extra_vars: Overrides (used by tests and previews).
+            short_code: Optional short code for link shortener.
 
         Returns:
             A mapping of variable name to replacement value.
@@ -152,6 +154,7 @@ class TemplatePersonalizer:
         department = getattr(employee, "department", None) or "General"
         manager_name = self._resolve_manager_name(employee)
         branding = branding_from_organization(organization, base_url)
+        tracking_url = f"{base_url}/s/{short_code}" if short_code else f"{base_url}/phish/{uid}"
 
         variables: dict[str, str] = {
             "first_name": getattr(employee, "first_name", "") or "there",
@@ -164,7 +167,9 @@ class TemplatePersonalizer:
             "support_email": branding.support_email or "",
             "manager_name": manager_name,
             "job_title": getattr(employee, "job_title", "") or "Employee",
-            "tracking_url": f"{base_url}/phish/{uid}",
+            "tracking_url": tracking_url,
+            "short_url": tracking_url,
+            "short_code": short_code or "",
             "tracking_uuid": uid,
             "base_url": base_url,
             "invoice_number": self._generate_invoice_number(),
@@ -183,11 +188,12 @@ class TemplatePersonalizer:
         tracking_uuid: uuid.UUID | str,
         base_url: str | None = None,
         extra_vars: dict[str, str] | None = None,
+        short_code: str | None = None,
     ) -> dict[str, str]:
         """Render subject and HTML body for a recipient.
 
-        Every anchor ``href`` is rewritten to the click-tracking endpoint and a
-        transparent tracking pixel is appended to the body.
+        Every anchor ``href`` is rewritten to the click-tracking endpoint (or short URL)
+        and a transparent tracking pixel is appended to the body.
 
         Args:
             template: The template to render.
@@ -196,13 +202,14 @@ class TemplatePersonalizer:
             tracking_uuid: Per-recipient tracking UUID.
             base_url: Optional base URL override.
             extra_vars: Optional variable overrides.
+            short_code: Optional short code for link shortener.
 
         Returns:
             ``{"subject": str, "html_content": str}``.
         """
         base_url = (base_url or self.settings.base_url).rstrip("/")
         variables = self.build_variables(
-            template, employee, organization, tracking_uuid, base_url, extra_vars
+            template, employee, organization, tracking_uuid, base_url, extra_vars, short_code=short_code
         )
         branding = branding_from_organization(organization, base_url)
 
@@ -210,7 +217,7 @@ class TemplatePersonalizer:
         body = self._base_html(template, organization, base_url)
         body = apply_branding_placeholders(body, branding)
         body = self._render_text(body, variables)
-        body = self.rewrite_links(body, str(tracking_uuid), base_url)
+        body = self.rewrite_links(body, str(tracking_uuid), base_url, short_code=short_code)
         body = self.append_tracking_pixel(body, str(tracking_uuid), base_url)
         body = sanitize_email_html(body)
 
@@ -307,17 +314,37 @@ class TemplatePersonalizer:
             text = f"{text}\n\n{click_url}".strip()
         return {"subject": subject, "text_content": text, "tracking_url": click_url}
 
-    def rewrite_links(self, html: str, tracking_uuid: str, base_url: str) -> str:
-        """Wrap every anchor target in the click-tracking redirect.
+    def rewrite_links(
+        self,
+        html: str,
+        tracking_uuid: str,
+        base_url: str,
+        short_code: str | None = None,
+    ) -> str:
+        """Wrap every anchor target in the click-tracking redirect or short URL.
 
         Args:
             html: Rendered HTML body.
             tracking_uuid: Per-recipient tracking UUID.
             base_url: Application base URL.
+            short_code: Optional short code for URL shortening.
 
         Returns:
             HTML with rewritten anchors.
         """
+        if short_code:
+            short_endpoint = f"{base_url}/s/{short_code}"
+
+            def _replace_short(match: re.Match[str]) -> str:
+                prefix, quote_char, original = match.group(1), match.group(2), match.group(3)
+                if not original or original.strip() in {"#", ""}:
+                    return match.group(0)
+                if f"/s/{short_code}" in original:
+                    return match.group(0)
+                return f"{prefix}{quote_char}{short_endpoint}{quote_char}"
+
+            return HREF_RE.sub(_replace_short, html)
+
         endpoint = f"{base_url}/api/v1/track/click/{tracking_uuid}"
 
         def _replace(match: re.Match[str]) -> str:

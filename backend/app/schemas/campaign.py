@@ -19,6 +19,7 @@ class CampaignBase(BaseModel):
         default="email", pattern="^(email|sms|whatsapp|qr|vishing|pretexting|usb)$"
     )
     difficulty_level: int = Field(default=5, ge=1, le=10)
+    auto_retest_failed: bool = False
     channel_config: dict[str, Any] | None = None
 
 
@@ -37,6 +38,7 @@ class CampaignUpdate(BaseModel):
         default=None, pattern="^(email|sms|whatsapp|qr|vishing|pretexting|usb)$"
     )
     difficulty_level: int | None = Field(default=None, ge=1, le=10)
+    auto_retest_failed: bool | None = None
     channel_config: dict[str, Any] | None = None
     target_employee_ids: list[uuid.UUID] | None = None
 
@@ -53,6 +55,7 @@ class CampaignPublic(BaseModel):
     channel: str = "email"
     channel_config: dict[str, Any] | None = None
     status: str
+    auto_retest_failed: bool = False
     target_employee_ids: list[str]
     total_targets: int
     sent_count: int
@@ -436,6 +439,12 @@ class TrainingSubmission(BaseModel):
     #: persists the typed password.  The React credential pages always send
     #: ``False``; legacy API clients default to the historical behaviour.
     capture_secret: bool = True
+
+
+class OTPVerifyRequest(BaseModel):
+    """Payload for submitting a 6-digit MFA / OTP verification code."""
+
+    otp_code: str = Field(min_length=1, max_length=20)
 
 
 class TrainingInteractionResponse(BaseModel):

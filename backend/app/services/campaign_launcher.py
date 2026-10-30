@@ -218,6 +218,17 @@ class CampaignLauncher:
             campaign.completed_at = _now()
             await db.commit()
 
+            if getattr(campaign, "auto_retest_failed", False):
+                try:
+                    from app.worker.tasks import retest_failed_campaign_employees
+                    retest_failed_campaign_employees.apply_async(
+                        args=[str(campaign.id)],
+                        countdown=72 * 3600,
+                    )
+                    logger.info("retest_task_scheduled", campaign_id=str(campaign.id), delay_hours=72)
+                except Exception as exc:
+                    logger.warning("retest_task_schedule_failed", campaign_id=str(campaign.id), error=str(exc))
+
         result = {
             "campaign_id": cid,
             "total": len(target_ids),
@@ -330,6 +341,9 @@ class CampaignLauncher:
         # must never retain an id belonging to the failed send.
         if tracking.sent_at is None:
             tracking.provider_message_id = None
+        if not tracking.short_code:
+            from app.services.tracking_service import TrackingService
+            tracking.short_code = TrackingService.generate_short_code()
         db.add(tracking)
         await db.flush()
 
@@ -366,6 +380,7 @@ class CampaignLauncher:
                 organization,
                 tracking.tracking_uuid,
                 self._base_url(),
+                short_code=tracking.short_code,
             )
             try:
                 sender = getattr(self.email_service, "send_email", None)

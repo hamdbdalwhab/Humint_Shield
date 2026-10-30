@@ -370,6 +370,7 @@ async def create_campaign(
         channel=payload.channel,
         channel_config=payload.channel_config or {},
         status="draft",
+        auto_retest_failed=payload.auto_retest_failed,
         target_employee_ids=[str(t) for t in valid_targets],
         total_targets=len(valid_targets),
         created_by=user.id,
@@ -433,6 +434,8 @@ async def update_campaign(
         campaign.name = data["name"]
     if "channel_config" in data:
         campaign.channel_config = data["channel_config"] or {}
+    if "auto_retest_failed" in data and data["auto_retest_failed"] is not None:
+        campaign.auto_retest_failed = bool(data["auto_retest_failed"])
     # ``difficulty_level`` is accepted for API symmetry but is a property of the
     # template, so it is validated (by the schema) and otherwise not persisted.
     if data.get("target_employee_ids") is not None:

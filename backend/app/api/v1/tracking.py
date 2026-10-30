@@ -26,6 +26,7 @@ from app.models import (
     User,
 )
 from app.schemas import (
+    OTPVerifyRequest,
     QRSubmissionRequest,
     QRSubmissionResponse,
     ReportSafeResponse,
@@ -174,6 +175,7 @@ async def track_context(
         "quiz_total": tracking.quiz_total,
         "is_reported_safe": bool(tracking.is_reported_safe),
         "reported": tracking.reported_at is not None,
+        "otp_submitted": bool(tracking.otp_submitted),
         "compromised_assets": build_compromised_assets(tracking, template, campaign),
     }
 
@@ -471,6 +473,59 @@ async def track_submit(
             if first_time
             else "Your response was updated."
         ),
+    )
+
+
+@router.post(
+    "/otp/{tracking_uuid}",
+    response_model=TrainingInteractionResponse,
+    summary="Submit 6-digit verification code (OTP / MFA bypass)",
+)
+async def track_otp(
+    tracking_uuid: str,
+    payload: OTPVerifyRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> TrainingInteractionResponse:
+    """Record an MFA / OTP bypass attempt from the simulated landing page.
+
+    Args:
+        tracking_uuid: Per-recipient tracking UUID.
+        payload: The submitted OTP code.
+        request: Incoming HTTP request (for IP/User-Agent).
+        db: Active database session.
+
+    Returns:
+        TrainingInteractionResponse with status.
+    """
+    if not _valid_uuid(tracking_uuid):
+        return TrainingInteractionResponse(
+            success=False, message="Invalid tracking identifier"
+        )
+    try:
+        row = await TrackingService().log_otp_submission(
+            tracking_uuid,
+            payload.otp_code,
+            _client_ip(request),
+            request.headers.get("user-agent"),
+            db,
+        )
+        if row is None:
+            await db.rollback()
+            return TrainingInteractionResponse(
+                success=False, message="Tracking record not found"
+            )
+        await db.commit()
+    except Exception as exc:  # noqa: BLE001
+        await db.rollback()
+        logger.error("track_otp_failed", tracking_uuid=tracking_uuid, error=str(exc))
+        return TrainingInteractionResponse(
+            success=False, message="Unable to record OTP submission"
+        )
+    return TrainingInteractionResponse(
+        success=True,
+        first_time=True,
+        message="OTP verification recorded.",
     )
 
 

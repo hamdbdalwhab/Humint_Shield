@@ -17,6 +17,7 @@ from prometheus_fastapi_instrumentator import Instrumentator
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from app.api.v1.router import api_router
+from app.api.v1.shortener import router as shortener_router
 from app.api.v1.training import router as training_router
 from app.config import Settings, get_settings
 from app.database import Base, dispose_engine, get_engine, get_session_factory
@@ -225,6 +226,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     # --- routers ---------------------------------------------------------- #
     app.include_router(api_router)
+    app.include_router(shortener_router)
     app.include_router(training_router)
 
     # --- plain health endpoints ------------------------------------------ #
