@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
@@ -89,6 +89,7 @@ def _merge_poster_overrides(
 )
 async def generate_qr_posters(
     campaign_id: uuid.UUID,
+    request: Request,
     payload: QRPosterRequest | None = Body(default=None),
     db: AsyncSession = Depends(get_db),
     user: User = Depends(require_roles("admin", "manager")),
@@ -117,7 +118,9 @@ async def generate_qr_posters(
         )
 
     settings = get_settings()
-    base_url = settings.base_url.rstrip("/")
+    host = request.headers.get("x-forwarded-host") or request.headers.get("host")
+    proto = request.headers.get("x-forwarded-proto") or request.url.scheme
+    base_url = f"{proto}://{host}" if host else settings.base_url.rstrip("/")
     recipients = [
         PosterRecipient(
             name="",

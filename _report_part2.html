@@ -1,0 +1,100 @@
+<section id="executive" class="section reveal">
+  <div class="section-head">
+    <div class="section-num">01</div>
+    <div><h2>الملخص التنفيذي</h2><p>ما هو HUMINT Shield اليوم، وما مستوى نضجه، وما الذي يمنعه من أن يصبح منتجاً إنتاجياً كاملاً؟</p></div>
+  </div>
+  <p class="lead">HUMINT Shield منصة توعية أمنية قائمة على المحاكاة الواقعية والموافقة المسبقة. تجمع بين نظام إدارة تعلم (LMS) كامل، ومحرك حملات متعدد القنوات، ومحرك سلوكي يترجم تفاعل الموظف إلى درجة Elo قابلة للقياس، ولوحات مراقبة لحظية، وتقارير تنفيذية، ومواد توعية دفاعية. المشروع لم يعد “صفحة تصيّد واحدة”؛ بل أصبح <b>منصة محاكاة سلوكية متعددة القنوات</b> مع بنية خدمات واضحة واختبارات آلية واسعة.</p>
+  <div class="grid-2">
+    <div>
+      <h3>الحكم التدقيقي</h3>
+      <div class="callout ok"><strong>منصة متقدمة وجاهزة لطيار مؤسسي محكوم (Controlled Pilot).</strong> الوظائف الأساسية مكتملة، وقنوات QR/Vishing/Pretexting/USB تم اختبارها فعلياً، والواجهة غنية. لكن الجاهزية للإنتاج العام ما تزال متأثرة بأربعة عوامل: اعتماد على نفق Cloudflare مؤقت، Redis غير متاح، انحراف Alembic، وفشل بوابة تغطية الاختبارات الخلفية عند 80%.</div>
+      <p>من حيث الهندسة، المشروع يقع في شريحة <b>Advanced Prototype / Pilot-Ready</b>. من حيث العمليات، هو أقرب إلى <b>Staging متقدم</b> منه إلى Production: الأسرار ما تزال في ملف <code>.env</code> محلي، وكلمة مرور المدير الافتراضية ما تزال فعالة في بيئة التطوير، ولا توجد إثباتات تسليم بريد حقيقية في هذا التدقيق، ولا توجد نطاقات ثابتة أو نسخ احتياطي مُدار.</p>
+      <h3>أبرز الإنجازات التقنية</h3>
+      <ul>
+        <li><b>7 قنوات:</b> Email، SMS، WhatsApp، QR/Quishing، Vishing، Pretexting، USB.</li>
+        <li><b>78 Endpoint</b> موزعة على 12 Router، مع فصل واضح بين المسارات الإدارية ومسارات التتبع العامة.</li>
+        <li><b>11 جدولاً و183 عموداً</b> في طبقة النماذج، مع 34 فهرساً ودفتر أحداث append-only.</li>
+        <li><b>محرك Elo</b> يبدأ من 1000، ويطبق عقوبات/مكافآت مختلفة لكل قناة، ويستخدم نطاقات صعوبة تكيفية.</li>
+        <li><b>QR Poster واحد عام</b> لكل حملة، بلا أسماء موظفين، QR بحجم 400×400، وصفحة A4 واحدة، وتوليد يقاس بالمللي ثانية.</li>
+        <li><b>5 قوالب QR مدمجة</b> وLure Builder مرتبط بالعلامة التجارية واللوجو والألوان.</li>
+        <li><b>AI Template Generation</b> عبر Dahl Inference مع DeepSeek كأساسي وMiniMax كاحتياطي، دون قوالب وهمية.</li>
+        <li><b>تشفير AES-256-GCM</b> للحقول الحساسة، وbcrypt لكلمات مرور المستخدمين، وJWT للجلسات.</li>
+        <li><b>لوحة SOC محلية آمنة</b> لا تتصل بأي Endpoint Agent ولا تنفذ أوامر، مع Playbook دفاعي قابل للتنزيل.</li>
+      </ul>
+    </div>
+    <div>
+      <div class="card" style="margin-bottom:12px">
+        <h4>مؤشرات النضج</h4>
+        <div class="progress">
+          <div class="progress-row"><span class="lbl">اكتمال الوظائف</span><div class="bar"><div class="fill" style="width:86%"></div></div><span class="pct">86%</span></div>
+          <div class="progress-row"><span class="lbl">جودة الهندسة</span><div class="bar"><div class="fill" style="width:84%"></div></div><span class="pct">84%</span></div>
+          <div class="progress-row"><span class="lbl">الأمان التطبيقي</span><div class="bar"><div class="fill" style="width:82%"></div></div><span class="pct">82%</span></div>
+          <div class="progress-row"><span class="lbl">الاختبارات</span><div class="bar"><div class="fill" style="width:76.7%"></div></div><span class="pct">76.7%</span></div>
+          <div class="progress-row"><span class="lbl">الجاهزية التشغيلية</span><div class="bar"><div class="fill" style="width:68%"></div></div><span class="pct">68%</span></div>
+          <div class="progress-row"><span class="lbl">الوثائق</span><div class="bar"><div class="fill" style="width:70%"></div></div><span class="pct">70%</span></div>
+        </div>
+      </div>
+      <div class="card">
+        <h4>لماذا 84% وليس 100%؟</h4>
+        <p>لأن التدقيق لا يقيس عدد الملفات فقط. هناك فرق بين “الكود موجود” و“الكود مُثبت تشغيلياً”. البريد لم يُرسل فعلياً في هذا التدقيق، وVonage غير مهيأ، وRedis غير متصل، وAlembic متأخر عن الـhead، وبوابة التغطية حمراء. هذه ليست عيوباً في الفكرة، لكنها تمنع وصف النظام بأنه Production-Grade اليوم.</p>
+      </div>
+    </div>
+  </div>
+  <h3>ملخص رقمي سريع</h3>
+  <div class="table-wrap"><table>
+    <thead><tr><th>المؤشر</th><th>القيمة</th><th>الدلالة</th></tr></thead>
+    <tbody>
+      <tr><td>إجمالي الملفات المفحوصة</td><td class="ltr">292</td><td>بعد استبعاد <code>node_modules</code> و<code>.git</code> و<code>.venv</code> و<code>dist</code> والكاشات.</td></tr>
+      <tr><td>الملفات النصية الأولى</td><td class="ltr">229</td><td>تشمل الكود والاختبارات والترحيلات والوثائق والإعدادات، دون <code>package-lock.json</code>.</td></tr>
+      <tr><td>أسطر الكود الأولى</td><td class="ltr">60,237</td><td>منها 44,138 سطراً في تطبيق Backend + Frontend.</td></tr>
+      <tr><td>Endpoints</td><td class="ltr">78</td><td>GET 36 · POST 33 · PUT 5 · DELETE 4.</td></tr>
+      <tr><td>الجداول / الأعمدة</td><td class="ltr">11 / 183</td><td>+ جدول <code>alembic_version</code> في قاعدة البيانات الفعلية.</td></tr>
+      <tr><td>اختبارات Backend</td><td class="ltr">405</td><td>كلها تمر وظيفياً؛ بوابة التغطية تفشل عند 76.67%.</td></tr>
+      <tr><td>اختبارات Frontend</td><td class="ltr">30</td><td>29/30 بالـ timeout الافتراضي؛ 30/30 عند رفعه إلى 20 ثانية.</td></tr>
+      <tr><td>قوالب مدمجة</td><td class="ltr">18</td><td>13 بريد + 5 QR، وإجمالي القوالب في القاعدة 23.</td></tr>
+      <tr><td>QR Poster</td><td class="ltr">400×400 / 1 page</td><td>توليد 0.06–0.13 ثانية، وحجم PDF ~52KB في الاختبار الصناعي.</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="problem" class="section reveal">
+  <div class="section-head">
+    <div class="section-num">02</div>
+    <div><h2>الفكرة والمشكلة</h2><p>لماذا بُني هذا النظام؟ وما المشكلة الأمنية المحددة التي يحلها؟</p></div>
+  </div>
+  <p class="lead">العامل البشري ليس “خطأً” يجب لومه، بل سطح هجوم يجب قياسه وتدريبه. الموظف الذي يضغط رابطاً مشبوهاً لا يحتاج محاضرة سنوية فقط؛ يحتاج تجربة واقعية آمنة، تغذية راجعة فورية، ومسار تعلّم يتكيف مع مستوى خطر. هذا هو جوهر HUMINT Shield.</p>
+  <div class="grid-4">
+    <div class="card"><div class="ico">🧠</div><h4>العامل البشري</h4><p>الموظف هو أول خط دفاع وأول نقطة اختراق. الهندسة الاجتماعية تتجاوز الجدار التقني عبر الثقة والاستعجال والسلطة.</p></div>
+    <div class="card"><div class="ico">😴</div><h4>تدريب ممل</h4><p>العروض السنوية والاختبارات المتعددة لا تنتج سلوكاً. التعلّم يحتاج صدمة آمنة، ثم تفسيراً فورياً، ثم تكراراً متكيفاً.</p></div>
+    <div class="card"><div class="ico">📉</div><h4>غياب القياس</h4><p>“هل الموظفون واعون؟” سؤال لا يُجاب بنسبة إكمال. يحتاج معدل نقر، إرسال بيانات، إبلاغ، وزمن استجابة، ودرجة خطر فردية.</p></div>
+    <div class="card"><div class="ico">🧩</div><h4>تعدد القنوات</h4><p>التهديد لا يأتي بالبريد فقط: QR على ملصق، مكالمة صوتية، رسالة مدير وهمي، أو فلاشة متروكة. التدريب يجب أن يغطيها جميعاً.</p></div>
+  </div>
+  <h3>المشكلة التي يحلها النظام</h3>
+  <div class="grid-2">
+    <div>
+      <p>المؤسسات تحتاج إلى إثبات أن برنامج التوعية يعمل، لا مجرد إثبات أن الموظفين حضروا. HUMINT Shield يحوّل التوعية إلى <b>سلسلة تجريبية قابلة للقياس</b>:</p>
+      <ol>
+        <li><b>محاكاة:</b> رسالة/ملصق/مكالمة/ملف يشبه التهديد الحقيقي، لكنه آمن ومصرّح به.</li>
+        <li><b>قياس:</b> فتح، نقر، إدخال بيانات، إبلاغ، إكمال تدريب، وزمن كل خطوة.</li>
+        <li><b>تفسير:</b> كشف فوري يشرح الخطأ والعواقب المحتملة، دون إذلال أو تخويف غير مبرر.</li>
+        <li><b>تكييف:</b> Elo يرفع/يخفض صعوبة السيناريو التالي حسب سلوك الموظف.</li>
+        <li><b>إثبات:</b> تقارير تنفيذية PDF وCSV وسجل أحداث يمكن تقديمه للمراجعين.</li>
+      </ol>
+    </div>
+    <div class="callout info">
+      <strong>المعادلة المفاهيمية:</strong><br />
+      <span class="ltr" style="display:block;margin:8px 0;font-size:.78rem">Simulate → Measure → Explain → Adapt → Prove</span>
+      كل قناة في النظام تعيد نفس الحلقة، لكن بأدوات مختلفة: البريد عبر Brevo/SMTP، QR عبر ملصق مطبوع، Vishing عبر متصفح، Pretexting عبر محادثة، USB عبر HTML آمن، وSMS/WhatsApp عبر Vonage عند تهيئته.
+    </div>
+  </div>
+  <h3>المبادئ الأخلاقية والقانونية المدمجة</h3>
+  <div class="grid-3">
+    <div class="card"><h4>الموافقة أولاً</h4><p>لا إرسال إلا لعناوين تملكها المؤسسة، ضمن سياسة استخدام مقبول وبرنامج توعية معتمد. السجل نفسه جزء من الإثبات.</p></div>
+    <div class="card"><h4>لا حمولات حقيقية</h4><p>لا Reverse Shell، لا C2، لا تجاوز AV، لا تعطيل Defender، لا تنفيذ أوامر. كل السيناريوهات HTML/PDF/واجهات ويب آمنة.</p></div>
+    <div class="card"><h4>كشف بعد التفاعل</h4><p>صفحة الكشف لا تظهر قبل تفاعل المستخدم، ثم تشرح الأحمرFlags والعواقب المحتملة وتقود إلى تدريب قصير.</p></div>
+    <div class="card"><h4>تشفير الأسرار</h4><p>الحقول الحساسة تُخزّن AES-256-GCM، وكلمات مرور المستخدمين bcrypt. كلمة مرور QR لا تُخزّن أصلاً؛ فقط boolean.</p></div>
+    <div class="card"><h4>الاحتفاظ والحد الأدنى</h4><p><code>DATA_RETENTION_DAYS</code> يحدد نافذة الاحتفاظ. السجلات القابلة للتعريف يجب أن تُحذف وفق السياسة.</p></div>
+    <div class="card"><h4>مراجعة قانونية</h4><p>التقاط كلمة المرور — ولو مشفرة — قد يتعارض مع قوانين أو اتفاقيات عمالية. يجب مراجعة النص القانوني قبل التشغيل الفعلي.</p></div>
+  </div>
+  <div class="callout warn"><strong>ملاحظة تدقيق مهمة:</strong> النظام يلتقط كلمة المرور المدخلة في قناة البريد (مشفرة) كدليل على التفاعل، بينما قناة QR تتجاهل القيمة وتخزن <code>password_submitted=true</code> فقط. هذا التفاوت مقصود لكنه يحتاج توثيقاً واضحاً في سياسة الخصوصية والموافقة.</div>
+</section>

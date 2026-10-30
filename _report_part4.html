@@ -1,0 +1,217 @@
+<section id="stack" class="section reveal">
+  <div class="section-head">
+    <div class="section-num">06</div>
+    <div><h2>التقنيات واللغات المستخدمة</h2><p>ما الذي يعمل فعلاً داخل المستودع، وليس ما هو مطلوب في وصف المشروع.</p></div>
+  </div>
+  <div class="table-wrap"><table>
+    <thead><tr><th>الطبقة</th><th>التقنيات</th><th>الدور في النظام</th></tr></thead>
+    <tbody>
+      <tr><td>Frontend</td><td>React 18.3.1 · TypeScript 5.5.4 · Vite 5.4.2 · MUI 5.15.20 · Emotion · Framer Motion 14.6 · React Router 6.26</td><td>واجهة إدارية RTL، معالج حملات، لوحات، صفحات هبوط عامة، محرر بريد بصري.</td></tr>
+      <tr><td>Data / Charts</td><td>TanStack Query 5.51 · Redux Toolkit 2.2.7 · Axios 1.7.4 · Chart.js 4.4.3 · react-chartjs-2 5.2 · Recharts 3.10</td><td>إدارة حالة الخادم، الرسوم البيانية، التقارير التفاعلية.</td></tr>
+      <tr><td>Forms / Validation</td><td>React Hook Form 7.52 · Zod 3.23 · @hookform/resolvers 3.9</td><td>نماذج الحملات والقوالب والتحقق من المدخلات.</td></tr>
+      <tr><td>UI / RTL</td><td>Cairo · Tajawal · stylis-plugin-rtl · @dnd-kit · lucide-react</td><td>الخطوط العربية، اتجاه RTL، السحب والإفلات، الأيقونات.</td></tr>
+      <tr><td>Backend</td><td>FastAPI 0.115.6 · Uvicorn 0.34 · Gunicorn 23 · Pydantic 2.10.4 · SQLAlchemy 2.0.36 · Alembic 1.14</td><td>API، التحقق، ORM، الترحيلات، الخدمات غير المتزامنة.</td></tr>
+      <tr><td>Database</td><td>PostgreSQL 16 (Production) · SQLite + aiosqlite (Dev) · asyncpg 0.30</td><td>التخزين العلائقي، سجلات التتبع، دفتر الأحداث، QR scans.</td></tr>
+      <tr><td>Async / Queue</td><td>Celery 5.4 · Redis 5.2.1 · Redis 7.2</td><td>إرسال الحملات في الخلفية، مهام الاحتفاظ، Rate limiting الموزع.</td></tr>
+      <tr><td>Integrations</td><td>Brevo SDK 7.6 · Vonage 3.13.1 · Dahl Inference (OpenAI-compatible) · Cloudflare Tunnel</td><td>البريد، SMS/WhatsApp، توليد القوالب، النشر العام.</td></tr>
+      <tr><td>Documents</td><td>ReportLab 5.1 · qrcode 8.2 · Pillow 13 · arabic-reshaper 3.0.1 · python-bidi 0.6.12</td><td>PDF تنفيذي، ملصقات QR، تشكيل العربية، معالجة الصور.</td></tr>
+      <tr><td>Security</td><td>python-jose 3.3 · bcrypt 4.2.1 · cryptography 44.0</td><td>JWT، تجزئة كلمات المرور، AES-256-GCM.</td></tr>
+      <tr><td>Observability</td><td>structlog 24.4 · prometheus-fastapi-instrumentator 7.0</td><td>سجلات JSON مع request_id، مقاييس Prometheus على <code>/metrics</code>.</td></tr>
+      <tr><td>DevOps</td><td>Docker · Docker Compose · Nginx · Playwright · Jest · pytest</td><td>حزم، نشر، اختبارات واجهة/تكامل/E2E.</td></tr>
+    </tbody>
+  </table></div>
+  <div class="grid-2">
+    <div class="callout warn"><strong>تصحيح مهم لوصف المشروع:</strong> FingerprintJS غير موجود في <code>package.json</code> ولا في الكود. البصمة في QR مكتوبة داخلياً (~60 سطراً) وتستخدم Canvas/WebGL/خصائص المتصفح ثم SHA-256. إذا كانت الجهة الأكاديمية تتوقع FingerprintJS كاعتمادية خارجية، يجب توضيح أن البديل الداخلي هو المستخدم فعلاً.</div>
+    <div class="callout info"><strong>ملاحظة معمارية:</strong> المشروع يستخدم Chart.js وRecharts معاً. هذا ليس خطأً بالضرورة، لكنه يزيد حجم الحزمة. يمكن توحيدهما لاحقاً لتقليل الحجم والاعتماديات.</div>
+  </div>
+  <h3>مبادئ التصميم المعماري</h3>
+  <div class="grid-4">
+    <div class="card"><h4>Single Origin</h4><p>FastAPI أو Nginx يخدمان SPA وAPI من نفس الأصل، ما يبسط التتبع والكوكيز وCORS.</p></div>
+    <div class="card"><h4>Service Layer</h4><p>منطق العمل في <code>app/services</code>، والمسارات رقيقة. يسهل الاختبار وإعادة الاستخدام.</p></div>
+    <div class="card"><h4>Append-only Ledger</h4><p>كل حدث تفاعل يُضاف ولا يُعدّل، مع timestamps دقيقة وIP/UA.</p></div>
+    <div class="card"><h4>Safe by Design</h4><p>لا تنفيذ، لا C2، لا ملفات محلية. كل القنوات المتقدمة محاكاة ويب/PDF/HTML.</p></div>
+  </div>
+</section>
+
+<section id="deps" class="section reveal">
+  <div class="section-head">
+    <div class="section-num">07</div>
+    <div><h2>الاعتماديات والمكتبات</h2><p>الإصدارات الأساسية كما هي مثبتة في <code>requirements.txt</code> و<code>package.json</code>.</p></div>
+  </div>
+  <h3>7.1 Backend Runtime</h3>
+  <div class="table-wrap"><table>
+    <thead><tr><th>الحزمة</th><th>الإصدار</th><th>الاستخدام</th></tr></thead>
+    <tbody>
+      <tr><td class="ltr">fastapi</td><td class="ltr">0.115.6</td><td>إطار API غير المتزامن.</td></tr>
+      <tr><td class="ltr">uvicorn[standard]</td><td class="ltr">0.34.0</td><td>خادم ASGI.</td></tr>
+      <tr><td class="ltr">gunicorn</td><td class="ltr">23.0.0</td><td>إدارة عمليات الإنتاج.</td></tr>
+      <tr><td class="ltr">sqlalchemy[asyncio]</td><td class="ltr">2.0.36</td><td>ORM 2.0 غير متزامن.</td></tr>
+      <tr><td class="ltr">asyncpg</td><td class="ltr">0.30.0</td><td>سائق PostgreSQL.</td></tr>
+      <tr><td class="ltr">aiosqlite</td><td class="ltr">0.20.0</td><td>سائق SQLite للتطوير.</td></tr>
+      <tr><td class="ltr">alembic</td><td class="ltr">1.14.0</td><td>ترحيلات قاعدة البيانات.</td></tr>
+      <tr><td class="ltr">pydantic</td><td class="ltr">2.10.4</td><td>التحقق والمخططات.</td></tr>
+      <tr><td class="ltr">pydantic-settings</td><td class="ltr">2.7.0</td><td>إعدادات البيئة.</td></tr>
+      <tr><td class="ltr">python-jose[cryptography]</td><td class="ltr">3.3.0</td><td>JWT.</td></tr>
+      <tr><td class="ltr">bcrypt</td><td class="ltr">4.2.1</td><td>تجزئة كلمات مرور المستخدمين.</td></tr>
+      <tr><td class="ltr">cryptography</td><td class="ltr">44.0.0</td><td>AES-256-GCM.</td></tr>
+      <tr><td class="ltr">celery[redis]</td><td class="ltr">5.4.0</td><td>مهام الخلفية.</td></tr>
+      <tr><td class="ltr">redis</td><td class="ltr">5.2.1</td><td>Broker / Rate limiting.</td></tr>
+      <tr><td class="ltr">sib-api-v3-sdk</td><td class="ltr">7.6.0</td><td>Brevo API.</td></tr>
+      <tr><td class="ltr">vonage</td><td class="ltr">3.13.1</td><td>SMS / WhatsApp.</td></tr>
+      <tr><td class="ltr">reportlab</td><td class="ltr">5.1.0</td><td>PDF تنفيذي وملصقات.</td></tr>
+      <tr><td class="ltr">qrcode[pil]</td><td class="ltr">8.2</td><td>توليد QR.</td></tr>
+      <tr><td class="ltr">pillow</td><td class="ltr">13.0.0</td><td>معالجة الصور واللوجو.</td></tr>
+      <tr><td class="ltr">httpx</td><td class="ltr">0.28.1</td><td>نداءات AI/HTTP.</td></tr>
+      <tr><td class="ltr">structlog</td><td class="ltr">24.4.0</td><td>سجلات JSON.</td></tr>
+      <tr><td class="ltr">prometheus-fastapi-instrumentator</td><td class="ltr">7.0.0</td><td>مقاييس.</td></tr>
+      <tr><td class="ltr">tenacity</td><td class="ltr">9.0.0</td><td>إعادة المحاولة مع backoff.</td></tr>
+    </tbody>
+  </table></div>
+  <h3>7.2 Frontend</h3>
+  <div class="table-wrap"><table>
+    <thead><tr><th>الحزمة</th><th>الإصدار</th><th>الاستخدام</th></tr></thead>
+    <tbody>
+      <tr><td class="ltr">react / react-dom</td><td class="ltr">18.3.1</td><td>واجهة المستخدم.</td></tr>
+      <tr><td class="ltr">typescript</td><td class="ltr">5.5.4</td><td>Type safety.</td></tr>
+      <tr><td class="ltr">vite</td><td class="ltr">5.4.2</td><td>بناء وتطوير.</td></tr>
+      <tr><td class="ltr">@mui/material / icons</td><td class="ltr">5.15.20</td><td>مكونات الواجهة.</td></tr>
+      <tr><td class="ltr">@emotion/react / styled</td><td class="ltr">11.11.4 / 11.11.5</td><td>تنسيق MUI.</td></tr>
+      <tr><td class="ltr">framer-motion</td><td class="ltr">^14.6.0</td><td>حركات وانتقالات.</td></tr>
+      <tr><td class="ltr">chart.js / react-chartjs-2</td><td class="ltr">4.4.3 / 5.2.0</td><td>رسوم بيانية.</td></tr>
+      <tr><td class="ltr">recharts</td><td class="ltr">^3.10.1</td><td>رسوم إضافية.</td></tr>
+      <tr><td class="ltr">@tanstack/react-query</td><td class="ltr">5.51.23</td><td>جلب البيانات وكاشها.</td></tr>
+      <tr><td class="ltr">@reduxjs/toolkit / react-redux</td><td class="ltr">2.2.7 / 9.1.2</td><td>حالة المصادقة.</td></tr>
+      <tr><td class="ltr">react-router-dom</td><td class="ltr">6.26.1</td><td>التوجيه.</td></tr>
+      <tr><td class="ltr">axios</td><td class="ltr">1.7.4</td><td>HTTP client.</td></tr>
+      <tr><td class="ltr">react-hook-form</td><td class="ltr">7.52.2</td><td>النماذج.</td></tr>
+      <tr><td class="ltr">zod</td><td class="ltr">3.23.8</td><td>التحقق.</td></tr>
+      <tr><td class="ltr">@dnd-kit/core / sortable / utilities</td><td class="ltr">^6.1.0 / ^8.0.0 / ^3.2.2</td><td>محرر البريد بالسحب.</td></tr>
+      <tr><td class="ltr">@fontsource/cairo / tajawal</td><td class="ltr">^5.3.0</td><td>الخطوط العربية.</td></tr>
+      <tr><td class="ltr">lucide-react</td><td class="ltr">^1.61.0</td><td>أيقونات.</td></tr>
+      <tr><td class="ltr">canvas-confetti</td><td class="ltr">^1.9.4</td><td>تأثيرات نجاح.</td></tr>
+    </tbody>
+  </table></div>
+  <h3>7.3 Dev / Test</h3>
+  <div class="table-wrap"><table>
+    <thead><tr><th>الحزمة</th><th>الإصدار</th><th>الاستخدام</th></tr></thead>
+    <tbody>
+      <tr><td class="ltr">pytest / pytest-asyncio / pytest-cov</td><td class="ltr">8.3.4 / 0.25.0 / 6.0.0</td><td>اختبارات Backend وتغطية.</td></tr>
+      <tr><td class="ltr">ruff</td><td class="ltr">0.8.4</td><td>Lint Python.</td></tr>
+      <tr><td class="ltr">jest / ts-jest / jsdom</td><td class="ltr">29.7.0 / 29.2.5 / 29.7.0</td><td>اختبارات الواجهة.</td></tr>
+      <tr><td class="ltr">@testing-library/react</td><td class="ltr">16.0.0</td><td>اختبار المكونات.</td></tr>
+      <tr><td class="ltr">@playwright/test</td><td class="ltr">1.46.1</td><td>E2E وScreenshots.</td></tr>
+      <tr><td class="ltr">eslint / prettier</td><td class="ltr">8.57.0 / 3.3.3</td><td>جودة وتنسيق.</td></tr>
+    </tbody>
+  </table></div>
+  <div class="callout info"><strong>سياسة التثبيت:</strong> Backend يستخدم <code>==</code> لكل الاعتماديات تقريباً. Frontend يخلط بين <code>==</code> و<code>^</code>، لذا <code>package-lock.json</code> هو المصدر الفعلي للإصدارات. للإنتاج، يُفضّل تثبيت كل شيء بدقة وتشغيل <code>npm ci</code> بدلاً من <code>npm install</code>.</div>
+</section>
+
+<section id="structure" class="section reveal">
+  <div class="section-head">
+    <div class="section-num">08</div>
+    <div><h2>الهيكلية الشاملة للمشروع</h2><p>شجرة الملفات، مسؤوليات المجلدات، والملفات المفتاحية. الأعداد تستبعد الاعتماديات والملفات المولدة.</p></div>
+  </div>
+  <h3>8.1 الشجرة العامة</h3>
+  <pre>hument_project/
+├── backend/
+│   ├── app/
+│   │   ├── api/v1/            <span class="cmt"># 12 Router: auth, campaigns, tracking, QR, USB, LMS...</span>
+│   │   ├── models/            <span class="cmt"># 11 SQLAlchemy tables</span>
+│   │   ├── schemas/           <span class="cmt"># Pydantic v2 contracts</span>
+│   │   ├── services/          <span class="cmt"># 23 service modules: Elo, QR, AI, Brevo, Vonage...</span>
+│   │   ├── worker/            <span class="cmt"># Celery app + tasks</span>
+│   │   ├── assets/fonts/      <span class="cmt"># Amiri Regular/Bold</span>
+│   │   ├── config.py
+│   │   ├── database.py
+│   │   ├── deps.py
+│   │   ├── main.py
+│   │   └── security.py
+│   ├── alembic/versions/      <span class="cmt"># 11 revisions (0001 → 0011)</span>
+│   ├── tests/                 <span class="cmt"># 31 test modules, 405 tests</span>
+│   ├── docker/entrypoint.sh
+│   ├── Dockerfile
+│   └── requirements*.txt
+├── frontend/
+│   ├── src/
+│   │   ├── api/               <span class="cmt"># axios client + endpoints</span>
+│   │   ├── components/        <span class="cmt"># 17 React components + email-editor</span>
+│   │   ├── hooks/             <span class="cmt"># useAuth</span>
+│   │   ├── lib/               <span class="cmt"># format, interactions, security content</span>
+│   │   ├── pages/             <span class="cmt"># 24 pages</span>
+│   │   ├── store/             <span class="cmt"># Redux auth store</span>
+│   │   ├── types/             <span class="cmt"># 979-line shared types</span>
+│   │   ├── App.tsx            <span class="cmt"># 27 routes</span>
+│   │   └── theme.ts
+│   ├── e2e/                   <span class="cmt"># 3 Playwright specs, 9 tests</span>
+│   ├── nginx.conf
+│   └── package.json
+├── docs/                      <span class="cmt"># evidence, screenshots, proof PDFs</span>
+├── nginx/                     <span class="cmt"># standalone reverse-proxy config</span>
+├── scripts/                   <span class="cmt"># start-dev, public-link, verify_brevo</span>
+├── docker-compose.yml
+├── README.md
+├── PROJECT_STATUS.md
+├── DEFENSIVE_PLAYBOOK.md
+└── README_USB.md</pre>
+  <h3>8.2 الأعداد حسب المجلد</h3>
+  <div class="table-wrap"><table>
+    <thead><tr><th>المجلد</th><th>الملفات</th><th>الأسطر النصية</th><th>المسؤولية</th></tr></thead>
+    <tbody>
+      <tr><td><code>backend/</code></td><td class="ltr">149</td><td class="ltr">31,828</td><td>API، الخدمات، النماذج، الترحيلات، الاختبارات، الخطوط، قواعد البيانات المحلية.</td></tr>
+      <tr><td><code>backend/app/</code></td><td class="ltr">74</td><td class="ltr">20,219</td><td>كود التطبيق الفعلي (API + Models + Schemas + Services + Worker).</td></tr>
+      <tr><td><code>backend/app/api/v1/</code></td><td class="ltr">18</td><td class="ltr">5,585</td><td>مسارات REST وWebhooks.</td></tr>
+      <tr><td><code>backend/app/services/</code></td><td class="ltr">23</td><td class="ltr">10,657</td><td>منطق العمل: Elo، QR، AI، Brevo، Vonage، USB، التقارير.</td></tr>
+      <tr><td><code>backend/app/models/</code></td><td class="ltr">8</td><td class="ltr">821</td><td>11 جدول SQLAlchemy + أنواع الأعمدة.</td></tr>
+      <tr><td><code>backend/app/schemas/</code></td><td class="ltr">10</td><td class="ltr">1,608</td><td>عقود Pydantic.</td></tr>
+      <tr><td><code>backend/alembic/versions/</code></td><td class="ltr">11</td><td class="ltr">1,409</td><td>ترحيلات 0001–0011.</td></tr>
+      <tr><td><code>backend/tests/</code></td><td class="ltr">32</td><td class="ltr">8,303</td><td>405 اختبار Backend.</td></tr>
+      <tr><td><code>frontend/</code></td><td class="ltr">89</td><td class="ltr">25,153</td><td>SPA، الاختبارات، الإعدادات، Nginx.</td></tr>
+      <tr><td><code>frontend/src/pages/</code></td><td class="ltr">29</td><td class="ltr">15,356</td><td>24 صفحة + 5 ملفات اختبار.</td></tr>
+      <tr><td><code>frontend/src/components/</code></td><td class="ltr">22</td><td class="ltr">5,165</td><td>17 مكون React + 4 ملفات email-editor + اختبارات.</td></tr>
+      <tr><td><code>frontend/src/api/</code></td><td class="ltr">2</td><td class="ltr">668</td><td>Axios client وكل نداءات API.</td></tr>
+      <tr><td><code>frontend/src/lib/</code></td><td class="ltr">6</td><td class="ltr">1,167</td><td>تنسيق، تفاعلات، توصيات أمنية، محتوى محاكاة.</td></tr>
+      <tr><td><code>docs/</code></td><td class="ltr">32</td><td class="ltr">151</td><td>أدلة، إثباتات، 26 لقطة شاشة، PDFs.</td></tr>
+      <tr><td><code>scripts/</code></td><td class="ltr">3</td><td class="ltr">629</td><td>تشغيل محلي، نفق عام، تحقق Brevo.</td></tr>
+      <tr><td><code>nginx/</code></td><td class="ltr">2</td><td class="ltr">103</td><td>Reverse proxy جاهز للنشر.</td></tr>
+    </tbody>
+  </table></div>
+  <h3>8.3 الملفات المفتاحية ومسؤولياتها</h3>
+  <div class="table-wrap"><table>
+    <thead><tr><th>الملف</th><th>الأسطر</th><th>المسؤولية</th></tr></thead>
+    <tbody>
+      <tr><td><code>backend/app/main.py</code></td><td class="ltr">259</td><td>إنشاء FastAPI، lifespan، CORS، معالجة الأخطاء، خدمة SPA، Prometheus.</td></tr>
+      <tr><td><code>backend/app/config.py</code></td><td class="ltr">391</td><td>كل الإعدادات والتحقق منها، بما فيها LLM/Vonage/Brevo/الأمان.</td></tr>
+      <tr><td><code>backend/app/security.py</code></td><td class="ltr">235</td><td>bcrypt، JWT، AES-256-GCM، تشفير/فك تشفير الحمولات.</td></tr>
+      <tr><td><code>backend/app/deps.py</code></td><td class="ltr">205</td><td>المصادقة، RBAC، Rate limiting، جلسات DB.</td></tr>
+      <tr><td><code>backend/app/api/v1/campaigns.py</code></td><td class="ltr">816</td><td>CRUD الحملات، الإطلاق، النتائج، Live Board، QR Scans، الإسناد.</td></tr>
+      <tr><td><code>backend/app/api/v1/tracking.py</code></td><td class="ltr">1,032</td><td>كل مسارات التتبع العامة: open/click/submit/report/QR/USB/Vishing/Pretexting.</td></tr>
+      <tr><td><code>backend/app/api/v1/quishing.py</code></td><td class="ltr">175</td><td>Endpoint الملصق العام الواحد، دمج التجاوزات، استجابة PDF.</td></tr>
+      <tr><td><code>backend/app/api/v1/training.py</code></td><td class="ltr">736</td><td>صفحة التعلّم المصيّرة من الخادم (Legacy) + سيناريوهات.</td></tr>
+      <tr><td><code>backend/app/api/v1/usb_drop.py</code></td><td class="ltr">446</td><td>توليد HTML/ZIP/PDF لسيناريو USB الآمن.</td></tr>
+      <tr><td><code>backend/app/services/tracking_service.py</code></td><td class="ltr">1,856</td><td>قلب النظام: كل الأحداث، QR identity resolution، Elo، ledger.</td></tr>
+      <tr><td><code>backend/app/services/campaign_launcher.py</code></td><td class="ltr">761</td><td>اختيار القالب التكيفي، الإرسال، retries، تحديث الحالة.</td></tr>
+      <tr><td><code>backend/app/services/quishing_service.py</code></td><td class="ltr">677</td><td>5 Lures، QR 400px، A4 Poster، logo/colors، Arabic shaping.</td></tr>
+      <tr><td><code>backend/app/services/seed.py</code></td><td class="ltr">990</td><td>18 قالباً مدمجاً، Org/Admin، كتالوج التدريب، بيانات تجريبية.</td></tr>
+      <tr><td><code>backend/app/services/elo_engine.py</code></td><td class="ltr">186</td><td>النطاقات، الدلتا، Threat labels، Clamp 0–2000.</td></tr>
+      <tr><td><code>backend/app/services/classification_engine.py</code></td><td class="ltr">245</td><td>4 فئات سلوكية من آخر 90 يوماً.</td></tr>
+      <tr><td><code>backend/app/services/ai_service.py</code></td><td class="ltr">445</td><td>Dahl/DeepSeek + fallback، JSON parsing، sanitization.</td></tr>
+      <tr><td><code>backend/app/services/email_design.py</code></td><td class="ltr">555</td><td>تحويل design_json إلى HTML آمن متوافق مع عملاء البريد.</td></tr>
+      <tr><td><code>backend/app/services/executive_report.py</code></td><td class="ltr">699</td><td>PDF تنفيذي عربي: رسوم، Top 5، RTL shaping.</td></tr>
+      <tr><td><code>backend/app/services/usb_drop_service.py</code></td><td class="ltr">900</td><td>HTML/ZIP آمن، تحذير إلزامي، تتبع فقط.</td></tr>
+      <tr><td><code>backend/app/services/vonage_service.py</code></td><td class="ltr">361</td><td>SMS/WhatsApp، JWT/API key، retries، DLR.</td></tr>
+      <tr><td><code>backend/app/models/email_campaign.py</code></td><td class="ltr">382</td><td>Campaign/Tracking/QRScan/TrainingInteraction.</td></tr>
+      <tr><td><code>frontend/src/pages/NewCampaignPage.tsx</code></td><td class="ltr">1,334</td><td>معالج الحملة، فلترة QR، Lure Builder، المعاينة، الإطلاق.</td></tr>
+      <tr><td><code>frontend/src/pages/CampaignDetailPage.tsx</code></td><td class="ltr">991</td><td>نتائج الحملة، Radar، الملصق، USB، روابط المحاكاة.</td></tr>
+      <tr><td><code>frontend/src/pages/QrLureLandingPage.tsx</code></td><td class="ltr">919</td><td>5 واجهات QR، 3 حقول، بصمة، نجاح/تحويل.</td></tr>
+      <tr><td><code>frontend/src/pages/IncidentResponseSimulationPage.tsx</code></td><td class="ltr">1,563</td><td>لوحة SOC محلية آمنة، تحقيقات، Timeline، لا شبكة.</td></tr>
+      <tr><td><code>frontend/src/components/email-editor/EmailVisualEditor.tsx</code></td><td class="ltr">1,265</td><td>محرر بريد بصري 3 لوحات، DnD، iframe sandbox.</td></tr>
+      <tr><td><code>frontend/src/api/endpoints.ts</code></td><td class="ltr">545</td><td>كل عقود API في الواجهة.</td></tr>
+      <tr><td><code>frontend/src/types/index.ts</code></td><td class="ltr">979</td><td>الأنواع المشتركة لكل الكيانات.</td></tr>
+    </tbody>
+  </table></div>
+  <details class="details">
+    <summary>عرض قائمة الملفات الأولى الكاملة (229 ملفاً) — دليل الفحص الشامل</summary>
+    <div class="body"><!--FILE_INVENTORY--></div>
+  </details>
+  <div class="callout info"><strong>منهجية العد:</strong> تم استبعاد <code>node_modules</code> و<code>.git</code> و<code>.venv</code> و<code>dist</code> و<code>__pycache__</code> و<code>.pytest_cache</code> و<code>.mypy_cache</code> و<code>coverage.xml</code> و<code>package-lock.json</code> من عدّ الأسطر الأولى. الملفات الثنائية (PNG/PDF/TTF/DB/LOG) تُعدّ في إجمالي 292 ملفاً لكن ليس في LOC.</div>
+</section>

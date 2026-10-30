@@ -311,7 +311,9 @@ async def track_click(
         except Exception as exc:  # noqa: BLE001 - redirect regardless
             await db.rollback()
             logger.error("track_click_failed", tracking_uuid=tracking_uuid, error=str(exc))
-    base_url = settings.base_url.rstrip("/")
+    host = request.headers.get("x-forwarded-host") or request.headers.get("host")
+    proto = request.headers.get("x-forwarded-proto") or request.url.scheme
+    base_url = f"{proto}://{host}" if host else settings.base_url.rstrip("/")
     if channel == "email":
         target = f"{base_url}/phish/{tracking_uuid}"
     elif channel == "qr":
@@ -673,23 +675,10 @@ def _qr_branding_payload(
 )
 async def qr_campaign_context(
     campaign_id: str,
-    db: AsyncSession = Depends(get_db),
-) -> dict[str, object]:
-    """Return the branding/lure context for a generic (no-recipient) poster.
-
-    The campaign UUID is printed on the poster, so it is public by design.  No
-    employee data is ever returned.
-    """
-    if not _valid_uuid(campaign_id):
-        return {"found": False}
-    campaign = await db.get(EmailCampaign, uuid.UUID(campaign_id))
-    if campaign is None or (campaign.channel or "").strip().lower() != "qr":
-        return {"found": False}
-    organization = await db.get(Organization, campaign.organization_id)
-    if organization is None:  # pragma: no cover - FK guarantees existence
-        return {"found": False}
-    config = campaign.channel_config or {}
-    branding = branding_from_organization(organization, get_settings().base_url)
+    host = request.headers.get("x-forwarded-host") or request.headers.get("host")
+    proto = request.headers.get("x-forwarded-proto") or request.url.scheme
+    effective_base_url = f"{proto}://{host}" if host else get_settings().base_url
+    branding = branding_from_organization(organization, effective_base_url)
     return {
         "found": True,
         "campaign_id": str(campaign.id),
@@ -721,7 +710,9 @@ async def track_qr_scan(
     penalty is applied once on form submission.
     """
     settings = get_settings()
-    base_url = settings.base_url.rstrip("/")
+    host = request.headers.get("x-forwarded-host") or request.headers.get("host")
+    proto = request.headers.get("x-forwarded-proto") or request.url.scheme
+    base_url = f"{proto}://{host}" if host else settings.base_url.rstrip("/")
     lure_type = "hr"
     target_suffix = f"/qr/{lure_type}/{tracking_uuid}"
 
