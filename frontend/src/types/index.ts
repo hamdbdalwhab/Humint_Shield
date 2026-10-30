@@ -871,6 +871,20 @@ export interface VonageVerification extends BrevoVerification {
   webhook_token_required?: boolean;
 }
 
+export interface QuickConnectVerification {
+  valid: boolean;
+  configured: boolean;
+  provider: string;
+  channel: string;
+  from?: string;
+  missing?: string[];
+  api_url?: string;
+  balance_yer?: number | null;
+  error?: string | null;
+  detail?: Record<string, unknown> | null;
+}
+
+
 export interface TrackingCompleteResponse {
   success: boolean;
   already_completed: boolean;
@@ -976,4 +990,10 @@ export interface RuntimeConfig {
   };
   rate_limit_enabled: boolean;
   environment: string;
+  sms_provider?: string;
+  whatsapp_provider?: string;
+  quickconnect_configured?: boolean;
+  sms_ready?: boolean;
+  whatsapp_ready?: boolean;
 }
+

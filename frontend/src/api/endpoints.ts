@@ -50,7 +50,9 @@ import type {
   TrainingModule,
   User,
   VonageVerification,
+  QuickConnectVerification,
 } from '@/types';
+
 
 export interface EmployeeListParams {
   page?: number;
@@ -542,4 +544,17 @@ export const diagnosticsApi = {
     });
     return data;
   },
+  async verifyQuickConnect(channel: 'sms' | 'whatsapp'): Promise<QuickConnectVerification> {
+    const { data } = await http.get<QuickConnectVerification>('/api/v1/test/quickconnect/verify', {
+      params: { channel },
+    });
+    return data;
+  },
+  async getQuickConnectBalance(): Promise<{ balance_yer?: number | null; error?: string }> {
+    const { data } = await http.get<{ balance_yer?: number | null; error?: string }>(
+      '/api/v1/test/quickconnect/balance'
+    );
+    return data;
+  },
 };
+

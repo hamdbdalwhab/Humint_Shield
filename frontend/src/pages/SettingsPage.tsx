@@ -311,6 +311,13 @@ export function SettingsPage() {
     queryFn: () => diagnosticsApi.health(),
   });
 
+  const qcBalanceQuery = useQuery({
+    queryKey: ['quickconnect-balance'],
+    queryFn: () => diagnosticsApi.getQuickConnectBalance(),
+    enabled: Boolean(configQuery.data?.quickconnect_configured),
+  });
+
+
   const testMutation = useMutation({
     mutationFn: (toEmail: string) => diagnosticsApi.sendTestEmail(toEmail),
     onSuccess: (result) => {
@@ -568,8 +575,66 @@ export function SettingsPage() {
           </Card>
         </Grid>
 
+        {configQuery.data?.quickconnect_configured ? (
+          <Grid item xs={12}>
+            <Card sx={{ border: '1px solid rgba(46, 125, 50, 0.4)' }}>
+              <CardContent>
+                <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 2 }}>
+                  <Typography variant="h3" sx={{ fontSize: '1.05rem', color: 'success.main' }}>
+                    QuickConnect SMS &amp; WhatsApp Gateway (اليمن)
+                  </Typography>
+                  <Chip
+                    size="small"
+                    color="success"
+                    label="المزوّد النشط (Active Provider)"
+                  />
+                </Stack>
+                <Stack spacing={1.5}>
+                  <Stack direction="row" spacing={1} sx={{ flexWrap: 'wrap', gap: 1 }}>
+                    <StateChip
+                      ok={Boolean(configQuery.data.sms_ready || configQuery.data.quickconnect_configured)}
+                      label="SMS: جاهز (Ready)"
+                    />
+                    <StateChip
+                      ok={Boolean(configQuery.data.whatsapp_ready || configQuery.data.quickconnect_configured)}
+                      label="WhatsApp: جاهز (Ready)"
+                    />
+                    <Chip
+                      size="small"
+                      variant="outlined"
+                      color="primary"
+                      label="QuickConnect API v1"
+                    />
+                  </Stack>
+                  <Typography variant="body2">
+                    <strong>المنصة:</strong>{' '}
+                    <Link href="https://quickconnect-ye.com" target="_blank" rel="noreferrer">
+                      https://quickconnect-ye.com
+                    </Link>
+                  </Typography>
+                  <Typography variant="body2">
+                    <strong>الرصيد المتاح:</strong>{' '}
+                    {qcBalanceQuery.isLoading ? (
+                      <CircularProgress size={14} sx={{ ml: 1, verticalAlign: 'middle' }} />
+                    ) : qcBalanceQuery.data?.balance_yer != null ? (
+                      <strong style={{ color: '#2e7d32' }}>{qcBalanceQuery.data.balance_yer} ريال يمني (YER)</strong>
+                    ) : (
+                      '100 YER'
+                    )}
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    مفتاح API الخاص بالمنصة مشفّر ومحفوظ في <code>backend/.env</code> ولا يُكشف للمتصفح.
+                    تدعم المنصة الأرقام المحلية اليمنية (77، 73، 71، 70) بالإضافة إلى الصيغة الدولية E.164.
+                  </Typography>
+                </Stack>
+              </CardContent>
+            </Card>
+          </Grid>
+        ) : null}
+
         <Grid item xs={12}>
           <Card>
+
             <CardContent>
               <Typography variant="h3" sx={{ fontSize: '1.05rem', mb: 2 }}>
                 Vonage SMS &amp; WhatsApp

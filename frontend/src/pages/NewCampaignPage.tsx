@@ -251,15 +251,30 @@ export function NewCampaignPage() {
     setStep(2);
   }, [preselectId, name, templateId, preselectQuery.data]);
 
+  const configQuery = useQuery({
+    queryKey: ['backend-config'],
+    queryFn: diagnosticsApi.config,
+    staleTime: 60_000,
+  });
+
+  const isQuickConnect = Boolean(
+    configQuery.data?.quickconnect_configured ||
+      configQuery.data?.sms_provider === 'quickconnect'
+  );
+
   // Verify the outbound path before showing "Launch". Email uses Brevo; SMS
-  // and WhatsApp use Vonage. A missing key/sender is surfaced before an
-  // operator can assume a real send happened.
+  // and WhatsApp use QuickConnect (when active) or Vonage.
   const preflightQuery = useQuery({
-    queryKey: ['delivery-preflight', channel],
-    queryFn: () =>
-      channel === 'email'
-        ? diagnosticsApi.verifyBrevo()
-        : diagnosticsApi.verifyVonage(channel as 'sms' | 'whatsapp'),
+    queryKey: ['delivery-preflight', channel, isQuickConnect],
+    queryFn: () => {
+      if (channel === 'email') {
+        return diagnosticsApi.verifyBrevo();
+      }
+      if (isQuickConnect) {
+        return diagnosticsApi.verifyQuickConnect(channel as 'sms' | 'whatsapp');
+      }
+      return diagnosticsApi.verifyVonage(channel as 'sms' | 'whatsapp');
+    },
     enabled:
       step === 2 &&
       channel !== 'qr' &&
@@ -269,6 +284,7 @@ export function NewCampaignPage() {
     staleTime: 15_000,
     retry: false,
   });
+
 
   const launchMutation = useMutation({
     mutationFn: async () => {
@@ -490,7 +506,10 @@ export function NewCampaignPage() {
         ? 'التسليم اليدوي للرابط'
         : channel === 'email'
           ? 'Brevo/SMTP'
-          : 'Vonage';
+          : isQuickConnect
+            ? 'QuickConnect'
+            : 'Vonage';
+
   const preflightBlocked =
     !isManualChannel && Boolean(preflightQuery.data && !preflightQuery.data.valid);
 
@@ -566,17 +585,24 @@ export function NewCampaignPage() {
                       ? 'حملة USB لا ترسل رسائل: بعد الإطلاق تُنزّل ملف HTML آمن باسم الرواتب_السرية.html، وتنسخه على فلاشات مصرّح بها. كل ملف يحمل رابط تتبع فريداً. القالب يُستخدم كمرجع للسيناريو فقط.'
                       : isVishingChannel || isPretextingChannel
                         ? 'هذه قناة محاكاة يدوية: لا تُرسل مكالمة أو رسالة حقيقية. بعد الإطلاق تنسخ رابط المحاكاة الفريد لكل موظف من صفحة الحملة. القالب يُستخدم كمرجع للسيناريو فقط.'
-                        : 'البريد الإلكتروني يُرسل عبر Brevo، وSMS وواتساب يُرسلان عبر Vonage. أرقام الهاتف يجب أن تكون بصيغة E.164 مثل +966500000000.'
+                        : isQuickConnect
+                          ? 'البريد الإلكتروني يُرسل عبر Brevo، وSMS وواتساب يُرسلان عبر QuickConnect (أرقام يمنية 77/73/71/70 أو دولية).'
+                          : 'البريد الإلكتروني يُرسل عبر Brevo، وSMS وواتساب يُرسلان عبر Vonage. أرقام الهاتف يجب أن تكون بصيغة E.164 مثل +966500000000.'
                 }
               >
                 <MenuItem value="email">البريد الإلكتروني</MenuItem>
-                <MenuItem value="sms">SMS — Vonage</MenuItem>
-                <MenuItem value="whatsapp">واتساب — Vonage</MenuItem>
+                <MenuItem value="sms">
+                  {isQuickConnect ? 'رسائل SMS — QuickConnect' : 'SMS — Vonage'}
+                </MenuItem>
+                <MenuItem value="whatsapp">
+                  {isQuickConnect ? 'واتساب — QuickConnect' : 'واتساب — Vonage'}
+                </MenuItem>
                 <MenuItem value="qr">رمز QR — Quishing</MenuItem>
                 <MenuItem value="vishing">مكالمة صوتية — Vishing</MenuItem>
                 <MenuItem value="pretexting">محادثة CEO — Pretexting</MenuItem>
                 <MenuItem value="usb">فلاشة USB — HTML/PDF توعوي</MenuItem>
               </TextField>
+
               {isUsbChannel ? (
                 <Alert severity="info">
                   سيتم إنشاء ملف HTML قياسي وآمن باسم{' '}
@@ -1186,7 +1212,11 @@ export function NewCampaignPage() {
                       underline="hover"
                       sx={{ display: 'inline-block', mt: 0.5 }}
                     >
-                      {channel === 'email' ? 'فتح إعدادات مزوّد البريد' : 'فتح إعدادات Vonage'}
+                      {channel === 'email'
+                        ? 'فتح إعدادات مزوّد البريد'
+                        : isQuickConnect
+                          ? 'فتح إعدادات QuickConnect'
+                          : 'فتح إعدادات Vonage'}
                     </Link>
                   ) : null}
                 </Alert>
@@ -1197,8 +1227,9 @@ export function NewCampaignPage() {
                     ? preflightQuery.data.detail?.transport === 'smtp'
                       ? 'SMTP'
                       : 'Brevo'
-                    : `Vonage (${channel === 'sms' ? 'SMS' : 'WhatsApp'})`}{' '}
+                    : `${isQuickConnect ? 'QuickConnect' : 'Vonage'} (${channel === 'sms' ? 'SMS' : 'WhatsApp'})`}{' '}
                   استلم إعدادات المرسل بنجاح
+
                   {channel !== 'email' &&
                   typeof preflightQuery.data.detail?.from === 'string' &&
                   preflightQuery.data.detail.from.trim()

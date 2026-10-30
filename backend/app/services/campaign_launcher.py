@@ -15,6 +15,7 @@ webhooks.
 """
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -40,7 +41,7 @@ from app.services.elo_engine import (
     threat_level_for_elo,
 )
 from app.services.template_personalizer import TemplatePersonalizer
-from app.services.tracking_service import latest_submitted_values
+from app.services.quickconnect_service import QuickConnectService
 from app.services.vonage_service import VonageService, is_e164_phone
 
 logger = get_logger(__name__)
@@ -65,6 +66,7 @@ class CampaignLauncher:
         email_service: BrevoService | None = None,
         personalizer: TemplatePersonalizer | None = None,
         vonage_service: VonageService | None = None,
+        quickconnect_service: QuickConnectService | None = None,
     ) -> None:
         """Initialise the launcher.
 
@@ -72,10 +74,31 @@ class CampaignLauncher:
             email_service: Email transport (injectable for tests).
             personalizer: Template renderer (injectable for tests).
             vonage_service: SMS/WhatsApp transport (injectable for tests).
+            quickconnect_service: QuickConnect SMS/WhatsApp transport (injectable for tests).
         """
         self.email_service = email_service or BrevoService()
         self.personalizer = personalizer or TemplatePersonalizer()
+        self._injected_vonage = vonage_service is not None
+        self._injected_quickconnect = quickconnect_service is not None
         self.vonage_service = vonage_service or VonageService(settings=self.personalizer.settings)
+        self.quickconnect_service = quickconnect_service or QuickConnectService(
+            settings=self.personalizer.settings
+        )
+
+    def _is_quickconnect_active(self, channel: str) -> bool:
+        """Determine whether QuickConnect or Vonage is the active transport."""
+        if self._injected_quickconnect:
+            return True
+        if self._injected_vonage:
+            return False
+        provider = (
+            self.personalizer.settings.sms_provider
+            if channel == "sms"
+            else self.personalizer.settings.whatsapp_provider
+        )
+        if (provider or "").strip().lower() == "vonage":
+            return False
+        return self.personalizer.settings.quickconnect_configured
 
     # ------------------------------------------------------------------ #
     # Launch
@@ -115,9 +138,10 @@ class CampaignLauncher:
         # Background workers and direct callers bypass the API preflight, so the
         # launcher itself must refuse a phone campaign with missing credentials.
         if channel in PHONE_CHANNELS:
-            configuration_status = getattr(
-                self.vonage_service, "configuration_status", None
-            )
+            use_quickconnect = self._is_quickconnect_active(channel)
+            phone_svc = self.quickconnect_service if use_quickconnect else self.vonage_service
+
+            configuration_status = getattr(phone_svc, "configuration_status", None)
             if callable(configuration_status):
                 readiness = configuration_status(channel)
                 if not readiness.get("valid"):
@@ -283,10 +307,12 @@ class CampaignLauncher:
                     "an E.164 number (for example +966500000000)"
                 )
             elif not is_e164_phone(employee.phone):
-                phone_error = (
-                    f"employee phone '{employee.phone}' is not in E.164 format; "
-                    "update it to a value such as +966500000000"
-                )
+                clean_digits = re.sub(r"\D", "", (employee.phone or ""))
+                if not (len(clean_digits) in (9, 10)):
+                    phone_error = (
+                        f"employee phone '{employee.phone}' is not in a recognized format; "
+                        "update it to a value such as +967771234567 or 771234567"
+                    )
 
         # Idempotency: never send twice for the same (campaign, employee).
         existing = await db.scalar(
@@ -308,14 +334,21 @@ class CampaignLauncher:
         )
 
         tracking_uuid = uuid.uuid4()
+        channel_provider = (
+            self.personalizer.settings.sms_provider
+            if channel == "sms"
+            else self.personalizer.settings.whatsapp_provider
+        )
+        use_quickconnect = self._is_quickconnect_active(channel)
         provider_name = (
             "brevo"
             if channel == "email"
             else "simulation"
             if channel in SIMULATION_CHANNELS
-            else "vonage"
+            else ("quickconnect" if use_quickconnect else "vonage")
         )
         tracking = existing or EmailTracking(
+
             campaign_id=campaign.id,
             employee_id=employee.id,
             template_id=selected_template.id,
@@ -404,15 +437,27 @@ class CampaignLauncher:
                 tracking.tracking_uuid,
                 self._base_url(),
             )
+            use_quickconnect = self._is_quickconnect_active(channel)
+
             try:
                 if channel == "sms":
-                    message_id = await self.vonage_service.send_sms(
-                        employee.phone or "", rendered_text["text_content"]
-                    )
+                    if use_quickconnect:
+                        message_id = await self.quickconnect_service.send_sms(
+                            employee.phone or "", rendered_text["text_content"]
+                        )
+                    else:
+                        message_id = await self.vonage_service.send_sms(
+                            employee.phone or "", rendered_text["text_content"]
+                        )
                 else:
-                    message_id = await self.vonage_service.send_whatsapp(
-                        employee.phone or "", rendered_text["text_content"]
-                    )
+                    if use_quickconnect:
+                        message_id = await self.quickconnect_service.send_whatsapp(
+                            employee.phone or "", rendered_text["text_content"]
+                        )
+                    else:
+                        message_id = await self.vonage_service.send_whatsapp(
+                            employee.phone or "", rendered_text["text_content"]
+                        )
                 response = {"success": True, "message_id": message_id, "error": None}
             except Exception as exc:  # noqa: BLE001 - transport failures are data
                 logger.error(

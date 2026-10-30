@@ -118,6 +118,36 @@ class Settings(BaseSettings):
     #: webhook endpoints reject callbacks without it.
     vonage_webhook_token: str = ""
 
+    # --- QuickConnect (SMS + WhatsApp) ------------------------------------
+    quickconnect_api_key: str = ""
+    quickconnect_api_url: str = "https://aalcgjgocszngpcqzjih.supabase.co/functions/v1/public-api"
+    sms_provider: str = "quickconnect"
+    whatsapp_provider: str = "quickconnect"
+    quickconnect_timeout_seconds: float = 15.0
+
+    @property
+    def quickconnect_configured(self) -> bool:
+        """Return True when a valid QuickConnect API key is present."""
+        key = (self.quickconnect_api_key or "").strip()
+        placeholders = ("your", "change-me", "example")
+        if not key or key.lower().startswith(placeholders):
+            return False
+        return key.startswith("qc_")
+
+    @property
+    def sms_configured(self) -> bool:
+        """Return True when SMS delivery is configured via QuickConnect or Vonage."""
+        if (self.sms_provider or "").strip().lower() == "quickconnect":
+            return self.quickconnect_configured
+        return self.vonage_sms_configured
+
+    @property
+    def whatsapp_configured(self) -> bool:
+        """Return True when WhatsApp delivery is configured via QuickConnect or Vonage."""
+        if (self.whatsapp_provider or "").strip().lower() == "quickconnect":
+            return self.quickconnect_configured
+        return self.vonage_whatsapp_configured
+
     @property
     def vonage_credentials_configured(self) -> bool:
         """Return ``True`` when non-placeholder API credentials are present."""

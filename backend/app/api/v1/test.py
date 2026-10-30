@@ -12,6 +12,7 @@ from app.logging_config import get_logger
 from app.models import User
 from app.schemas import TestEmailRequest
 from app.services.brevo_email_service import BrevoEmailService
+from app.services.quickconnect_service import QuickConnectService
 from app.services.vonage_service import VonageService
 
 logger = get_logger(__name__)
@@ -170,6 +171,60 @@ async def verify_vonage(
     }
 
 
+@router.get(
+    "/quickconnect/verify",
+    dependencies=[Depends(rate_limit(limit=20, window=60, scope="test_quickconnect_verify"))],
+    summary="Validate the QuickConnect configuration and balance",
+)
+async def verify_quickconnect(
+    channel: str = Query("sms", pattern="^(sms|whatsapp)$"),
+    user: User = Depends(require_roles("admin", "manager")),
+) -> dict:
+    """Validate QuickConnect API key and fetch active balance."""
+    settings = get_settings()
+    service = QuickConnectService(settings=settings)
+    status_data = service.configuration_status(channel)
+    if not status_data["valid"]:
+        return {
+            **status_data,
+            "valid": False,
+            "error": "QUICKCONNECT_API_KEY is missing or invalid in backend/.env",
+            "balance_yer": None,
+        }
+    try:
+        balance_data = await service.get_balance()
+        return {
+            **status_data,
+            "valid": True,
+            "error": None,
+            "balance_yer": balance_data.get("balance_yer"),
+            "detail": balance_data,
+        }
+    except Exception as exc:
+        return {
+            **status_data,
+            "valid": False,
+            "error": str(exc),
+            "balance_yer": None,
+        }
+
+
+@router.get(
+    "/quickconnect/balance",
+    summary="Get QuickConnect balance in YER",
+)
+async def quickconnect_balance(
+    user: User = Depends(require_roles("admin", "manager", "viewer")),
+) -> dict:
+    """Return account balance in Yemeni Riyals."""
+    settings = get_settings()
+    service = QuickConnectService(settings=settings)
+    try:
+        return await service.get_balance()
+    except Exception as exc:
+        return {"error": str(exc), "balance_yer": None}
+
+
 @router.get("/config", summary="Non-secret runtime configuration")
 async def config_summary(
     user: User = Depends(require_roles("admin", "manager", "viewer")),
@@ -189,12 +244,17 @@ async def config_summary(
         "brevo_configured": settings.brevo_configured,
         "smtp_configured": settings.smtp_configured,
         "email_dry_run": settings.email_dry_run,
-        "vonage_configured": settings.vonage_configured,
-        "vonage_sms_configured": settings.vonage_sms_configured,
-        "vonage_whatsapp_configured": settings.vonage_whatsapp_configured,
-        "vonage_application_configured": settings.vonage_application_configured,
-        "vonage_sms_from": settings.vonage_sms_from,
-        "vonage_whatsapp_from": settings.vonage_whatsapp_from,
+        "sms_provider": settings.sms_provider,
+        "whatsapp_provider": settings.whatsapp_provider,
+        "quickconnect_configured": settings.quickconnect_configured,
+        "sms_ready": settings.sms_configured,
+        "whatsapp_ready": settings.whatsapp_configured,
+        "vonage_configured": settings.vonage_configured or settings.quickconnect_configured,
+        "vonage_sms_configured": settings.sms_configured,
+        "vonage_whatsapp_configured": settings.whatsapp_configured,
+        "vonage_application_configured": settings.vonage_application_configured or settings.quickconnect_configured,
+        "vonage_sms_from": "QuickConnect Gateway" if settings.quickconnect_configured else settings.vonage_sms_from,
+        "vonage_whatsapp_from": "QuickConnect Gateway" if settings.quickconnect_configured else settings.vonage_whatsapp_from,
         "vonage_webhook_paths": {
             "sms_dlr": "/api/v1/webhooks/vonage/dlr",
             "whatsapp_status": "/api/v1/webhooks/vonage/whatsapp-status",
