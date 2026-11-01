@@ -133,6 +133,7 @@ async def _qr_scan_public_rows(
                 email=scan.email,
                 password_submitted=bool(scan.password_submitted),
                 identity_resolution=scan.identity_resolution or "unknown",
+                event_type=getattr(scan, "event_type", "qr_scanned") or "qr_scanned",
                 occurred_at=scan.occurred_at,
                 ip_address=scan.ip_address,
                 user_agent=scan.user_agent,

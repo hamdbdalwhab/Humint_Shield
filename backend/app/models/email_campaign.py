@@ -106,8 +106,8 @@ class EmailTracking(Base):
     campaign_id: Mapped[uuid.UUID] = mapped_column(
         UUIDType, ForeignKey("campaigns.id", ondelete="CASCADE"), index=True, nullable=False
     )
-    employee_id: Mapped[uuid.UUID] = mapped_column(
-        UUIDType, ForeignKey("human_assets.id", ondelete="CASCADE"), index=True, nullable=False
+    employee_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUIDType, ForeignKey("human_assets.id", ondelete="CASCADE"), index=True, nullable=True
     )
     tracking_uuid: Mapped[uuid.UUID] = mapped_column(
         UUIDType, unique=True, index=True, nullable=False, default=generate_uuid
@@ -384,6 +384,9 @@ class QRScan(Base):
     )
     ip_address: Mapped[str | None] = mapped_column(INETType)
     user_agent: Mapped[str | None] = mapped_column(Text)
+    event_type: Mapped[str] = mapped_column(
+        String(40), default="qr_scanned", server_default="qr_scanned", nullable=False
+    )
     occurred_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, server_default=func.now(), nullable=False
     )

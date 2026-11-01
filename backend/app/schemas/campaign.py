@@ -305,6 +305,7 @@ class QRScanPublic(BaseModel):
     email: str | None = None
     password_submitted: bool = False
     identity_resolution: str = "unknown"
+    event_type: str = "qr_scanned"
     occurred_at: datetime
     ip_address: str | None = None
     user_agent: str | None = None

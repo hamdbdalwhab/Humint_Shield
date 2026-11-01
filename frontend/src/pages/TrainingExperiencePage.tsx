@@ -668,8 +668,12 @@ export function TrainingExperiencePage() {
     searchParams.get('mfa') === 'true' ||
     searchParams.get('otp') === 'true' ||
     Boolean(context?.otp_submitted);
-  const content =
-    context && context.channel && context.channel !== 'email'
+  const isQrChannel =
+    searchParams.get('channel') === 'qr' ||
+    (context?.channel || '').toLowerCase() === 'qr';
+  const content = isQrChannel
+    ? contentForChannel('qr')
+    : context && context.channel && context.channel !== 'email'
       ? contentForChannel(context.channel)
       : EMAIL_CONTENT;
   const compromisedAssets = context?.compromised_assets ?? [];
@@ -842,7 +846,7 @@ export function TrainingExperiencePage() {
               </Box>
             </Typography>
             <Typography sx={{ color: 'text.secondary', maxWidth: 760, fontSize: { xs: '0.9rem', md: '1rem' }, lineHeight: 1.9 }}>
-              {content.description} هذه محاكاة توعية مصرّح بها من {context.company_name ?? 'مؤسستك'}؛
+              {content.description} هذه محاكاة توعية مصرّح بها من {context?.company_name ?? 'مؤسستك'}؛
               لم تُرسل بياناتك إلى أي جهة خارجية.
             </Typography>
             <Stack direction="row" spacing={1} sx={{ flexWrap: 'wrap', gap: 0.75, justifyContent: 'center' }}>
@@ -853,6 +857,34 @@ export function TrainingExperiencePage() {
           </Stack>
         </motion.div>
 
+        {/* --------------------- QR / Quishing Warning Card --------------------- */}
+        {isQrChannel && (
+          <motion.div
+            initial={{ opacity: 0, y: 16 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.5, delay: 0.08 }}
+          >
+            <Alert
+              severity="error"
+              icon={<ShieldAlert size={28} color="#FF3D71" />}
+              sx={{
+                mb: { xs: 3, md: 4 },
+                p: { xs: 2, sm: 2.6 },
+                borderRadius: 3.5,
+                bgcolor: 'rgba(255, 61, 113, 0.12)',
+                border: '1.5px solid rgba(255, 61, 113, 0.45)',
+                color: '#FFD6E0',
+                boxShadow: '0 12px 40px rgba(255, 61, 113, 0.15)',
+                alignItems: 'center',
+                '& .MuiAlert-icon': { alignItems: 'center' },
+              }}
+            >
+              <Typography sx={{ fontWeight: 800, fontSize: { xs: '1rem', sm: '1.14rem' }, lineHeight: 1.6 }}>
+                تنبيه أمني عالي الخطورة: لا تقم أبداً بمسح رموز QR غير الموثوقة أو إدخال بيانات الدخول من خلالها.
+              </Typography>
+            </Alert>
+          </motion.div>
+        )}
         {/* --------------------- OTP / 2FA Warning Card --------------------- */}
         {isOtpWarning && (
           <motion.div

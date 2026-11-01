@@ -86,14 +86,71 @@ async def track_context(
     row = (
         await db.execute(
             select(EmailTracking, HumanAsset, Organization, EmailCampaign, EmailTemplate)
-            .join(HumanAsset, HumanAsset.id == EmailTracking.employee_id)
-            .join(Organization, Organization.id == HumanAsset.organization_id)
+            .outerjoin(HumanAsset, HumanAsset.id == EmailTracking.employee_id)
             .join(EmailCampaign, EmailCampaign.id == EmailTracking.campaign_id)
+            .join(Organization, Organization.id == EmailCampaign.organization_id)
             .outerjoin(EmailTemplate, EmailTemplate.id == EmailTracking.template_id)
             .where(EmailTracking.tracking_uuid == uid)
         )
     ).first()
     if row is None:
+        campaign = await db.get(EmailCampaign, uid)
+        if campaign is not None and (campaign.channel or "").strip().lower() == "qr":
+            org = await db.get(Organization, campaign.organization_id)
+            if org is not None:
+                config = campaign.channel_config or {}
+                branding = branding_from_organization(org, get_settings().base_url)
+                poster = resolve_poster_copy(
+                    config,
+                    company_name=org.name,
+                    department="",
+                    primary_color=branding.primary_color,
+                    logo=org.brand_logo_data,
+                )
+                qr_branding = {
+                    "lure_type": poster.lure_type,
+                    "company_name": poster.company_name,
+                    "department": poster.department,
+                    "month_label": poster.month_label,
+                    "label": poster.label,
+                    "headline": poster.headline,
+                    "body": poster.body,
+                    "cta": poster.cta,
+                    "primary_color": poster.primary_color,
+                    "accent_color": poster.accent_color,
+                    "logo_url": (
+                        config.get("qr", {}).get("logo_data_url")
+                        if isinstance(config.get("qr"), dict)
+                        else None
+                    ) or branding.logo_url,
+                }
+                return {
+                    "found": True,
+                    "first_name": "",
+                    "last_name": "",
+                    "email": "",
+                    "company_name": org.name,
+                    "template_name": poster.headline,
+                    "subject": poster.headline,
+                    "sender_name": poster.company_name,
+                    "campaign_name": campaign.name,
+                    "campaign_id": str(campaign.id),
+                    "channel": "qr",
+                    "channel_config": config,
+                    "skin": "hr",
+                    "credential_provider": "hr",
+                    "brand_primary_color": branding.primary_color,
+                    "brand_logo_url": branding.logo_url,
+                    "qr_branding": qr_branding,
+                    "form_submitted": True,
+                    "already_completed": False,
+                    "quiz_score": None,
+                    "quiz_total": 5,
+                    "is_reported_safe": False,
+                    "reported": False,
+                    "otp_submitted": False,
+                    "compromised_assets": [],
+                }
         return {"found": False}
     tracking, employee, organization, campaign, template = row
     template_name = template.name if template is not None else ""
@@ -153,9 +210,9 @@ async def track_context(
         }
     return {
         "found": True,
-        "first_name": employee.first_name or "",
-        "last_name": employee.last_name or "",
-        "email": employee.email,
+        "first_name": employee.first_name or "" if employee else "",
+        "last_name": employee.last_name or "" if employee else "",
+        "email": employee.email if employee else (tracking.submitted_email or ""),
         "company_name": organization.name,
         "template_name": template_name,
         "subject": (template.subject if template is not None else "Security notification"),
@@ -798,7 +855,19 @@ async def track_qr_scan(
             lure_type = normalize_lure_type(
                 qr_values.get("lure_type") or qr_values.get("pretext_key")
             )
-            target_suffix = f"/qr/{lure_type}/c/{campaign.id}"
+            try:
+                tracking_row, scan_row = await TrackingService().log_campaign_qr_scan(
+                    campaign,
+                    _client_ip(request),
+                    request.headers.get("user-agent"),
+                    db,
+                )
+                await db.commit()
+                target_suffix = f"/qr/{lure_type}/{campaign.id}?tid={tracking_row.tracking_uuid}"
+            except Exception as exc:
+                await db.rollback()
+                logger.error("track_qr_campaign_scan_failed", error=str(exc))
+                target_suffix = f"/qr/{lure_type}/{campaign.id}"
         else:
             try:
                 row = await TrackingService().log_qr_scan(

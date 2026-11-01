@@ -37,7 +37,7 @@ import {
   Wifi,
 } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 
 import { trackingApi } from '@/api/endpoints';
@@ -198,7 +198,10 @@ async function collectFingerprint(): Promise<Record<string, unknown>> {
   } catch {
     /* Canvas can be blocked by privacy settings. */
   }
-  data.client_hash = await sha256Hex(JSON.stringify(data));
+  const deviceHash = await sha256Hex(JSON.stringify(data));
+  data.client_hash = deviceHash;
+  data.device_hash = deviceHash;
+  data.fingerprint_hash = deviceHash;
   return data;
 }
 
@@ -423,16 +426,18 @@ function BrandHeader({ skin, branding, fallback, icon: Icon, caption }: BrandHea
 }
 
 export function QrLureLandingPage() {
-  const {
-    lureType: routeLure,
-    trackingUuid = '',
-    campaignId: routeCampaignId = '',
-  } = useParams<{
+  const params = useParams<{
+    lure?: string;
     lureType?: string;
     trackingUuid?: string;
     campaignId?: string;
   }>();
+  const [searchParams] = useSearchParams();
   const navigate = useNavigate();
+  const routeLure = params.lure || params.lureType || '';
+  const routeCampaignId = params.campaignId || '';
+  const tidParam = searchParams.get('tid') || searchParams.get('tracking_uuid') || '';
+  const trackingUuid = tidParam || params.trackingUuid || '';
   const [username, setUsername] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -527,12 +532,9 @@ export function QrLureLandingPage() {
         setBusy(false);
         return;
       }
-      if (trackingUuid) {
-        navigate(`/hacked/${trackingUuid}?channel=qr`);
-      } else {
-        setSubmitted(true);
-        setBusy(false);
-      }
+      setSubmitted(true);
+      const targetUuid = response.tracking_uuid || trackingUuid || campaignId;
+      navigate(`/training/${targetUuid}?channel=qr`);
     } catch {
       setError('تعذّر الاتصال بالخدمة. تحقق من الشبكة وأعد المحاولة.');
       setBusy(false);
