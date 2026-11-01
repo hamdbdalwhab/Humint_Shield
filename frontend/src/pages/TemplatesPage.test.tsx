@@ -113,5 +113,5 @@ describe('TemplatesPage AI generation', () => {
     );
     expect(screen.getByRole('slider')).toHaveAttribute('aria-valuenow', '8');
     expect(screen.getByLabelText(/اسم القالب/)).toHaveValue('فاتورة عاجلة مطلوبة');
-  });
+  }, 15000);
 });

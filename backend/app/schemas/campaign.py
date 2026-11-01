@@ -312,6 +312,9 @@ class QRScanPublic(BaseModel):
     #: Canvas/WebGL/screen/CPU/timezone evidence collected on the landing page.
     fingerprint: dict[str, Any] = Field(default_factory=dict)
     fingerprint_hash: str | None = None
+    username_entered: str | None = None
+    email_entered: str | None = None
+    device_info: dict[str, Any] = Field(default_factory=dict)
     elo_delta: int = 0
     penalty_applied: bool = False
 
@@ -410,6 +413,8 @@ class QRSubmissionResponse(BaseModel):
     """Result of a QR/quishing credential submission."""
 
     success: bool
+    status: str = "success"
+    redirect_url: str | None = None
     first_time: bool = False
     unknown: bool = False
     message: str = ""

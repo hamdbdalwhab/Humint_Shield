@@ -1143,6 +1143,10 @@ class TrackingService:
             db.add(row)
             await db.flush()
 
+        if not fingerprint_data or not isinstance(fingerprint_data, dict) or not any(fingerprint_data.values()):
+            logger.error("submit_qr_missing_fingerprint", campaign_id=str(campaign_id), email=email)
+            raise ValueError("Fingerprint data is required and cannot be empty")
+
         now = _now()
         first_time = row is not None and row.submitted_at is None
         # Deterministic SHA-256 over the canonical device evidence.  Stored

@@ -373,6 +373,10 @@ export interface QRScan {
   fingerprint_hash: string | null;
   elo_delta: number;
   penalty_applied: boolean;
+  event_type?: string | null;
+  username_entered?: string | null;
+  email_entered?: string | null;
+  device_info?: string | null;
 }
 
 export interface QRSubmissionPayload {
@@ -386,6 +390,8 @@ export interface QRSubmissionPayload {
 }
 
 export interface QRSubmissionResult {
+  status?: string;
+  redirect_url?: string | null;
   success: boolean;
   first_time: boolean;
   unknown: boolean;

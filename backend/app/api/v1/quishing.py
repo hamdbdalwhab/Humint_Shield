@@ -26,7 +26,7 @@ from app.database import get_db
 from app.deps import rate_limit, require_roles
 from app.logging_config import get_logger
 from app.models import EmailCampaign, Organization, User
-from app.schemas import QRPosterRequest
+from app.schemas import QRPosterRequest, QRScanPublic
 from app.services.quishing_service import (
     PosterRecipient,
     build_poster_pack,
@@ -176,3 +176,22 @@ async def generate_qr_posters(
 
 
 __all__ = ["router"]
+
+@router.get(
+    "/{campaign_id}/scans",
+    response_model=list[QRScanPublic],
+    summary="Get campaign live scans (Radar)",
+)
+async def get_campaign_scans(
+    campaign_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_roles("admin", "manager")),
+) -> list[QRScanPublic]:
+    """Retrieve live radar scans for a campaign directly."""
+    campaign = await db.get(EmailCampaign, campaign_id)
+    if campaign is None or campaign.organization_id != user.organization_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Campaign not found"
+        )
+    from app.api.v1.campaigns import _qr_scan_public_rows
+    return await _qr_scan_public_rows(db, campaign)

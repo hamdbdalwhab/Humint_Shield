@@ -123,6 +123,8 @@ async def test_step2_and_3_qr_submit_known_employee_penalizes_elo(client, db: As
     res = await client.post("/api/v1/track/qr/submit", json=submit_payload)
     assert res.status_code == 200
     data = res.json()
+    assert data["status"] == "success"
+    assert data["redirect_url"] == f"/training/{data['tracking_uuid']}?channel=qr"
     assert data["success"] is True
     assert data["unknown"] is False
     assert data["resolved_employee_id"] == str(employee.id)
@@ -281,6 +283,15 @@ async def test_step5_admin_dashboard_radar_verification(client, db: AsyncSession
     scans = radar_res.json()
     assert len(scans) >= 2
 
+    # Query direct campaigns scans endpoint
+    direct_radar_res = await client.get(
+        f"/api/v1/campaigns/{campaign.id}/scans",
+        headers=auth_headers,
+    )
+    assert direct_radar_res.status_code == 200
+    assert len(direct_radar_res.json()) == len(scans)
+
+
     # Check known scan
     known = next((s for s in scans if s["email"] == employee.email), None)
     assert known is not None
@@ -299,3 +310,18 @@ async def test_step5_admin_dashboard_radar_verification(client, db: AsyncSession
     assert unknown["fingerprint_hash"] is not None
     assert unknown["ip_address"] == "192.168.1.100"
     assert unknown["penalty_applied"] is False
+
+
+async def test_empty_fingerprint_rejected(client, db: AsyncSession, qr_campaign_factory):
+    """Empty fingerprint_data raises 400 and rejects submission."""
+    campaign = await qr_campaign_factory("hr")
+    submit_payload = {
+        "campaign_id": str(campaign.id),
+        "username": "user.test",
+        "email": "user.test@example.com",
+        "password_submitted": True,
+        "fingerprint_data": {},
+    }
+    res = await client.post("/api/v1/track/qr/submit", json=submit_payload)
+    assert res.status_code == 400
+    assert "Fingerprint data is required" in res.json()["detail"]

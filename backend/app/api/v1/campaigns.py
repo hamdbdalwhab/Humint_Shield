@@ -138,7 +138,10 @@ async def _qr_scan_public_rows(
                 ip_address=scan.ip_address,
                 user_agent=scan.user_agent,
                 fingerprint=fingerprint,
+                device_info=fingerprint,
                 fingerprint_hash=fingerprint.get("fingerprint_hash"),
+                username_entered=scan.username,
+                email_entered=scan.email,
                 elo_delta=scan.elo_delta or 0,
                 penalty_applied=bool(scan.penalty_applied),
             )

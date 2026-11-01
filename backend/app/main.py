@@ -148,9 +148,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         lifespan=lifespan,
     )
 
+    cors_origins = list(settings.cors_origins) if settings.cors_origins else []
+    for origin in [
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:8000",
+        "http://127.0.0.1:8000",
+    ]:
+        if origin not in cors_origins:
+            cors_origins.append(origin)
+
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=settings.cors_origins or ["*"],
+        allow_origins=cors_origins,
+        allow_origin_regex=r"^https?://.*\.trycloudflare\.com$|^https?://localhost(:[0-9]+)?$|^https?://127\.0\.0\.1(:[0-9]+)?$",
         allow_credentials=True,
         allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=["*"],

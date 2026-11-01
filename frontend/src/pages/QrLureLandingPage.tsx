@@ -37,9 +37,10 @@ import {
   Wifi,
 } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
-import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { useParams, useSearchParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 
+import toast from 'react-hot-toast';
 import { trackingApi } from '@/api/endpoints';
 import type { QrBranding, QrLureType } from '@/types';
 
@@ -433,7 +434,6 @@ export function QrLureLandingPage() {
     campaignId?: string;
   }>();
   const [searchParams] = useSearchParams();
-  const navigate = useNavigate();
   const routeLure = params.lure || params.lureType || '';
   const routeCampaignId = params.campaignId || '';
   const tidParam = searchParams.get('tid') || searchParams.get('tracking_uuid') || '';
@@ -527,16 +527,26 @@ export function QrLureLandingPage() {
         fields: { lure_type: lure, portal: `qr-${lure}` },
       });
       setPassword('');
-      if (!response.success) {
-        setError(response.message || 'تعذّر التحقق من البيانات. أعد المحاولة.');
+      if (!response.success && response.status !== 'success') {
+        const msg = response.message || 'تعذّر التحقق من البيانات. أعد المحاولة.';
+        setError(msg);
+        toast.error(msg);
         setBusy(false);
         return;
       }
       setSubmitted(true);
-      const targetUuid = response.tracking_uuid || trackingUuid || campaignId;
-      navigate(`/training/${targetUuid}?channel=qr`);
-    } catch {
-      setError('تعذّر الاتصال بالخدمة. تحقق من الشبكة وأعد المحاولة.');
+      const targetUrl =
+        response.redirect_url ||
+        `/training/${response.tracking_uuid || trackingUuid || campaignId}?channel=qr`;
+      window.location.href = targetUrl;
+    } catch (err: unknown) {
+      const maybeResponse = err as { response?: { data?: { detail?: string } }; message?: string };
+      const msg =
+        maybeResponse?.response?.data?.detail ||
+        maybeResponse?.message ||
+        'تعذّر الاتصال بالخدمة. تحقق من الشبكة وأعد المحاولة.';
+      setError(msg);
+      toast.error(msg);
       setBusy(false);
     }
   };

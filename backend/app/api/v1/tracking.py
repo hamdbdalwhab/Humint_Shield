@@ -719,17 +719,26 @@ async def track_qr_submit(
         await db.commit()
     except ValueError as exc:
         await db.rollback()
-        return QRSubmissionResponse(success=False, message=str(exc))
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        )
     except Exception as exc:  # noqa: BLE001 - never break the landing page
         await db.rollback()
         logger.error("track_qr_submit_failed", error=str(exc))
         return QRSubmissionResponse(
-            success=False, message="Unable to record the submission"
+            success=False, status="error", message="Unable to record the submission"
         )
 
     employee = result.employee
+    tracking_uuid = (
+        result.tracking.tracking_uuid if result.tracking is not None else None
+    )
+    redirect_url = f"/training/{tracking_uuid}?channel=qr" if tracking_uuid else f"/training/{payload.campaign_id}?channel=qr"
     return QRSubmissionResponse(
         success=True,
+        status="success",
+        redirect_url=redirect_url,
         first_time=result.first_time,
         unknown=employee is None,
         message=(
@@ -740,9 +749,7 @@ async def track_qr_submit(
         identity_resolution=result.identity_resolution,
         resolved_employee_id=employee.id if employee is not None else None,
         resolved_employee_name=employee.full_name if employee is not None else None,
-        tracking_uuid=(
-            result.tracking.tracking_uuid if result.tracking is not None else None
-        ),
+        tracking_uuid=tracking_uuid,
         elo_delta=result.elo_delta,
         elo_score=(
             int(employee.elo_score) if employee is not None and employee.elo_score is not None else None
