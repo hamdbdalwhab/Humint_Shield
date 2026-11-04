@@ -117,6 +117,26 @@ async def _qr_scan_public_rows(
         employee = employees.get(scan.employee_id) if scan.employee_id else None
         source = employees.get(tracking.employee_id) if tracking is not None else None
         fingerprint = scan.fingerprint_data if isinstance(scan.fingerprint_data, dict) else {}
+        
+        events = list(getattr(scan, "real_time_events", None) or [])
+        time_on_page = 0
+        if len(events) >= 2:
+            try:
+                from datetime import datetime as _dt
+                t0 = _dt.fromisoformat(events[0]["timestamp"])
+                t_last = _dt.fromisoformat(events[-1]["timestamp"])
+                time_on_page = max(0, int((t_last - t0).total_seconds()))
+            except Exception:
+                pass
+
+        city = getattr(scan, "city", None)
+        country = getattr(scan, "country", None)
+        isp = getattr(scan, "isp", None)
+        loc_parts = [p for p in (city, country) if p]
+        location_display = ", ".join(loc_parts) if loc_parts else None
+        if location_display and isp:
+            location_display += f" (ISP: {isp})"
+
         result.append(
             QRScanPublic(
                 id=scan.id,
@@ -142,6 +162,15 @@ async def _qr_scan_public_rows(
                 fingerprint_hash=fingerprint.get("fingerprint_hash"),
                 username_entered=scan.username,
                 email_entered=scan.email,
+                device_model=getattr(scan, "device_model", None),
+                country=country,
+                city=city,
+                isp=isp,
+                location_display=location_display,
+                latitude=getattr(scan, "latitude", None),
+                longitude=getattr(scan, "longitude", None),
+                real_time_events=events,
+                time_on_page_seconds=time_on_page,
                 elo_delta=scan.elo_delta or 0,
                 penalty_applied=bool(scan.penalty_applied),
             )

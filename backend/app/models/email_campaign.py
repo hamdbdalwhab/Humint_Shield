@@ -15,6 +15,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    Float,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -385,6 +386,13 @@ class QRScan(Base):
     )
     ip_address: Mapped[str | None] = mapped_column(INETType)
     user_agent: Mapped[str | None] = mapped_column(Text)
+    device_model: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    country: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    city: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    isp: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    latitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    longitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    real_time_events: Mapped[list | None] = mapped_column(JSONBType, default=list)
     event_type: Mapped[str] = mapped_column(
         String(40), default="qr_scanned", server_default="qr_scanned", nullable=False
     )

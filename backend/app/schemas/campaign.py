@@ -315,6 +315,15 @@ class QRScanPublic(BaseModel):
     username_entered: str | None = None
     email_entered: str | None = None
     device_info: dict[str, Any] = Field(default_factory=dict)
+    device_model: str | None = None
+    country: str | None = None
+    city: str | None = None
+    isp: str | None = None
+    location_display: str | None = None
+    latitude: float | None = None
+    longitude: float | None = None
+    real_time_events: list[dict[str, Any]] = Field(default_factory=list)
+    time_on_page_seconds: int = 0
     elo_delta: int = 0
     penalty_applied: bool = False
 

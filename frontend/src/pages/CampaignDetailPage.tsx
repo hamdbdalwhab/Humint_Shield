@@ -11,7 +11,6 @@ import Dialog from '@mui/material/Dialog';
 import DialogActions from '@mui/material/DialogActions';
 import DialogContent from '@mui/material/DialogContent';
 import DialogTitle from '@mui/material/DialogTitle';
-import Divider from '@mui/material/Divider';
 import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
@@ -48,7 +47,12 @@ import ErrorOutlineIcon from '@mui/icons-material/ErrorOutline';
 import ScheduleIcon from '@mui/icons-material/Schedule';
 import SensorsIcon from '@mui/icons-material/Sensors';
 import VisibilityIcon from '@mui/icons-material/Visibility';
-import { useMemo, useState } from 'react';
+import SmartphoneIcon from '@mui/icons-material/Smartphone';
+import LocationOnIcon from '@mui/icons-material/LocationOn';
+import AccessTimeIcon from '@mui/icons-material/AccessTime';
+import PublicIcon from '@mui/icons-material/Public';
+import RadioButtonCheckedIcon from '@mui/icons-material/RadioButtonChecked';
+import { useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useNavigate, useParams } from 'react-router-dom';
 import toast from 'react-hot-toast';
@@ -226,6 +230,8 @@ export function CampaignDetailPage() {
   const [assignScan, setAssignScan] = useState<QRScan | null>(null);
   const [assignEmployeeId, setAssignEmployeeId] = useState('');
   const [assignBusy, setAssignBusy] = useState(false);
+  const [liveScans, setLiveScans] = useState<QRScan[]>([]);
+  const [wsConnected, setWsConnected] = useState(false);
 
   const resultsQuery = useQuery({
     queryKey: ['campaign-results', organizationId, campaignId],
@@ -247,6 +253,107 @@ export function CampaignDetailPage() {
     enabled: Boolean(campaignId),
     refetchInterval: REFRESH_INTERVAL_MS,
   });
+
+  useEffect(() => {
+    if (scansQuery.data) {
+      setLiveScans((current) => {
+        const map = new Map<string, QRScan>();
+        scansQuery.data.forEach((s) => map.set(s.id, s));
+        current.forEach((s) => {
+          if (!map.has(s.id)) {
+            map.set(s.id, s);
+          } else {
+            const serverItem = map.get(s.id)!;
+            const currentEventsCount = s.real_time_events?.length ?? 0;
+            const serverEventsCount = serverItem.real_time_events?.length ?? 0;
+            if (currentEventsCount > serverEventsCount) {
+              map.set(s.id, { ...serverItem, ...s });
+            }
+          }
+        });
+        return Array.from(map.values()).sort(
+          (a, b) => new Date(b.occurred_at).getTime() - new Date(a.occurred_at).getTime()
+        );
+      });
+    }
+  }, [scansQuery.data]);
+
+  useEffect(() => {
+    if (!campaignId) return;
+    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const host = window.location.host;
+    const wsUrl = `${proto}//${host}/ws/campaign/${campaignId}/scans`;
+
+    let socket: WebSocket | null = null;
+    try {
+      socket = new WebSocket(wsUrl);
+      socket.onopen = () => setWsConnected(true);
+      socket.onclose = () => setWsConnected(false);
+      socket.onerror = () => setWsConnected(false);
+      socket.onmessage = (event) => {
+        try {
+          const payload = JSON.parse(event.data);
+          if (payload.type === 'scan_update') {
+            setLiveScans((prev) => {
+              const scanId = payload.scan_id;
+              const index = prev.findIndex((s) => s.id === scanId);
+              const updatedItem: QRScan = {
+                id: scanId,
+                campaign_id: payload.campaign_id,
+                tracking_id: payload.tracking_id,
+                tracking_uuid: payload.tracking_uuid,
+                source_employee_id: null,
+                source_employee_name: null,
+                source_employee_email: null,
+                employee_id: payload.employee_id,
+                employee_name: payload.employee_name,
+                employee_email: payload.email_entered,
+                username: payload.username_entered,
+                email: payload.email_entered,
+                username_entered: payload.username_entered,
+                email_entered: payload.email_entered,
+                password_submitted: payload.password_submitted,
+                identity_resolution: payload.identity_resolution,
+                event_type: payload.event_type,
+                occurred_at: payload.occurred_at,
+                ip_address: payload.ip_address,
+                user_agent: payload.user_agent,
+                device_model: payload.device_model,
+                country: payload.country,
+                city: payload.city,
+                isp: payload.isp,
+                location_display: payload.location_display,
+                latitude: payload.latitude,
+                longitude: payload.longitude,
+                fingerprint: payload.fingerprint || {},
+                fingerprint_hash: payload.fingerprint_hash,
+                device_info: payload.device_model,
+                real_time_events: payload.real_time_events || [],
+                time_on_page_seconds: payload.time_on_page_seconds || 0,
+                elo_delta: payload.elo_delta || 0,
+                penalty_applied: payload.penalty_applied || false,
+              };
+              if (index >= 0) {
+                const next = [...prev];
+                next[index] = updatedItem;
+                return next;
+              }
+              return [updatedItem, ...prev];
+            });
+            toast('تحديث مباشر من الرادار: رصد تفاعل فوري!', { icon: '📡' });
+          }
+        } catch {
+          /* ignore */
+        }
+      };
+    } catch {
+      /* ignore */
+    }
+
+    return () => {
+      if (socket) socket.close();
+    };
+  }, [campaignId]);
 
   const employees = useMemo(() => {
     const rows = resultsQuery.data?.employees ?? [];
@@ -397,7 +504,7 @@ export function CampaignDetailPage() {
 
   const { campaign, stats } = resultsQuery.data;
   const allEmployees = resultsQuery.data.employees;
-  const scans = scansQuery.data ?? resultsQuery.data.scans ?? [];
+  const scans = liveScans.length > 0 ? liveScans : (scansQuery.data ?? resultsQuery.data.scans ?? []);
   const isPhoneChannel = campaign.channel === 'sms' || campaign.channel === 'whatsapp';
   const isQrChannel = campaign.channel === 'qr';
   const isUsbChannel = campaign.channel === 'usb';
@@ -828,143 +935,218 @@ export function CampaignDetailPage() {
               sx={{ mb: 2 }}
             >
               <Box>
-                <Typography variant="h3" sx={{ fontSize: '1.05rem' }}>
-                  الرادار — Live scans
-                </Typography>
+                <Stack direction="row" spacing={1.5} alignItems="center">
+                  <Typography variant="h3" sx={{ fontSize: '1.15rem', fontWeight: 800 }}>
+                    الرادار المباشر — Live Telemetry Radar
+                  </Typography>
+                  <Chip
+                    size="small"
+                    color={wsConnected ? 'success' : 'default'}
+                    icon={<RadioButtonCheckedIcon fontSize="small" />}
+                    label={wsConnected ? 'بث حي متصل (WebSocket Active)' : 'جاري الاتصال بالرادار...'}
+                    sx={{ fontWeight: 700 }}
+                  />
+                </Stack>
                 <Typography variant="caption" color="text.secondary">
-                  كل إرسال لنموذج الدخول، بما في ذلك الهويات غير المعروفة · تحديث كل{' '}
-                  {REFRESH_INTERVAL_MS / 1000} ثانية
+                  تحديث فوري بالثانية لكافة التفاعلات، تحديد دقيق لطراز الجهاز، والموقع الجغرافي (صنعاء / يمن نت)
                 </Typography>
               </Box>
-              <Chip
-                color={scans.some((scan) => !scan.employee_id) ? 'warning' : 'success'}
-                label={`${scans.filter((scan) => !scan.employee_id).length} غير معروف`}
-              />
+              <Stack direction="row" spacing={1} sx={{ mt: { xs: 1, sm: 0 } }}>
+                <Chip
+                  color={scans.some((scan) => !scan.employee_id) ? 'warning' : 'success'}
+                  label={`${scans.filter((scan) => !scan.employee_id).length} غير معروف`}
+                />
+                <Chip
+                  variant="outlined"
+                  label={`إجمالي الأجهزة: ${scans.length}`}
+                />
+              </Stack>
             </Stack>
+
             {scans.length === 0 ? (
               <Box sx={{ p: 4, textAlign: 'center', bgcolor: 'action.hover', borderRadius: 2 }}>
                 <Typography variant="body1" sx={{ fontWeight: 700, mb: 1 }}>
-                  بانتظار المسحات الأولى (Live Radar Active)
+                  بانتظار المسحات الأولى (Live Telemetry Radar Listening)
                 </Typography>
                 <Typography color="text.secondary" variant="body2">
-                  لا توجد مسحات مسجلة بعد. اطبع الملصق وقم بتعليقه، وعند قيام أي موظف بمسح الرمز ستظهر بطاقته هنا فوراً مع تحديث تلقائي كل 5 ثوانٍ.
+                  لا توجد مسحات مسجلة بعد. بمجرد قيام أي شخص بمسح الرمز بهاتفه، ستظهر بطاقته فوراً هنا عبر البث المباشر مع طراز الجهاز وموقعه والخط الزمني لتفاعله.
                 </Typography>
               </Box>
             ) : (
               <Grid container spacing={2}>
-                {scans.map((scan) => (
-                  <Grid item xs={12} md={6} lg={4} key={scan.id}>
-                    <Card
-                      variant="outlined"
-                      sx={{
-                        p: 2,
-                        borderRadius: 3,
-                        border: '1px solid',
-                        borderColor: scan.employee_id ? 'primary.main' : 'warning.main',
-                        bgcolor: scan.employee_id ? 'rgba(0, 240, 255, 0.03)' : 'rgba(255, 170, 0, 0.03)',
-                        transition: 'all 0.2s ease-in-out',
-                        '&:hover': {
-                          transform: 'translateY(-2px)',
-                          boxShadow: scan.employee_id
-                            ? '0 8px 24px rgba(0, 240, 255, 0.18)'
-                            : '0 8px 24px rgba(255, 170, 0, 0.18)',
-                        },
-                      }}
-                    >
-                      <Stack spacing={1.5}>
-                        <Stack direction="row" justifyContent="space-between" alignItems="center">
-                          <Chip
-                            size="small"
-                            color={scan.employee_id ? 'success' : 'warning'}
-                            icon={scan.employee_id ? <CheckIcon fontSize="small" /> : <PersonAddAlt1Icon fontSize="small" />}
-                            label={scan.employee_name || 'Unknown'}
-                            sx={{ fontWeight: 800 }}
-                          />
-                          <Typography variant="caption" sx={{ fontFamily: 'monospace', color: 'text.secondary' }}>
-                            {formatDateTime(scan.occurred_at)}
-                          </Typography>
-                        </Stack>
+                {scans.map((scan) => {
+                  const timeline = scan.real_time_events || [];
+                  const timeOnPage = scan.time_on_page_seconds || 0;
+                  const isSubmitted = scan.event_type === 'qr_credential_submitted';
 
-                        <Divider />
-
-                        <Box sx={{ p: 1.2, borderRadius: 1.5, bgcolor: 'background.default' }}>
-                          <Stack spacing={0.5}>
-                            <Typography variant="body2" sx={{ fontFamily: 'monospace', fontSize: '0.82rem' }}>
-                              <strong>User:</strong> {scan.username_entered || scan.username || '—'}
-                            </Typography>
-                            <Typography variant="body2" sx={{ fontFamily: 'monospace', fontSize: '0.82rem' }}>
-                              <strong>Email:</strong> {scan.email_entered || scan.email || '—'}
-                            </Typography>
-                          </Stack>
-                        </Box>
-
-                        <Stack spacing={0.8}>
+                  return (
+                    <Grid item xs={12} md={6} lg={4} key={scan.id}>
+                      <Card
+                        variant="outlined"
+                        sx={{
+                          p: 2.2,
+                          borderRadius: 3,
+                          border: '1px solid',
+                          borderColor: scan.employee_id ? 'primary.main' : 'warning.main',
+                          bgcolor: scan.employee_id ? 'rgba(0, 240, 255, 0.03)' : 'rgba(255, 170, 0, 0.03)',
+                          transition: 'all 0.25s ease-in-out',
+                          position: 'relative',
+                          overflow: 'hidden',
+                          '&:hover': {
+                            transform: 'translateY(-3px)',
+                            boxShadow: scan.employee_id
+                              ? '0 10px 28px rgba(0, 240, 255, 0.22)'
+                              : '0 10px 28px rgba(255, 170, 0, 0.22)',
+                          },
+                        }}
+                      >
+                        <Stack spacing={1.6}>
+                          {/* 1. Header: Matched Target & Live Event State */}
                           <Stack direction="row" justifyContent="space-between" alignItems="center">
-                            <Typography variant="caption" color="text.secondary">
-                              IP:
-                            </Typography>
-                            <Typography variant="caption" sx={{ fontFamily: 'monospace', fontWeight: 700 }}>
-                              {scan.ip_address || '—'}
-                            </Typography>
+                            <Chip
+                              size="small"
+                              color={scan.employee_id ? 'success' : 'warning'}
+                              icon={scan.employee_id ? <CheckIcon fontSize="small" /> : <PersonAddAlt1Icon fontSize="small" />}
+                              label={scan.employee_name || 'هدف غير معروف (Unknown)'}
+                              sx={{ fontWeight: 800 }}
+                            />
+                            <Chip
+                              size="small"
+                              variant={isSubmitted ? 'filled' : 'outlined'}
+                              color={isSubmitted ? 'error' : 'primary'}
+                              label={isSubmitted ? 'تم إدخال البيانات (-25 Elo)' : 'مسح الرمز (تفاعل حي)'}
+                              sx={{ fontWeight: 700 }}
+                            />
                           </Stack>
 
-                          <Stack direction="row" justifyContent="space-between" alignItems="center">
-                            <Typography variant="caption" color="text.secondary">
-                              Device:
-                            </Typography>
-                            <Typography variant="caption" sx={{ fontWeight: 600 }}>
-                              {deviceSummary(scan)}
-                            </Typography>
-                          </Stack>
+                          {/* 2. Deep Device Identification (Exact Brand & Model) */}
+                          <Box sx={{ p: 1.2, borderRadius: 2, bgcolor: 'background.default', border: '1px solid', borderColor: 'divider' }}>
+                            <Stack direction="row" spacing={1.2} alignItems="center">
+                              <SmartphoneIcon color="primary" sx={{ fontSize: 22 }} />
+                              <Box sx={{ overflow: 'hidden' }}>
+                                <Typography variant="subtitle2" sx={{ fontWeight: 800, color: 'text.primary', lineHeight: 1.2 }}>
+                                  {scan.device_model || deviceSummary(scan)}
+                                </Typography>
+                                <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                                  بصمة العتاد: #{scan.fingerprint_hash ? scan.fingerprint_hash.slice(0, 16) : '—'}
+                                </Typography>
+                              </Box>
+                            </Stack>
+                          </Box>
 
-                          <Stack direction="row" justifyContent="space-between" alignItems="center">
-                            <Typography variant="caption" color="text.secondary">
-                              Fingerprint:
-                            </Typography>
-                            <Typography
-                              variant="caption"
-                              sx={{
-                                fontFamily: 'monospace',
-                                color: 'primary.main',
-                                bgcolor: 'action.hover',
-                                px: 0.8,
-                                py: 0.2,
-                                borderRadius: 1,
-                              }}
-                            >
-                              #{scan.fingerprint_hash ? scan.fingerprint_hash.slice(0, 14) : '—'}
-                            </Typography>
-                          </Stack>
+                          {/* 3. Accurate Geo-Location & ISP */}
+                          <Box sx={{ px: 0.5 }}>
+                            <Stack spacing={0.6}>
+                              <Stack direction="row" spacing={1} alignItems="center">
+                                <LocationOnIcon color="error" sx={{ fontSize: 18 }} />
+                                <Typography variant="body2" sx={{ fontWeight: 700 }}>
+                                  {scan.city || 'Sanaa'}, {scan.country || 'Yemen'}
+                                </Typography>
+                                <Chip
+                                  size="small"
+                                  variant="outlined"
+                                  label={`ISP: ${scan.isp || 'YemenNet'}`}
+                                  sx={{ fontSize: '0.68rem', height: 20, fontWeight: 700 }}
+                                />
+                              </Stack>
+
+                              <Stack direction="row" spacing={1} alignItems="center">
+                                <PublicIcon sx={{ fontSize: 16, color: 'text.secondary' }} />
+                                <Typography variant="caption" sx={{ fontFamily: 'monospace', fontWeight: 700 }}>
+                                  IP: {scan.ip_address || '—'}
+                                </Typography>
+                              </Stack>
+                            </Stack>
+                          </Box>
+
+                          {/* 4. Event Timeline (What Happened & When) */}
+                          <Box sx={{ p: 1.2, borderRadius: 2, bgcolor: 'action.hover' }}>
+                            <Stack spacing={0.7}>
+                              <Stack direction="row" justifyContent="space-between" alignItems="center">
+                                <Typography variant="caption" sx={{ fontWeight: 800, color: 'primary.main' }}>
+                                  الخط الزمني للتفاعل (Timeline):
+                                </Typography>
+                                {timeOnPage > 0 ? (
+                                  <Stack direction="row" spacing={0.5} alignItems="center">
+                                    <AccessTimeIcon sx={{ fontSize: 13, color: 'text.secondary' }} />
+                                    <Typography variant="caption" sx={{ fontWeight: 700 }}>
+                                      {timeOnPage} ثانية في الصفحة
+                                    </Typography>
+                                  </Stack>
+                                ) : null}
+                              </Stack>
+
+                              {timeline.length > 0 ? (
+                                <Stack spacing={0.4}>
+                                  {timeline.map((ev, i) => (
+                                    <Stack key={i} direction="row" justifyContent="space-between" alignItems="center">
+                                      <Typography variant="caption" sx={{ fontSize: '0.72rem', display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                                        {ev.event === 'qr_scanned' && '✅'}
+                                        {ev.event === 'page_viewed' && '📱'}
+                                        {ev.event === 'field_focused' && '✍️'}
+                                        {ev.event === 'form_submitted' && '🚨'}
+                                        <span>{ev.label}</span>
+                                      </Typography>
+                                      <Typography variant="caption" sx={{ fontFamily: 'monospace', fontSize: '0.68rem', color: 'text.secondary' }}>
+                                        {ev.time_str}
+                                      </Typography>
+                                    </Stack>
+                                  ))}
+                                </Stack>
+                              ) : (
+                                <Stack direction="row" justifyContent="space-between" alignItems="center">
+                                  <Typography variant="caption" sx={{ fontSize: '0.72rem' }}>
+                                    ✅ تم مسح الرمز وتوليد البصمة
+                                  </Typography>
+                                  <Typography variant="caption" sx={{ fontFamily: 'monospace', fontSize: '0.68rem' }}>
+                                    {new Date(scan.occurred_at).toLocaleTimeString('ar-SA')}
+                                  </Typography>
+                                </Stack>
+                              )}
+                            </Stack>
+                          </Box>
+
+                          {/* 5. Entered Credentials & Penalty State */}
+                          <Box sx={{ p: 1, borderRadius: 1.5, bgcolor: 'background.paper', border: '1px dashed', borderColor: 'divider' }}>
+                            <Stack spacing={0.4}>
+                              <Typography variant="caption" sx={{ fontFamily: 'monospace', fontSize: '0.76rem' }}>
+                                <strong>User:</strong> {scan.username_entered || scan.username || '—'}
+                              </Typography>
+                              <Typography variant="caption" sx={{ fontFamily: 'monospace', fontSize: '0.76rem' }}>
+                                <strong>Email:</strong> {scan.email_entered || scan.email || '—'}
+                              </Typography>
+                            </Stack>
+                          </Box>
 
                           {scan.penalty_applied ? (
                             <Chip
                               size="small"
                               color="error"
-                              label="عقوبة مطبقة: −25 Elo"
-                              sx={{ mt: 0.5, fontWeight: 700 }}
+                              label="العقوبة: −25 نقطة من نقاط المناعة (Elo Score)"
+                              sx={{ fontWeight: 800 }}
                             />
                           ) : null}
-                        </Stack>
 
-                        {!scan.employee_id ? (
-                          <Button
-                            fullWidth
-                            size="small"
-                            variant="outlined"
-                            color="warning"
-                            startIcon={<PersonAddAlt1Icon />}
-                            onClick={() => {
-                              setAssignScan(scan);
-                              setAssignEmployeeId('');
-                            }}
-                          >
-                            Assign to Employee
-                          </Button>
-                        ) : null}
-                      </Stack>
-                    </Card>
-                  </Grid>
-                ))}
+                          {!scan.employee_id ? (
+                            <Button
+                              fullWidth
+                              size="small"
+                              variant="outlined"
+                              color="warning"
+                              startIcon={<PersonAddAlt1Icon />}
+                              onClick={() => {
+                                setAssignScan(scan);
+                                setAssignEmployeeId('');
+                              }}
+                            >
+                              ربط الهوية بالموظف (Assign)
+                            </Button>
+                          ) : null}
+                        </Stack>
+                      </Card>
+                    </Grid>
+                  );
+                })}
               </Grid>
             )}
           </CardContent>

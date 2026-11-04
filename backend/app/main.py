@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import structlog
-from fastapi import FastAPI, HTTPException, Request, status
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
@@ -241,6 +241,41 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(api_router)
     app.include_router(shortener_router)
     app.include_router(training_router)
+
+    # --- Real-Time Telemetry WebSockets ----------------------------------- #
+
+    @app.websocket("/ws/campaign/{campaign_id}/scans")
+    @app.websocket("/api/v1/ws/campaign/{campaign_id}/scans")
+    async def campaign_scans_websocket(
+        websocket: WebSocket,
+        campaign_id: str,
+    ) -> None:
+        """Real-time telemetry WebSocket for Live Radar and landing page interactions."""
+        from app.services.ws_manager import ws_manager
+        client_ip = websocket.headers.get("x-forwarded-for")
+        if client_ip:
+            client_ip = client_ip.split(",")[0].strip()
+        elif websocket.client:
+            client_ip = websocket.client.host
+        else:
+            client_ip = "unknown"
+        user_agent = websocket.headers.get("user-agent")
+
+        await ws_manager.connect(campaign_id, websocket)
+        try:
+            while True:
+                data = await websocket.receive_json()
+                if isinstance(data, dict):
+                    await ws_manager.handle_telemetry_event(
+                        campaign_id,
+                        data,
+                        client_ip=client_ip,
+                        user_agent=user_agent,
+                    )
+        except WebSocketDisconnect:
+            ws_manager.disconnect(campaign_id, websocket)
+        except Exception:
+            ws_manager.disconnect(campaign_id, websocket)
 
     # --- plain health endpoints ------------------------------------------ #
     @app.get("/healthz", tags=["health"], include_in_schema=False)

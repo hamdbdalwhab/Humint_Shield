@@ -351,6 +351,14 @@ export interface QrBranding {
   logo_url: string | null;
 }
 
+export interface QRTimelineEvent {
+  event: string;
+  field?: string;
+  label: string;
+  timestamp: string;
+  time_str: string;
+}
+
 export interface QRScan {
   id: string;
   campaign_id: string;
@@ -377,6 +385,15 @@ export interface QRScan {
   username_entered?: string | null;
   email_entered?: string | null;
   device_info?: string | null;
+  device_model?: string | null;
+  country?: string | null;
+  city?: string | null;
+  isp?: string | null;
+  location_display?: string | null;
+  latitude?: number | null;
+  longitude?: number | null;
+  real_time_events?: QRTimelineEvent[];
+  time_on_page_seconds?: number;
 }
 
 export interface QRSubmissionPayload {
