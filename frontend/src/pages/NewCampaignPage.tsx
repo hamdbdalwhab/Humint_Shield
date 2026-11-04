@@ -40,6 +40,11 @@ import TableRow from '@mui/material/TableRow';
 import TextField from '@mui/material/TextField';
 import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
+import Dialog from '@mui/material/Dialog';
+import DialogActions from '@mui/material/DialogActions';
+import DialogContent from '@mui/material/DialogContent';
+import DialogTitle from '@mui/material/DialogTitle';
+import DownloadIcon from '@mui/icons-material/Download';
 import CloseIcon from '@mui/icons-material/Close';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
@@ -56,6 +61,7 @@ import { formatDateTime } from '@/lib/format';
 import type { Employee, QrLureType } from '@/types';
 
 const STEPS = ['التفاصيل', 'المستهدفون', 'المراجعة'];
+const QR_STEPS = ['التفاصيل وإعداد الملصق', 'المراجعة والإطلاق'];
 
 type WizardChannel = 'email' | 'sms' | 'whatsapp' | 'qr' | 'vishing' | 'pretexting' | 'usb';
 
@@ -125,6 +131,8 @@ export function NewCampaignPage() {
   const preselectId = searchParams.get('employeeId');
 
   const [step, setStep] = useState(0);
+  const [launchedQrId, setLaunchedQrId] = useState<string | null>(null);
+  const [downloadingPoster, setDownloadingPoster] = useState(false);
   const [name, setName] = useState('');
   const [channel, setChannel] = useState<WizardChannel>('email');
   const [qrPretext, setQrPretext] = useState('hr');
@@ -277,7 +285,7 @@ export function NewCampaignPage() {
       if (channel === 'qr' && !qrCompany.trim()) {
         throw new Error('اسم الشركة مطلوب لإنشاء ملصق QR.');
       }
-      const targets = Array.from(selected.keys());
+      const targets = channel === 'qr' ? [] : Array.from(selected.keys());
       const channelConfig =
         channel === 'qr'
           ? {
@@ -358,9 +366,9 @@ export function NewCampaignPage() {
             `تم تجهيز ${result.total} مستند USB. حمّل ملف HTML أو PDF من صفحة الحملة.`,
           );
         } else if (channel === 'qr') {
-          toast.success(
-            `تم تجهيز ${result.total} ملصق QR. حمّل ملف الـ PDF من صفحة الحملة.`,
-          );
+          setLaunchedQrId(result.campaign_id);
+          toast.success('تم إطلاق حملة QR بنجاح! جاهزة لتحميل الملصق.');
+          return;
         } else {
           toast.success(
             `تم تجهيز ${result.total} ${unit}. افتح صفحة الحملة لعرض الروابط وتعليمات التسليم.`,
@@ -517,7 +525,7 @@ export function NewCampaignPage() {
       >
         <Stepper
           alternativeLabel
-          activeStep={step}
+          activeStep={isQrChannel ? (step === 2 ? 1 : 0) : step}
           sx={{
             '& .MuiStepLabel-label': { fontWeight: 700, mt: 0.5 },
             '& .MuiStepIcon-root': { color: 'rgba(255,255,255,.10)' },
@@ -532,7 +540,7 @@ export function NewCampaignPage() {
             '& .MuiStepConnector-line': { borderColor: 'rgba(255,255,255,.12)' },
           }}
         >
-          {STEPS.map((label) => (
+          {(isQrChannel ? QR_STEPS : STEPS).map((label) => (
             <Step key={label}>
               <StepLabel>{label}</StepLabel>
             </Step>
@@ -862,8 +870,12 @@ export function NewCampaignPage() {
               </Box>
 
               <Stack direction="row" justifyContent="flex-end">
-                <Button variant="contained" disabled={!canLeaveStepOne} onClick={() => setStep(1)}>
-                  متابعة إلى المستهدفين
+                <Button
+                  variant="contained"
+                  disabled={!canLeaveStepOne}
+                  onClick={() => setStep(isQrChannel ? 2 : 1)}
+                >
+                  {isQrChannel ? 'متابعة إلى مراجعة الحملة وإطلاقها' : 'متابعة إلى المستهدفين'}
                 </Button>
               </Stack>
             </Stack>
@@ -871,7 +883,7 @@ export function NewCampaignPage() {
         </Card>
       ) : null}
 
-      {step === 1 ? (
+      {step === 1 && !isQrChannel ? (
         <Card>
           <CardContent>
             <Stack spacing={2}>
@@ -1117,7 +1129,10 @@ export function NewCampaignPage() {
                     <strong>الصعوبة:</strong> {difficulty} — {difficultyLabel(difficulty)}
                   </Typography>
                   <Typography variant="body2">
-                    <strong>المستهدفون:</strong> {selected.size} موظفاً
+                    <strong>المستهدفون:</strong>{' '}
+                    {isQrChannel
+                      ? 'طُعم عام (Generic Lure — أي شخص يقوم بمسح الرمز)'
+                      : `${selected.size} موظفاً`}
                   </Typography>
                   <Typography variant="body2">
                     <strong>إعادة الاختبار التلقائي:</strong>{' '}
@@ -1128,41 +1143,60 @@ export function NewCampaignPage() {
 
               <Divider />
 
-              <Box>
-                <Typography variant="h3" sx={{ fontSize: '1.05rem' }} gutterBottom>
-                  المستهدفون ({selectedList.length})
-                </Typography>
-                <TableContainer sx={{ maxHeight: 320 }}>
-                  <Table size="small" stickyHeader>
-                    <TableHead>
-                      <TableRow>
-                        <TableCell>الاسم</TableCell>
-                        <TableCell>البريد</TableCell>
-                        {isPhoneChannel ? <TableCell>الهاتف</TableCell> : null}
-                        <TableCell>القسم</TableCell>
-                        <TableCell>المسمى الوظيفي</TableCell>
-                      </TableRow>
-                    </TableHead>
-                    <TableBody>
-                      {selectedList.map((employee) => (
-                        <TableRow key={employee.id}>
-                          <TableCell>
-                            {employee.first_name} {employee.last_name}
-                          </TableCell>
-                          <TableCell>{employee.email}</TableCell>
-                          {isPhoneChannel ? (
-                            <TableCell sx={{ fontFamily: 'monospace', whiteSpace: 'nowrap' }}>
-                              {employee.phone ?? '—'}
-                            </TableCell>
-                          ) : null}
-                          <TableCell>{employee.department ?? '—'}</TableCell>
-                          <TableCell>{employee.job_title ?? '—'}</TableCell>
+              {isQrChannel ? (
+                <Box
+                  sx={{
+                    p: 2.5,
+                    borderRadius: 2,
+                    bgcolor: 'action.hover',
+                    border: '1px solid',
+                    borderColor: 'primary.main',
+                  }}
+                >
+                  <Typography variant="subtitle1" sx={{ fontWeight: 800, color: 'primary.main', mb: 1 }}>
+                    حملة طُعم عام (Generic Lure):
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary" sx={{ lineHeight: 1.7 }}>
+                    لا تتطلب هذه الحملة تحديد موظفين مسبقاً. فور النقر على زر «إطلاق الحملة وتجهيز الملصق»، سيتم تفعيل الحملة وتجهيز ملصق PDF واحد عام يحمل رمز QR الثابت للحملة (بدون أسماء موظفين). ستتمكن من تحميله فوراً وطباعته وتعليقه في الموقع المطلوب.
+                  </Typography>
+                </Box>
+              ) : (
+                <Box>
+                  <Typography variant="h3" sx={{ fontSize: '1.05rem' }} gutterBottom>
+                    المستهدفون ({selectedList.length})
+                  </Typography>
+                  <TableContainer sx={{ maxHeight: 320 }}>
+                    <Table size="small" stickyHeader>
+                      <TableHead>
+                        <TableRow>
+                          <TableCell>الاسم</TableCell>
+                          <TableCell>البريد</TableCell>
+                          {isPhoneChannel ? <TableCell>الهاتف</TableCell> : null}
+                          <TableCell>القسم</TableCell>
+                          <TableCell>المسمى الوظيفي</TableCell>
                         </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                </TableContainer>
-              </Box>
+                      </TableHead>
+                      <TableBody>
+                        {selectedList.map((employee) => (
+                          <TableRow key={employee.id}>
+                            <TableCell>
+                              {employee.first_name} {employee.last_name}
+                            </TableCell>
+                            <TableCell>{employee.email}</TableCell>
+                            {isPhoneChannel ? (
+                              <TableCell sx={{ fontFamily: 'monospace', whiteSpace: 'nowrap' }}>
+                                {employee.phone ?? '—'}
+                              </TableCell>
+                            ) : null}
+                            <TableCell>{employee.department ?? '—'}</TableCell>
+                            <TableCell>{employee.job_title ?? '—'}</TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </TableContainer>
+                </Box>
+              )}
 
               {isQrChannel ? (
                 <Alert severity="info">
@@ -1294,10 +1328,10 @@ export function NewCampaignPage() {
               )}
 
               <Stack direction="row" justifyContent="space-between">
-                <Button onClick={() => setStep(1)}>رجوع</Button>
+                <Button onClick={() => setStep(isQrChannel ? 0 : 1)}>رجوع</Button>
                 <Tooltip
                   title={
-                    selected.size === 0
+                    !isQrChannel && selected.size === 0
                       ? 'اختر مستهدفاً واحداً على الأقل'
                       : preflightBlocked
                         ? 'الإرسال محجوب حتى تُكمل إعدادات المزوّد'
@@ -1313,10 +1347,14 @@ export function NewCampaignPage() {
                           <CircularProgress size={18} color="inherit" />
                         ) : null
                       }
-                      disabled={launchMutation.isPending || selected.size === 0 || preflightBlocked}
+                      disabled={
+                        launchMutation.isPending ||
+                        (!isQrChannel && selected.size === 0) ||
+                        preflightBlocked
+                      }
                       onClick={() => setConfirmOpen(true)}
                     >
-                      إطلاق الحملة
+                      {isQrChannel ? 'إطلاق الحملة وتجهيز الملصق' : 'إطلاق الحملة'}
                     </Button>
                   </span>
                 </Tooltip>
@@ -1367,6 +1405,61 @@ export function NewCampaignPage() {
         onConfirm={() => launchMutation.mutate()}
         onClose={() => setConfirmOpen(false)}
       />
+
+      <Dialog open={Boolean(launchedQrId)} maxWidth="sm" fullWidth>
+        <DialogTitle sx={{ fontWeight: 800 }}>تم إطلاق حملة QR بنجاح!</DialogTitle>
+        <DialogContent>
+          <Stack spacing={2.5} sx={{ mt: 1 }}>
+            <Alert severity="success">
+              تم تفعيل الحملة بنجاح كطُعم عام وتوليد رمز QR ثابت للحملة يربط بنظام التتبع المباشر.
+            </Alert>
+            <Typography variant="body2" color="text.secondary">
+              اضغط على الزر أدناه لتحميل ملصق الـ PDF الجاهز للطباعة بدقة عالية:
+            </Typography>
+            <Button
+              variant="contained"
+              color="primary"
+              size="large"
+              startIcon={<DownloadIcon />}
+              disabled={downloadingPoster}
+              onClick={async () => {
+                if (!launchedQrId) return;
+                try {
+                  setDownloadingPoster(true);
+                  const blob = await campaignsApi.generateQrPosters(launchedQrId);
+                  const url = window.URL.createObjectURL(blob);
+                  const a = document.createElement('a');
+                  a.href = url;
+                  a.download = `qr-campaign-poster-${launchedQrId.slice(0, 8)}.pdf`;
+                  document.body.appendChild(a);
+                  a.click();
+                  a.remove();
+                  window.URL.revokeObjectURL(url);
+                  toast.success('تم تنزيل ملصق PDF بنجاح!');
+                } catch {
+                  toast.error('تعذّر تنزيل الملصق. يمكنك تنزيله من صفحة الحملة.');
+                } finally {
+                  setDownloadingPoster(false);
+                }
+              }}
+              sx={{ py: 1.5, fontWeight: 800 }}
+            >
+              {downloadingPoster ? 'جارٍ التحميل…' : 'تحميل ملصق QR المطبوع (Download PDF Poster)'}
+            </Button>
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button
+            onClick={() => {
+              const id = launchedQrId;
+              setLaunchedQrId(null);
+              navigate(`/campaigns/${id}`);
+            }}
+          >
+            الانتقال إلى لوحة الحملة والرادار المباشر
+          </Button>
+        </DialogActions>
+      </Dialog>
     </>
   );
 }

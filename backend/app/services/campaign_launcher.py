@@ -130,6 +130,20 @@ class CampaignLauncher:
         target_ids = [self._coerce_uuid(t) for t in (campaign.target_employee_ids or [])]
         target_ids = [t for t in target_ids if t is not None]
         if not target_ids:
+            if channel == "qr":
+                campaign.status = "active"
+                campaign.launched_at = _now()
+                campaign.total_targets = 0
+                campaign.sent_count = 1
+                campaign.failed_count = 0
+                await db.commit()
+                return {
+                    "campaign_id": cid,
+                    "total": 1,
+                    "sent": 1,
+                    "failed": 0,
+                    "failures": [],
+                }
             raise CampaignLaunchError("campaign has no target employees")
 
         template = await self._load_template(db, campaign)

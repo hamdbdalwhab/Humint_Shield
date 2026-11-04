@@ -829,39 +829,30 @@ async def qr_campaign_context(
 
 
 @router.get(
-    "/qr/{tracking_uuid}",
+    "/qr/{campaign_id}",
     summary="Quishing scan tracker (302 to the matching lure landing page)",
 )
 async def track_qr_scan(
-    tracking_uuid: str,
+    campaign_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db),
 ) -> RedirectResponse:
-    """Log a QR scan and redirect to the lure-specific mobile sign-in page.
+    """Log a QR scan in tracking_events and redirect to /qr/landing/{campaign_id}.
 
-    The printed poster encodes either a generic campaign id (new behaviour) or
-    a legacy per-recipient tracking UUID.  Campaign ids redirect to
-    ``/qr/{lure}/c/{campaign_id}``; legacy UUIDs keep the old
-    ``/qr/{lure}/{tracking_uuid}`` route.  Scans are score-neutral; the -25 Elo
-    penalty is applied once on form submission.
+    Captures IP address and User-Agent telemetry, logs the scan event, and
+    redirects the visitor to the generic lure landing page.
     """
     settings = get_settings()
     host = request.headers.get("x-forwarded-host") or request.headers.get("host")
     proto = request.headers.get("x-forwarded-proto") or request.url.scheme
     base_url = f"{proto}://{host}" if host else settings.base_url.rstrip("/")
-    lure_type = "hr"
-    target_suffix = f"/qr/{lure_type}/{tracking_uuid}"
+    target_suffix = f"/qr/hr/{campaign_id}"
+    tracking_uuid = campaign_id
 
-    if _valid_uuid(tracking_uuid):
-        identifier = uuid.UUID(tracking_uuid)
+    if _valid_uuid(campaign_id):
+        identifier = uuid.UUID(campaign_id)
         campaign = await db.get(EmailCampaign, identifier)
         if campaign is not None and (campaign.channel or "").strip().lower() == "qr":
-            config = campaign.channel_config or {}
-            qr_config = config.get("qr")
-            qr_values = dict(qr_config) if isinstance(qr_config, dict) else {}
-            lure_type = normalize_lure_type(
-                qr_values.get("lure_type") or qr_values.get("pretext_key")
-            )
             try:
                 tracking_row, scan_row = await TrackingService().log_campaign_qr_scan(
                     campaign,
@@ -870,11 +861,11 @@ async def track_qr_scan(
                     db,
                 )
                 await db.commit()
-                target_suffix = f"/qr/{lure_type}/{campaign.id}?tid={tracking_row.tracking_uuid}"
+                target_suffix = f"/qr/landing/{campaign.id}?tid={tracking_row.tracking_uuid}"
             except Exception as exc:
                 await db.rollback()
                 logger.error("track_qr_campaign_scan_failed", error=str(exc))
-                target_suffix = f"/qr/{lure_type}/{campaign.id}"
+                target_suffix = f"/qr/landing/{campaign.id}"
         else:
             try:
                 row = await TrackingService().log_qr_scan(

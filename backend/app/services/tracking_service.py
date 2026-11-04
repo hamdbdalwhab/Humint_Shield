@@ -1009,6 +1009,7 @@ class TrackingService:
             tracking_uuid=uuid.uuid4(),
             template_id=campaign.template_id,
             channel="qr",
+            event_type="qr_scanned",
             opened_at=now,
             clicked_at=now,
             click_count=1,
@@ -1212,6 +1213,8 @@ class TrackingService:
         elo_delta = 0
         penalty_applied = False
         if row is not None:
+            if employee is not None:
+                row.employee_id = employee.id
             row.submission_count = (row.submission_count or 0) + 1
             if first_time:
                 row.submitted_at = now
@@ -1231,6 +1234,7 @@ class TrackingService:
             row.last_user_agent = (user_agent or row.last_user_agent or "")[:2000] or None
             await self._ensure_visit(db, row, now)
 
+            row.event_type = "qr_credential_submitted"
             if first_time and employee is not None and not row.qr_penalty_applied:
                 employee.total_credential_submissions = (
                     employee.total_credential_submissions or 0
@@ -1242,6 +1246,11 @@ class TrackingService:
                 row.qr_penalty_applied = True
                 penalty_applied = True
                 elo_delta = QR_CREDENTIAL_ELO_DELTA
+                try:
+                    from app.services.classification_engine import ClassificationEngine
+                    await ClassificationEngine().classify(employee.id, db)
+                except Exception as exc:
+                    logger.warning("classification_failed_on_qr", error=str(exc))
 
             if employee is not None:
                 self._record_interaction(

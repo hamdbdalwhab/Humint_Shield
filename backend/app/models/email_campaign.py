@@ -125,6 +125,7 @@ class EmailTracking(Base):
     channel: Mapped[str] = mapped_column(
         String(20), default=DEFAULT_CHANNEL, server_default=DEFAULT_CHANNEL, index=True, nullable=False
     )
+    event_type: Mapped[str | None] = mapped_column(String(40), index=True, nullable=True)
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     #: Provider-neutral delivery receipt state (for example ``submitted``,

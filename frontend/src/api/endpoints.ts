@@ -317,6 +317,12 @@ export const campaignsApi = {
     );
     return data;
   },
+  async getCampaignScans(campaignId: string): Promise<QRScan[]> {
+    const { data } = await http.get<QRScan[]>(
+      `/api/v1/campaigns/${campaignId}/scans`,
+    );
+    return data;
+  },
   async assignScan(
     orgId: string,
     id: string,

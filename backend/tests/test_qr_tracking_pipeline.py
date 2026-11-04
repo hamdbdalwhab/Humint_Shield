@@ -58,7 +58,7 @@ async def test_step1_qr_scan_logs_basic_event_and_redirects(client, db: AsyncSes
 
     assert response.status_code == 302
     location = response.headers["location"]
-    assert f"/qr/bonus/{campaign.id}" in location
+    assert f"/qr/landing/{campaign.id}" in location
     assert "tid=" in location
 
     # Verify basic scan event in tracking_events

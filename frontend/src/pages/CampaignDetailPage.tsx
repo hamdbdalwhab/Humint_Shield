@@ -11,6 +11,7 @@ import Dialog from '@mui/material/Dialog';
 import DialogActions from '@mui/material/DialogActions';
 import DialogContent from '@mui/material/DialogContent';
 import DialogTitle from '@mui/material/DialogTitle';
+import Divider from '@mui/material/Divider';
 import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
@@ -240,6 +241,13 @@ export function CampaignDetailPage() {
     refetchInterval: ACTIVITY_REFRESH_INTERVAL_MS,
   });
 
+  const scansQuery = useQuery({
+    queryKey: ['campaign-scans', campaignId],
+    queryFn: () => campaignsApi.getCampaignScans(campaignId as string),
+    enabled: Boolean(campaignId),
+    refetchInterval: REFRESH_INTERVAL_MS,
+  });
+
   const employees = useMemo(() => {
     const rows = resultsQuery.data?.employees ?? [];
     const term = search.trim().toLowerCase();
@@ -389,7 +397,7 @@ export function CampaignDetailPage() {
 
   const { campaign, stats } = resultsQuery.data;
   const allEmployees = resultsQuery.data.employees;
-  const scans = resultsQuery.data.scans ?? [];
+  const scans = scansQuery.data ?? resultsQuery.data.scans ?? [];
   const isPhoneChannel = campaign.channel === 'sms' || campaign.channel === 'whatsapp';
   const isQrChannel = campaign.channel === 'qr';
   const isUsbChannel = campaign.channel === 'usb';
@@ -834,96 +842,130 @@ export function CampaignDetailPage() {
               />
             </Stack>
             {scans.length === 0 ? (
-              <Typography color="text.secondary" variant="body2">
-                لا توجد مسحات بعد. اطبع الملصقات من زر «Download Campaign Poster» ووزّعها.
-              </Typography>
+              <Box sx={{ p: 4, textAlign: 'center', bgcolor: 'action.hover', borderRadius: 2 }}>
+                <Typography variant="body1" sx={{ fontWeight: 700, mb: 1 }}>
+                  بانتظار المسحات الأولى (Live Radar Active)
+                </Typography>
+                <Typography color="text.secondary" variant="body2">
+                  لا توجد مسحات مسجلة بعد. اطبع الملصق وقم بتعليقه، وعند قيام أي موظف بمسح الرمز ستظهر بطاقته هنا فوراً مع تحديث تلقائي كل 5 ثوانٍ.
+                </Typography>
+              </Box>
             ) : (
-              <TableContainer>
-                <Table size="small">
-                  <TableHead>
-                    <TableRow>
-                      <TableCell>الوقت</TableCell>
-                      <TableCell>الموظف</TableCell>
-                      <TableCell>اسم المستخدم المُدخل</TableCell>
-                      <TableCell>البريد المُدخل</TableCell>
-                      <TableCell>تفاصيل الجهاز</TableCell>
-                      <TableCell>IP</TableCell>
-                      <TableCell align="center">الإجراء</TableCell>
-                    </TableRow>
-                  </TableHead>
-                  <TableBody>
-                    {scans.map((scan) => (
-                      <TableRow key={scan.id} hover>
-                        <TableCell sx={{ fontFamily: 'monospace', whiteSpace: 'nowrap' }}>
-                          {formatDateTime(scan.occurred_at)}
-                        </TableCell>
-                        <TableCell>
-                          {scan.employee_name ? (
-                            <Stack spacing={0.2}>
-                              <Typography variant="body2" sx={{ fontWeight: 700 }}>
-                                {scan.employee_name}
-                              </Typography>
-                              <Typography variant="caption" color="text.secondary">
-                                {scan.identity_resolution === 'manual'
-                                  ? 'ربط يدوي'
-                                  : 'مطابقة تلقائية'}
-                                {scan.penalty_applied ? ' · −25 Elo' : ''}
-                              </Typography>
-                            </Stack>
-                          ) : (
-                            <Chip size="small" color="warning" label="Unknown" />
-                          )}
-                        </TableCell>
-                        <TableCell sx={{ fontFamily: 'monospace' }}>
-                          {scan.username || '—'}
-                        </TableCell>
-                        <TableCell sx={{ fontFamily: 'monospace' }}>
-                          {scan.email || '—'}
-                        </TableCell>
-                        <TableCell>
-                          <Tooltip
-                            title={JSON.stringify(scan.fingerprint ?? {}, null, 2).slice(0, 1200)}
-                          >
-                            <Stack spacing={0.2}>
-                              <Typography variant="caption">{deviceSummary(scan)}</Typography>
-                              {scan.fingerprint_hash ? (
-                                <Typography
-                                  variant="caption"
-                                  color="text.secondary"
-                                  sx={{ fontFamily: 'monospace' }}
-                                >
-                                  #{scan.fingerprint_hash.slice(0, 12)}
-                                </Typography>
-                              ) : null}
-                            </Stack>
-                          </Tooltip>
-                        </TableCell>
-                        <TableCell sx={{ fontFamily: 'monospace' }}>{scan.ip_address || '—'}</TableCell>
-                        <TableCell align="center">
-                          {scan.employee_id ? (
-                            <Tooltip title="مرتبط بموظف">
-                              <CheckIcon fontSize="small" color="success" />
-                            </Tooltip>
-                          ) : (
-                            <Button
-                              size="small"
-                              variant="outlined"
-                              color="warning"
-                              startIcon={<PersonAddAlt1Icon />}
-                              onClick={() => {
-                                setAssignScan(scan);
-                                setAssignEmployeeId('');
+              <Grid container spacing={2}>
+                {scans.map((scan) => (
+                  <Grid item xs={12} md={6} lg={4} key={scan.id}>
+                    <Card
+                      variant="outlined"
+                      sx={{
+                        p: 2,
+                        borderRadius: 3,
+                        border: '1px solid',
+                        borderColor: scan.employee_id ? 'primary.main' : 'warning.main',
+                        bgcolor: scan.employee_id ? 'rgba(0, 240, 255, 0.03)' : 'rgba(255, 170, 0, 0.03)',
+                        transition: 'all 0.2s ease-in-out',
+                        '&:hover': {
+                          transform: 'translateY(-2px)',
+                          boxShadow: scan.employee_id
+                            ? '0 8px 24px rgba(0, 240, 255, 0.18)'
+                            : '0 8px 24px rgba(255, 170, 0, 0.18)',
+                        },
+                      }}
+                    >
+                      <Stack spacing={1.5}>
+                        <Stack direction="row" justifyContent="space-between" alignItems="center">
+                          <Chip
+                            size="small"
+                            color={scan.employee_id ? 'success' : 'warning'}
+                            icon={scan.employee_id ? <CheckIcon fontSize="small" /> : <PersonAddAlt1Icon fontSize="small" />}
+                            label={scan.employee_name || 'Unknown'}
+                            sx={{ fontWeight: 800 }}
+                          />
+                          <Typography variant="caption" sx={{ fontFamily: 'monospace', color: 'text.secondary' }}>
+                            {formatDateTime(scan.occurred_at)}
+                          </Typography>
+                        </Stack>
+
+                        <Divider />
+
+                        <Box sx={{ p: 1.2, borderRadius: 1.5, bgcolor: 'background.default' }}>
+                          <Stack spacing={0.5}>
+                            <Typography variant="body2" sx={{ fontFamily: 'monospace', fontSize: '0.82rem' }}>
+                              <strong>User:</strong> {scan.username_entered || scan.username || '—'}
+                            </Typography>
+                            <Typography variant="body2" sx={{ fontFamily: 'monospace', fontSize: '0.82rem' }}>
+                              <strong>Email:</strong> {scan.email_entered || scan.email || '—'}
+                            </Typography>
+                          </Stack>
+                        </Box>
+
+                        <Stack spacing={0.8}>
+                          <Stack direction="row" justifyContent="space-between" alignItems="center">
+                            <Typography variant="caption" color="text.secondary">
+                              IP:
+                            </Typography>
+                            <Typography variant="caption" sx={{ fontFamily: 'monospace', fontWeight: 700 }}>
+                              {scan.ip_address || '—'}
+                            </Typography>
+                          </Stack>
+
+                          <Stack direction="row" justifyContent="space-between" alignItems="center">
+                            <Typography variant="caption" color="text.secondary">
+                              Device:
+                            </Typography>
+                            <Typography variant="caption" sx={{ fontWeight: 600 }}>
+                              {deviceSummary(scan)}
+                            </Typography>
+                          </Stack>
+
+                          <Stack direction="row" justifyContent="space-between" alignItems="center">
+                            <Typography variant="caption" color="text.secondary">
+                              Fingerprint:
+                            </Typography>
+                            <Typography
+                              variant="caption"
+                              sx={{
+                                fontFamily: 'monospace',
+                                color: 'primary.main',
+                                bgcolor: 'action.hover',
+                                px: 0.8,
+                                py: 0.2,
+                                borderRadius: 1,
                               }}
                             >
-                              Assign
-                            </Button>
-                          )}
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </TableContainer>
+                              #{scan.fingerprint_hash ? scan.fingerprint_hash.slice(0, 14) : '—'}
+                            </Typography>
+                          </Stack>
+
+                          {scan.penalty_applied ? (
+                            <Chip
+                              size="small"
+                              color="error"
+                              label="عقوبة مطبقة: −25 Elo"
+                              sx={{ mt: 0.5, fontWeight: 700 }}
+                            />
+                          ) : null}
+                        </Stack>
+
+                        {!scan.employee_id ? (
+                          <Button
+                            fullWidth
+                            size="small"
+                            variant="outlined"
+                            color="warning"
+                            startIcon={<PersonAddAlt1Icon />}
+                            onClick={() => {
+                              setAssignScan(scan);
+                              setAssignEmployeeId('');
+                            }}
+                          >
+                            Assign to Employee
+                          </Button>
+                        ) : null}
+                      </Stack>
+                    </Card>
+                  </Grid>
+                ))}
+              </Grid>
             )}
           </CardContent>
         ) : null}

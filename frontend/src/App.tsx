@@ -47,6 +47,7 @@ export function App() {
     <Routes>
       <Route path="/login" element={<LoginPage />} />
       <Route path="/phish/:trackingUuid" element={<PhishingLandingPage />} />
+      <Route path="/qr/landing/:campaignId" element={<QrLureLandingPage />} />
       <Route path="/qr/:lure/:campaignId" element={<QrLureLandingPage />} />
       <Route path="/qr/:lureType/:campaignId" element={<QrLureLandingPage />} />
       <Route path="/qr/:lureType/c/:campaignId" element={<QrLureLandingPage />} />
