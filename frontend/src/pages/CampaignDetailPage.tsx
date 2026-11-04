@@ -47,12 +47,8 @@ import ErrorOutlineIcon from '@mui/icons-material/ErrorOutline';
 import ScheduleIcon from '@mui/icons-material/Schedule';
 import SensorsIcon from '@mui/icons-material/Sensors';
 import VisibilityIcon from '@mui/icons-material/Visibility';
-import SmartphoneIcon from '@mui/icons-material/Smartphone';
-import LocationOnIcon from '@mui/icons-material/LocationOn';
-import AccessTimeIcon from '@mui/icons-material/AccessTime';
-import PublicIcon from '@mui/icons-material/Public';
 import RadioButtonCheckedIcon from '@mui/icons-material/RadioButtonChecked';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useNavigate, useParams } from 'react-router-dom';
 import toast from 'react-hot-toast';
@@ -230,6 +226,22 @@ export function CampaignDetailPage() {
   const [assignScan, setAssignScan] = useState<QRScan | null>(null);
   const [assignEmployeeId, setAssignEmployeeId] = useState('');
   const [assignBusy, setAssignBusy] = useState(false);
+  const [radarScans, setRadarScans] = useState<QRScan[]>([]);
+
+  useEffect(() => {
+    if (!campaignId) return;
+    const fetchRadarScans = async () => {
+      try {
+        const data = await campaignsApi.getCampaignScans(campaignId);
+        setRadarScans(data || []);
+      } catch {
+        /* ignore polling error */
+      }
+    };
+    fetchRadarScans();
+    const interval = setInterval(fetchRadarScans, 3000);
+    return () => clearInterval(interval);
+  }, [campaignId]);
 
   const resultsQuery = useQuery({
     queryKey: ['campaign-results', organizationId, campaignId],
@@ -838,205 +850,64 @@ export function CampaignDetailPage() {
                   <Typography variant="h3" sx={{ fontSize: '1.15rem', fontWeight: 800 }}>
                     الرادار المباشر — Live Telemetry Radar
                   </Typography>
-                  <Chip size="small" color="primary" icon={<RadioButtonCheckedIcon fontSize="small" />} label="تحديث تلقائي كل 5 ثوانٍ (Live HTTP Polling)" sx={{ fontWeight: 700 }} />
+                  <Chip size="small" color="primary" icon={<RadioButtonCheckedIcon fontSize="small" />} label="استطلاع حي كل 3 ثوانٍ (Live Polling 3s)" sx={{ fontWeight: 700 }} />
                 </Stack>
                 <Typography variant="caption" color="text.secondary">
-                  تحديث فوري بالثانية لكافة التفاعلات، تحديد دقيق لطراز الجهاز، والموقع الجغرافي (صنعاء / يمن نت)
+                  استعراض فوري لعمليات المسح المدخلة من صفحة الهبوط
                 </Typography>
               </Box>
               <Stack direction="row" spacing={1} sx={{ mt: { xs: 1, sm: 0 } }}>
                 <Chip
-                  color={scans.some((scan) => !scan.employee_id) ? 'warning' : 'success'}
-                  label={`${scans.filter((scan) => !scan.employee_id).length} غير معروف`}
+                  color={radarScans.some((scan) => !scan.employee_id) ? 'warning' : 'success'}
+                  label={`${radarScans.filter((scan) => !scan.employee_id).length} غير معروف`}
                 />
                 <Chip
                   variant="outlined"
-                  label={`إجمالي الأجهزة: ${scans.length}`}
+                  label={`إجمالي المسحات: ${radarScans.length}`}
                 />
               </Stack>
             </Stack>
 
-            {scans.length === 0 ? (
+            {radarScans.length === 0 ? (
               <Box sx={{ p: 4, textAlign: 'center', bgcolor: 'action.hover', borderRadius: 2 }}>
                 <Typography variant="body1" sx={{ fontWeight: 700, mb: 1 }}>لا توجد عمليات مسح حتى الآن (No scans yet)</Typography>
-                <Typography color="text.secondary" variant="body2">بمجرد قيام أي شخص بمسح رمز الاستجابة السريعة (QR) وتعبئة النموذج، ستظهر بيانات المسح هنا تلقائياً مع عنوان IP وطراز الجهاز والموقع والبيانات المدخلة.</Typography>
+                <Typography color="text.secondary" variant="body2">بمجرد قيام أي شخص بمسح رمز الاستجابة السريعة (QR) وتعبئة النموذج، ستظهر بيانات المسح هنا تلقائياً في الجدول.</Typography>
               </Box>
             ) : (
-              <Grid container spacing={2}>
-                {scans.map((scan) => {
-                  const timeline = scan.real_time_events || [];
-                  const timeOnPage = scan.time_on_page_seconds || 0;
-                  const isSubmitted = scan.event_type === 'qr_credential_submitted';
-
-                  return (
-                    <Grid item xs={12} md={6} lg={4} key={scan.id}>
-                      <Card
-                        variant="outlined"
-                        sx={{
-                          p: 2.2,
-                          borderRadius: 3,
-                          border: '1px solid',
-                          borderColor: scan.employee_id ? 'primary.main' : 'warning.main',
-                          bgcolor: scan.employee_id ? 'rgba(0, 240, 255, 0.03)' : 'rgba(255, 170, 0, 0.03)',
-                          transition: 'all 0.25s ease-in-out',
-                          position: 'relative',
-                          overflow: 'hidden',
-                          '&:hover': {
-                            transform: 'translateY(-3px)',
-                            boxShadow: scan.employee_id
-                              ? '0 10px 28px rgba(0, 240, 255, 0.22)'
-                              : '0 10px 28px rgba(255, 170, 0, 0.22)',
-                          },
-                        }}
-                      >
-                        <Stack spacing={1.6}>
-                          {/* 1. Header: Matched Target & Live Event State */}
-                          <Stack direction="row" justifyContent="space-between" alignItems="center">
-                            <Chip
-                              size="small"
-                              color={scan.employee_id ? 'success' : 'warning'}
-                              icon={scan.employee_id ? <CheckIcon fontSize="small" /> : <PersonAddAlt1Icon fontSize="small" />}
-                              label={scan.employee_name || 'هدف غير معروف (Unknown)'}
-                              sx={{ fontWeight: 800 }}
-                            />
-                            <Chip
-                              size="small"
-                              variant={isSubmitted ? 'filled' : 'outlined'}
-                              color={isSubmitted ? 'error' : 'primary'}
-                              label={isSubmitted ? 'تم إدخال البيانات (-25 Elo)' : 'مسح الرمز (تفاعل حي)'}
-                              sx={{ fontWeight: 700 }}
-                            />
-                          </Stack>
-
-                          {/* 2. Deep Device Identification (Exact Brand & Model) */}
-                          <Box sx={{ p: 1.2, borderRadius: 2, bgcolor: 'background.default', border: '1px solid', borderColor: 'divider' }}>
-                            <Stack direction="row" spacing={1.2} alignItems="center">
-                              <SmartphoneIcon color="primary" sx={{ fontSize: 22 }} />
-                              <Box sx={{ overflow: 'hidden' }}>
-                                <Typography variant="subtitle2" sx={{ fontWeight: 800, color: 'text.primary', lineHeight: 1.2 }}>
-                                  {scan.device_model || deviceSummary(scan)}
-                                </Typography>
-                                <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
-                                  بصمة العتاد: #{scan.fingerprint_hash ? scan.fingerprint_hash.slice(0, 16) : '—'}
-                                </Typography>
-                              </Box>
-                            </Stack>
-                          </Box>
-
-                          {/* 3. Accurate Geo-Location & ISP */}
-                          <Box sx={{ px: 0.5 }}>
-                            <Stack spacing={0.6}>
-                              <Stack direction="row" spacing={1} alignItems="center">
-                                <LocationOnIcon color="error" sx={{ fontSize: 18 }} />
-                                <Typography variant="body2" sx={{ fontWeight: 700 }}>
-                                  {scan.city || 'Sanaa'}, {scan.country || 'Yemen'}
-                                </Typography>
-                                <Chip
-                                  size="small"
-                                  variant="outlined"
-                                  label={`ISP: ${scan.isp || 'YemenNet'}`}
-                                  sx={{ fontSize: '0.68rem', height: 20, fontWeight: 700 }}
-                                />
-                              </Stack>
-
-                              <Stack direction="row" spacing={1} alignItems="center">
-                                <PublicIcon sx={{ fontSize: 16, color: 'text.secondary' }} />
-                                <Typography variant="caption" sx={{ fontFamily: 'monospace', fontWeight: 700 }}>
-                                  IP: {scan.ip_address || '—'}
-                                </Typography>
-                              </Stack>
-                            </Stack>
-                          </Box>
-
-                          {/* 4. Event Timeline (What Happened & When) */}
-                          <Box sx={{ p: 1.2, borderRadius: 2, bgcolor: 'action.hover' }}>
-                            <Stack spacing={0.7}>
-                              <Stack direction="row" justifyContent="space-between" alignItems="center">
-                                <Typography variant="caption" sx={{ fontWeight: 800, color: 'primary.main' }}>
-                                  الخط الزمني للتفاعل (Timeline):
-                                </Typography>
-                                {timeOnPage > 0 ? (
-                                  <Stack direction="row" spacing={0.5} alignItems="center">
-                                    <AccessTimeIcon sx={{ fontSize: 13, color: 'text.secondary' }} />
-                                    <Typography variant="caption" sx={{ fontWeight: 700 }}>
-                                      {timeOnPage} ثانية في الصفحة
-                                    </Typography>
-                                  </Stack>
-                                ) : null}
-                              </Stack>
-
-                              {timeline.length > 0 ? (
-                                <Stack spacing={0.4}>
-                                  {timeline.map((ev, i) => (
-                                    <Stack key={i} direction="row" justifyContent="space-between" alignItems="center">
-                                      <Typography variant="caption" sx={{ fontSize: '0.72rem', display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                                        {ev.event === 'qr_scanned' && '✅'}
-                                        {ev.event === 'page_viewed' && '📱'}
-                                        {ev.event === 'field_focused' && '✍️'}
-                                        {ev.event === 'form_submitted' && '🚨'}
-                                        <span>{ev.label}</span>
-                                      </Typography>
-                                      <Typography variant="caption" sx={{ fontFamily: 'monospace', fontSize: '0.68rem', color: 'text.secondary' }}>
-                                        {ev.time_str}
-                                      </Typography>
-                                    </Stack>
-                                  ))}
-                                </Stack>
-                              ) : (
-                                <Stack direction="row" justifyContent="space-between" alignItems="center">
-                                  <Typography variant="caption" sx={{ fontSize: '0.72rem' }}>
-                                    ✅ تم مسح الرمز وتوليد البصمة
-                                  </Typography>
-                                  <Typography variant="caption" sx={{ fontFamily: 'monospace', fontSize: '0.68rem' }}>
-                                    {new Date(scan.occurred_at).toLocaleTimeString('ar-SA')}
-                                  </Typography>
-                                </Stack>
-                              )}
-                            </Stack>
-                          </Box>
-
-                          {/* 5. Entered Credentials & Penalty State */}
-                          <Box sx={{ p: 1, borderRadius: 1.5, bgcolor: 'background.paper', border: '1px dashed', borderColor: 'divider' }}>
-                            <Stack spacing={0.4}>
-                              <Typography variant="caption" sx={{ fontFamily: 'monospace', fontSize: '0.76rem' }}>
-                                <strong>User:</strong> {scan.username_entered || scan.username || '—'}
-                              </Typography>
-                              <Typography variant="caption" sx={{ fontFamily: 'monospace', fontSize: '0.76rem' }}>
-                                <strong>Email:</strong> {scan.email_entered || scan.email || '—'}
-                              </Typography>
-                            </Stack>
-                          </Box>
-
-                          {scan.penalty_applied ? (
-                            <Chip
-                              size="small"
-                              color="error"
-                              label="العقوبة: −25 نقطة من نقاط المناعة (Elo Score)"
-                              sx={{ fontWeight: 800 }}
-                            />
-                          ) : null}
-
-                          {!scan.employee_id ? (
-                            <Button
-                              fullWidth
-                              size="small"
-                              variant="outlined"
-                              color="warning"
-                              startIcon={<PersonAddAlt1Icon />}
-                              onClick={() => {
-                                setAssignScan(scan);
-                                setAssignEmployeeId('');
-                              }}
-                            >
-                              ربط الهوية بالموظف (Assign)
-                            </Button>
-                          ) : null}
-                        </Stack>
-                      </Card>
-                    </Grid>
-                  );
-                })}
-              </Grid>
+              <TableContainer sx={{ border: '1px solid', borderColor: 'divider', borderRadius: 2, overflowX: 'auto' }}>
+                <Table size="small">
+                  <TableHead>
+                    <TableRow sx={{ bgcolor: 'action.hover' }}>
+                      <TableCell sx={{ fontWeight: 800 }}>Time</TableCell>
+                      <TableCell sx={{ fontWeight: 800 }}>IP</TableCell>
+                      <TableCell sx={{ fontWeight: 800 }}>User-Agent</TableCell>
+                      <TableCell sx={{ fontWeight: 800 }}>Entered Username</TableCell>
+                      <TableCell sx={{ fontWeight: 800 }}>Entered Email</TableCell>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {radarScans.map((scan) => (
+                      <TableRow key={scan.id} hover>
+                        <TableCell sx={{ fontFamily: 'monospace', whiteSpace: 'nowrap' }}>
+                          {new Date(scan.occurred_at).toLocaleString()}
+                        </TableCell>
+                        <TableCell sx={{ fontFamily: 'monospace', whiteSpace: 'nowrap' }}>
+                          {scan.ip_address || '—'}
+                        </TableCell>
+                        <TableCell sx={{ maxWidth: 320, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: '0.78rem' }} title={scan.user_agent || ''}>
+                          {scan.user_agent || '—'}
+                        </TableCell>
+                        <TableCell sx={{ fontWeight: 700 }}>
+                          {scan.username || scan.username_entered || '—'}
+                        </TableCell>
+                        <TableCell sx={{ fontWeight: 700, color: 'primary.main' }}>
+                          {scan.email || scan.email_entered || '—'}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </TableContainer>
             )}
           </CardContent>
         ) : null}

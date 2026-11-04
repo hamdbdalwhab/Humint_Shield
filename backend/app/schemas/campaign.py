@@ -423,6 +423,7 @@ class QRSubmissionResponse(BaseModel):
 
     success: bool
     status: str = "success"
+    redirect: str | None = None
     redirect_url: str | None = None
     first_time: bool = False
     unknown: bool = False

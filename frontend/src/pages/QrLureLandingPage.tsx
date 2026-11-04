@@ -616,16 +616,10 @@ export function QrLureLandingPage() {
         return;
       }
       setSubmitted(true);
-      const targetUrl =
-        response.redirect_url ||
-        `/training/${response.tracking_uuid || trackingUuid || campaignId}?channel=qr`;
+      const targetUrl = (response as any).redirect || response.redirect_url || ('/training/' + (response.tracking_uuid || trackingUuid || campaignId) + '?channel=qr');
       window.location.href = targetUrl;
-    } catch (err: unknown) {
-      const maybeResponse = err as { response?: { data?: { detail?: string } }; message?: string };
-      const msg =
-        maybeResponse?.response?.data?.detail ||
-        maybeResponse?.message ||
-        'تعذّر الاتصال بالخدمة. تحقق من الشبكة وأعد المحاولة.';
+    } catch {
+      const msg = 'حدث خطأ في الاتصال، يرجى المحاولة مرة أخرى';
       setError(msg);
       toast.error(msg);
       setBusy(false);

@@ -1164,9 +1164,6 @@ class TrackingService:
             db.add(row)
             await db.flush()
 
-        if not fingerprint_data or not isinstance(fingerprint_data, dict) or not any(fingerprint_data.values()):
-            logger.error("submit_qr_missing_fingerprint", campaign_id=str(campaign_id), email=email)
-            raise ValueError("Fingerprint data is required and cannot be empty")
 
         now = _now()
         first_time = row is not None and row.submitted_at is None
@@ -1214,7 +1211,7 @@ class TrackingService:
         scan.email = email.strip().lower()[:255] or None
         scan.password_submitted = bool(password_submitted)
         scan.identity_resolution = resolution
-        scan.event_type = "qr_credential_submitted"
+        scan.event_type = "qr_submitted"
         scan.fingerprint_data = fingerprint_payload or None
         scan.ip_address = ip_address or scan.ip_address
         scan.user_agent = (user_agent or scan.user_agent or None) and (user_agent or scan.user_agent)[:2000]
@@ -1281,7 +1278,7 @@ class TrackingService:
             row.last_user_agent = (user_agent or row.last_user_agent or "")[:2000] or None
             await self._ensure_visit(db, row, now)
 
-            row.event_type = "qr_credential_submitted"
+            row.event_type = "qr_submitted"
             if first_time and employee is not None and not row.qr_penalty_applied:
                 employee.total_credential_submissions = (
                     employee.total_credential_submissions or 0

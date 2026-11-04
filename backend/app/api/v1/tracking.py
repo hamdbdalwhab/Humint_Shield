@@ -738,6 +738,7 @@ async def track_qr_submit(
     return QRSubmissionResponse(
         success=True,
         status="success",
+        redirect=redirect_url,
         redirect_url=redirect_url,
         first_time=result.first_time,
         unknown=employee is None,
