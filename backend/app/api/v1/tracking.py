@@ -866,7 +866,7 @@ async def track_qr_scan(
                 qr_config = config.get("qr")
                 qr_values = dict(qr_config) if isinstance(qr_config, dict) else {}
                 lure_type = normalize_lure_type(qr_values.get("lure_type") or qr_values.get("pretext_key")) or "bonus"
-                target_suffix = f"/qr/{lure_type}/{campaign.id}?tid={tracking_row.tracking_uuid}"
+                target_suffix = f"/qr/landing/{campaign.id}?tid={tracking_row.tracking_uuid}"
             except Exception as exc:
                 await db.rollback()
                 logger.error("track_qr_campaign_scan_failed", error=str(exc))

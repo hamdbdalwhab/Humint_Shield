@@ -69,7 +69,8 @@ async def _get_campaign(
 async def _qr_scan_public_rows(
     db: AsyncSession, campaign: EmailCampaign
 ) -> list[QRScanPublic]:
-    """Load the campaign's QR scans and resolve display names in two queries."""
+    """Load the campaign's QR scans and tracking_events and resolve display names."""
+    # 1. Load QRScan records
     scans = (
         await db.execute(
             select(QRScan)
@@ -77,30 +78,36 @@ async def _qr_scan_public_rows(
             .order_by(QRScan.occurred_at.desc())
         )
     ).scalars().all()
-    if not scans:
+
+    # 2. Also fetch all EmailTracking (tracking_events) rows for this campaign where channel == 'qr'
+    trackings = (
+        await db.execute(
+            select(EmailTracking)
+            .where(
+                EmailTracking.campaign_id == campaign.id,
+                EmailTracking.channel == "qr",
+            )
+            .order_by(EmailTracking.created_at.desc())
+        )
+    ).scalars().all()
+
+    if not scans and not trackings:
         return []
 
-    tracking_ids = [scan.tracking_id for scan in scans if scan.tracking_id]
-    tracking_by_id: dict[uuid.UUID, EmailTracking] = {}
-    if tracking_ids:
-        rows = (
-            await db.execute(
-                select(EmailTracking).where(EmailTracking.id.in_(tracking_ids))
-            )
-        ).scalars().all()
-        tracking_by_id = {row.id: row for row in rows}
+    tracking_by_id: dict[uuid.UUID, EmailTracking] = {row.id: row for row in trackings}
+    for scan in scans:
+        if scan.tracking_id and scan.tracking_id not in tracking_by_id:
+            t_row = await db.get(EmailTracking, scan.tracking_id)
+            if t_row is not None:
+                tracking_by_id[t_row.id] = t_row
 
     employee_ids = {
-        employee_id
-        for employee_id in [
+        emp_id
+        for emp_id in [
             *(scan.employee_id for scan in scans),
-            *(
-                tracking_by_id[scan.tracking_id].employee_id
-                for scan in scans
-                if scan.tracking_id and scan.tracking_id in tracking_by_id
-            ),
+            *(t.employee_id for t in trackings),
         ]
-        if employee_id
+        if emp_id
     }
     employees: dict[uuid.UUID, HumanAsset] = {}
     if employee_ids:
@@ -112,8 +119,12 @@ async def _qr_scan_public_rows(
         employees = {row.id: row for row in rows}
 
     result: list[QRScanPublic] = []
+    scanned_tracking_ids = set()
+
     for scan in scans:
         tracking = tracking_by_id.get(scan.tracking_id) if scan.tracking_id else None
+        if scan.tracking_id:
+            scanned_tracking_ids.add(scan.tracking_id)
         employee = employees.get(scan.employee_id) if scan.employee_id else None
         source = employees.get(tracking.employee_id) if tracking is not None else None
         fingerprint = scan.fingerprint_data if isinstance(scan.fingerprint_data, dict) else {}
@@ -175,6 +186,55 @@ async def _qr_scan_public_rows(
                 penalty_applied=bool(scan.penalty_applied),
             )
         )
+
+    # Add any tracking_events that do not have a corresponding QRScan row yet
+    for tracking in trackings:
+        if tracking.id in scanned_tracking_ids:
+            continue
+        employee = employees.get(tracking.employee_id) if tracking.employee_id else None
+        client_ctx = tracking.client_context if isinstance(tracking.client_context, dict) else {}
+        fp = client_ctx.get("fingerprint") or client_ctx or {}
+        loc = ", ".join([p for p in (client_ctx.get("city"), client_ctx.get("country")) if p]) or None
+        result.append(
+            QRScanPublic(
+                id=tracking.id,
+                campaign_id=campaign.id,
+                tracking_id=tracking.id,
+                tracking_uuid=tracking.tracking_uuid,
+                source_employee_id=employee.id if employee else None,
+                source_employee_name=employee.full_name if employee else None,
+                source_employee_email=employee.email if employee else None,
+                employee_id=employee.id if employee else None,
+                employee_name=employee.full_name if employee else None,
+                employee_email=employee.email if employee else None,
+                username=tracking.submitted_username,
+                email=tracking.submitted_email,
+                password_submitted=bool(tracking.password_submitted),
+                identity_resolution=tracking.identity_resolution or "unknown",
+                event_type=tracking.event_type or "qr_scanned",
+                occurred_at=tracking.created_at or tracking.opened_at,
+                ip_address=tracking.last_ip_address,
+                user_agent=tracking.last_user_agent,
+                fingerprint=fp,
+                device_info=fp,
+                fingerprint_hash=fp.get("fingerprint_hash"),
+                username_entered=tracking.submitted_username,
+                email_entered=tracking.submitted_email,
+                device_model=client_ctx.get("device_model"),
+                country=client_ctx.get("country"),
+                city=client_ctx.get("city"),
+                isp=client_ctx.get("isp"),
+                location_display=loc,
+                latitude=client_ctx.get("latitude"),
+                longitude=client_ctx.get("longitude"),
+                real_time_events=[],
+                time_on_page_seconds=0,
+                elo_delta=-25 if tracking.qr_penalty_applied else 0,
+                penalty_applied=bool(tracking.qr_penalty_applied),
+            )
+        )
+
+    result.sort(key=lambda s: s.occurred_at, reverse=True)
     return result
 
 

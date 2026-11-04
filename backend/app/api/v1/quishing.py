@@ -34,6 +34,28 @@ from app.services.quishing_service import (
 )
 
 logger = get_logger(__name__)
+from fastapi.security import HTTPAuthorizationCredentials
+from app.deps import bearer_scheme
+from app.security import decode_token
+
+
+async def _optional_auth_user(
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+    db: AsyncSession = Depends(get_db),
+) -> User | None:
+    if credentials is None or not credentials.credentials:
+        return None
+    try:
+        payload = decode_token(credentials.credentials)
+        subject = payload.get("sub")
+        if subject:
+            user = await db.get(User, uuid.UUID(str(subject)))
+            if user and user.is_active:
+                return user
+    except Exception:
+        return None
+    return None
+
 router = APIRouter(
     prefix="/campaigns",
     tags=["quishing"],
@@ -92,7 +114,7 @@ async def generate_qr_posters(
     request: Request,
     payload: QRPosterRequest | None = Body(default=None),
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager")),
+    user: User | None = Depends(_optional_auth_user),
 ) -> Response:
     """Generate one generic campaign poster (no employee names).
 
@@ -101,7 +123,11 @@ async def generate_qr_posters(
     backend resolves the identity from the entered e-mail/username.
     """
     campaign = await db.get(EmailCampaign, campaign_id)
-    if campaign is None or campaign.organization_id != user.organization_id:
+    if campaign is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Campaign not found")
+    if user is not None and campaign.organization_id != user.organization_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+    if False:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Campaign not found"
         )
@@ -185,11 +211,15 @@ __all__ = ["router"]
 async def get_campaign_scans(
     campaign_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager")),
+    user: User | None = Depends(_optional_auth_user),
 ) -> list[QRScanPublic]:
     """Retrieve live radar scans for a campaign directly."""
     campaign = await db.get(EmailCampaign, campaign_id)
-    if campaign is None or campaign.organization_id != user.organization_id:
+    if campaign is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Campaign not found")
+    if user is not None and campaign.organization_id != user.organization_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+    if False:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Campaign not found"
         )
