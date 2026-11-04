@@ -594,21 +594,7 @@ export function QrLureLandingPage() {
     setError(null);
     startedAt.current = startedAt.current || performance.now();
     try {
-      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-        try {
-          wsRef.current.send(
-            JSON.stringify({
-              event: 'form_submitted',
-              campaign_id: campaignId,
-              tracking_uuid: trackingUuid || undefined,
-              email: email.trim(),
-              username: username.trim(),
-            })
-          );
-        } catch {
-          /* Ignore WS failure */
-        }
-      }
+
       const fingerprint = await collectFingerprint();
       fingerprint.submit_delay_ms = Math.round(performance.now() - startedAt.current);
       await new Promise((resolve) => window.setTimeout(resolve, 850));

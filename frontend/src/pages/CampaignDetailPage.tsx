@@ -52,7 +52,7 @@ import LocationOnIcon from '@mui/icons-material/LocationOn';
 import AccessTimeIcon from '@mui/icons-material/AccessTime';
 import PublicIcon from '@mui/icons-material/Public';
 import RadioButtonCheckedIcon from '@mui/icons-material/RadioButtonChecked';
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useNavigate, useParams } from 'react-router-dom';
 import toast from 'react-hot-toast';
@@ -230,8 +230,6 @@ export function CampaignDetailPage() {
   const [assignScan, setAssignScan] = useState<QRScan | null>(null);
   const [assignEmployeeId, setAssignEmployeeId] = useState('');
   const [assignBusy, setAssignBusy] = useState(false);
-  const [liveScans, setLiveScans] = useState<QRScan[]>([]);
-  const [wsConnected, setWsConnected] = useState(false);
 
   const resultsQuery = useQuery({
     queryKey: ['campaign-results', organizationId, campaignId],
@@ -254,106 +252,7 @@ export function CampaignDetailPage() {
     refetchInterval: REFRESH_INTERVAL_MS,
   });
 
-  useEffect(() => {
-    if (scansQuery.data) {
-      setLiveScans((current) => {
-        const map = new Map<string, QRScan>();
-        scansQuery.data.forEach((s) => map.set(s.id, s));
-        current.forEach((s) => {
-          if (!map.has(s.id)) {
-            map.set(s.id, s);
-          } else {
-            const serverItem = map.get(s.id)!;
-            const currentEventsCount = s.real_time_events?.length ?? 0;
-            const serverEventsCount = serverItem.real_time_events?.length ?? 0;
-            if (currentEventsCount > serverEventsCount) {
-              map.set(s.id, { ...serverItem, ...s });
-            }
-          }
-        });
-        return Array.from(map.values()).sort(
-          (a, b) => new Date(b.occurred_at).getTime() - new Date(a.occurred_at).getTime()
-        );
-      });
-    }
-  }, [scansQuery.data]);
 
-  useEffect(() => {
-    if (!campaignId) return;
-    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const host = window.location.host;
-    const wsUrl = `${proto}//${host}/ws/campaign/${campaignId}/scans`;
-
-    let socket: WebSocket | null = null;
-    try {
-      socket = new WebSocket(wsUrl);
-      socket.onopen = () => setWsConnected(true);
-      socket.onclose = () => setWsConnected(false);
-      socket.onerror = () => setWsConnected(false);
-      socket.onmessage = (event) => {
-        try {
-          const payload = JSON.parse(event.data);
-          if (payload.type === 'scan_update') {
-            setLiveScans((prev) => {
-              const scanId = payload.scan_id;
-              const index = prev.findIndex((s) => s.id === scanId);
-              const updatedItem: QRScan = {
-                id: scanId,
-                campaign_id: payload.campaign_id,
-                tracking_id: payload.tracking_id,
-                tracking_uuid: payload.tracking_uuid,
-                source_employee_id: null,
-                source_employee_name: null,
-                source_employee_email: null,
-                employee_id: payload.employee_id,
-                employee_name: payload.employee_name,
-                employee_email: payload.email_entered,
-                username: payload.username_entered,
-                email: payload.email_entered,
-                username_entered: payload.username_entered,
-                email_entered: payload.email_entered,
-                password_submitted: payload.password_submitted,
-                identity_resolution: payload.identity_resolution,
-                event_type: payload.event_type,
-                occurred_at: payload.occurred_at,
-                ip_address: payload.ip_address,
-                user_agent: payload.user_agent,
-                device_model: payload.device_model,
-                country: payload.country,
-                city: payload.city,
-                isp: payload.isp,
-                location_display: payload.location_display,
-                latitude: payload.latitude,
-                longitude: payload.longitude,
-                fingerprint: payload.fingerprint || {},
-                fingerprint_hash: payload.fingerprint_hash,
-                device_info: payload.device_model,
-                real_time_events: payload.real_time_events || [],
-                time_on_page_seconds: payload.time_on_page_seconds || 0,
-                elo_delta: payload.elo_delta || 0,
-                penalty_applied: payload.penalty_applied || false,
-              };
-              if (index >= 0) {
-                const next = [...prev];
-                next[index] = updatedItem;
-                return next;
-              }
-              return [updatedItem, ...prev];
-            });
-            toast('تحديث مباشر من الرادار: رصد تفاعل فوري!', { icon: '📡' });
-          }
-        } catch {
-          /* ignore */
-        }
-      };
-    } catch {
-      /* ignore */
-    }
-
-    return () => {
-      if (socket) socket.close();
-    };
-  }, [campaignId]);
 
   const employees = useMemo(() => {
     const rows = resultsQuery.data?.employees ?? [];
@@ -504,7 +403,7 @@ export function CampaignDetailPage() {
 
   const { campaign, stats } = resultsQuery.data;
   const allEmployees = resultsQuery.data.employees;
-  const scans = liveScans.length > 0 ? liveScans : (scansQuery.data ?? resultsQuery.data.scans ?? []);
+  const scans = scansQuery.data ?? resultsQuery.data.scans ?? [];
   const isPhoneChannel = campaign.channel === 'sms' || campaign.channel === 'whatsapp';
   const isQrChannel = campaign.channel === 'qr';
   const isUsbChannel = campaign.channel === 'usb';
@@ -939,13 +838,7 @@ export function CampaignDetailPage() {
                   <Typography variant="h3" sx={{ fontSize: '1.15rem', fontWeight: 800 }}>
                     الرادار المباشر — Live Telemetry Radar
                   </Typography>
-                  <Chip
-                    size="small"
-                    color={wsConnected ? 'success' : 'default'}
-                    icon={<RadioButtonCheckedIcon fontSize="small" />}
-                    label={wsConnected ? 'بث حي متصل (WebSocket Active)' : 'جاري الاتصال بالرادار...'}
-                    sx={{ fontWeight: 700 }}
-                  />
+                  <Chip size="small" color="primary" icon={<RadioButtonCheckedIcon fontSize="small" />} label="تحديث تلقائي كل 5 ثوانٍ (Live HTTP Polling)" sx={{ fontWeight: 700 }} />
                 </Stack>
                 <Typography variant="caption" color="text.secondary">
                   تحديث فوري بالثانية لكافة التفاعلات، تحديد دقيق لطراز الجهاز، والموقع الجغرافي (صنعاء / يمن نت)
@@ -965,12 +858,8 @@ export function CampaignDetailPage() {
 
             {scans.length === 0 ? (
               <Box sx={{ p: 4, textAlign: 'center', bgcolor: 'action.hover', borderRadius: 2 }}>
-                <Typography variant="body1" sx={{ fontWeight: 700, mb: 1 }}>
-                  بانتظار المسحات الأولى (Live Telemetry Radar Listening)
-                </Typography>
-                <Typography color="text.secondary" variant="body2">
-                  لا توجد مسحات مسجلة بعد. بمجرد قيام أي شخص بمسح الرمز بهاتفه، ستظهر بطاقته فوراً هنا عبر البث المباشر مع طراز الجهاز وموقعه والخط الزمني لتفاعله.
-                </Typography>
+                <Typography variant="body1" sx={{ fontWeight: 700, mb: 1 }}>لا توجد عمليات مسح حتى الآن (No scans yet)</Typography>
+                <Typography color="text.secondary" variant="body2">بمجرد قيام أي شخص بمسح رمز الاستجابة السريعة (QR) وتعبئة النموذج، ستظهر بيانات المسح هنا تلقائياً مع عنوان IP وطراز الجهاز والموقع والبيانات المدخلة.</Typography>
               </Box>
             ) : (
               <Grid container spacing={2}>

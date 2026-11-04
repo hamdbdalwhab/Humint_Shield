@@ -1021,7 +1021,6 @@ class TrackingService:
 
         from app.services.device_detector import detect_device_model
         from app.services.geoip_service import lookup_ip_geolocation
-        from app.services.ws_manager import ws_manager
 
         dev_model = detect_device_model(user_agent)
         geo_info = await lookup_ip_geolocation(ip_address)
@@ -1056,38 +1055,6 @@ class TrackingService:
         db.add(scan)
         await db.flush()
 
-        try:
-            await ws_manager.broadcast(str(campaign.id), {
-                "type": "scan_update",
-                "scan_id": str(scan.id),
-                "campaign_id": str(campaign.id),
-                "tracking_id": str(tracking.id),
-                "tracking_uuid": str(tracking.tracking_uuid),
-                "event_type": "qr_scanned",
-                "occurred_at": scan.occurred_at.isoformat(),
-                "ip_address": scan.ip_address,
-                "user_agent": scan.user_agent,
-                "device_model": scan.device_model,
-                "country": scan.country,
-                "city": scan.city,
-                "isp": scan.isp,
-                "location_display": geo_info.display_location,
-                "latitude": scan.latitude,
-                "longitude": scan.longitude,
-                "employee_id": None,
-                "employee_name": None,
-                "username_entered": None,
-                "email_entered": None,
-                "password_submitted": False,
-                "identity_resolution": "unknown",
-                "fingerprint": {},
-                "fingerprint_hash": None,
-                "device_hash": None,
-                "real_time_events": initial_events,
-                "time_on_page_seconds": 0,
-            })
-        except Exception:
-            pass
 
         logger.info(
             "qr_campaign_scanned",
@@ -1237,7 +1204,6 @@ class TrackingService:
             db.add(scan)
         from app.services.device_detector import detect_device_model
         from app.services.geoip_service import lookup_ip_geolocation
-        from app.services.ws_manager import ws_manager
 
         gps_data = fingerprint_payload.get("gps") if isinstance(fingerprint_payload, dict) else None
         dev_model = detect_device_model(user_agent, fingerprint_data=fingerprint_payload)
@@ -1286,6 +1252,10 @@ class TrackingService:
             client_context.update(fingerprint_payload)
         if isinstance(client, dict):
             client_context.update(client)
+        client_context["device_model"] = dev_model
+        client_context["city"] = geo_info.city
+        client_context["country"] = geo_info.country
+        client_context["isp"] = geo_info.isp
 
         elo_delta = 0
         penalty_applied = False
@@ -1397,38 +1367,6 @@ class TrackingService:
             except Exception:
                 pass
 
-        try:
-            await ws_manager.broadcast(str(campaign.id), {
-                "type": "scan_update",
-                "scan_id": str(scan.id),
-                "campaign_id": str(campaign.id),
-                "tracking_id": str(scan.tracking_id) if scan.tracking_id else None,
-                "tracking_uuid": str(row.tracking_uuid) if row else None,
-                "event_type": scan.event_type,
-                "occurred_at": scan.occurred_at.isoformat(),
-                "ip_address": scan.ip_address,
-                "user_agent": scan.user_agent,
-                "device_model": scan.device_model,
-                "country": scan.country,
-                "city": scan.city,
-                "isp": scan.isp,
-                "location_display": geo_info.display_location,
-                "latitude": scan.latitude,
-                "longitude": scan.longitude,
-                "employee_id": str(employee.id) if employee else None,
-                "employee_name": employee.full_name if employee else None,
-                "username_entered": scan.username,
-                "email_entered": scan.email,
-                "password_submitted": scan.password_submitted,
-                "identity_resolution": scan.identity_resolution,
-                "fingerprint": scan.fingerprint_data or {},
-                "fingerprint_hash": (scan.fingerprint_data or {}).get("fingerprint_hash"),
-                "device_hash": (scan.fingerprint_data or {}).get("device_hash"),
-                "real_time_events": scan.real_time_events or [],
-                "time_on_page_seconds": time_on_page,
-            })
-        except Exception:
-            pass
         logger.info(
             "qr_credential_submitted",
             tracking_uuid=str(row.tracking_uuid) if row is not None else None,
