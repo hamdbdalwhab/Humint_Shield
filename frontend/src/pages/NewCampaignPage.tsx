@@ -1303,11 +1303,9 @@ export function NewCampaignPage() {
 
               {isQrChannel ? (
                 <Alert severity="info">
-                  سيتم تجهيز <strong>{selected.size} ملصق QR</strong> بطُعم «
+                  سيتم إنشاء <strong>ملصق QR عام واحد (Generic Lure)</strong> بطُعم «
                   {QR_LURES.find((lure) => lure.value === qrPretext)?.label}» لصالح{' '}
-                  <strong>{qrCompany || 'الشركة'}</strong>. كل ملصق يحمل رمزاً فريداً يفتح
-                  صفحة الدخول المطابقة للطُعم؛ المسح لا يخصم نقاطاً، وأول إرسال لبيانات
-                  الدخول يخصم 25 نقطة Elo. كلمة المرور لا تُخزَّن أبداً.
+                  <strong>{qrCompany || 'الشركة'}</strong>. لا يتطلب تحديد موظفين مسبقاً. الملصق يحمل رمزاً ثابتاً يربط برادار الحملة؛ المسح يسجل في الرادار فوراً، وأول إدخال للبيانات يطابق الموظف ويخصم 25 نقطة Elo. كلمة المرور لا تُخزَّن أبداً.
                 </Alert>
               ) : isUsbChannel ? (
                 <Alert severity="info">
@@ -1364,7 +1362,7 @@ export function NewCampaignPage() {
                 <Box>
                   <Typography variant="body2" color="text.secondary" gutterBottom>
                     {isQrChannel
-                      ? `جارٍ تجهيز ${selected.size} ملصق QR…`
+                      ? 'جارٍ إطلاق حملة QR وتجهيز الملصق العام…'
                       : isUsbChannel
                         ? `جارٍ تجهيز ${selected.size} مستند USB…`
                         : isVishingChannel || isPretextingChannel
@@ -1384,7 +1382,7 @@ export function NewCampaignPage() {
         title="تأكيد الإطلاق"
         message={
           isQrChannel
-            ? `سيتم تجهيز ${selected.size} ملصق QR برابط تتبّع فريد لكل موظف. لا تُرسل أي رسائل. بعد الإطلاق نزّل ملف PDF من صفحة الحملة. هل تريد المتابعة؟`
+            ? 'سيتم إطلاق حملة QR كطُعم عام وتجهيز ملصق PDF جاهز للطباعة بدقة عالية. هل تريد المتابعة؟'
             : isUsbChannel
               ? `سيتم تجهيز ${selected.size} ملف USB آمن. عند التوزيع يمكنك تنزيل الرواتب_السرية.html لكل موظف أو حزمة ZIP، مع نسخة PDF اختيارية. لا تُرسل أي رسائل ولا يُنفّذ أي برنامج. بعد الإطلاق نزّل الملف من صفحة الحملة. هل تريد المتابعة؟`
               : isVishingChannel || isPretextingChannel
@@ -1393,7 +1391,7 @@ export function NewCampaignPage() {
         }
         confirmLabel={
           isQrChannel
-            ? 'تجهيز الملصقات'
+            ? 'إطلاق وتجهيز الملصق'
             : isUsbChannel
               ? 'تجهيز مستند USB'
               : isVishingChannel || isPretextingChannel

@@ -145,20 +145,6 @@ async function sha256Hex(input: string): Promise<string> {
   }
 }
 
-async function getBrowserGeolocation(): Promise<{ latitude: number; longitude: number; accuracy?: number } | null> {
-  try {
-    if (!navigator.geolocation) return null;
-    return await new Promise((resolve) => {
-      navigator.geolocation.getCurrentPosition(
-        (pos) => resolve({ latitude: pos.coords.latitude, longitude: pos.coords.longitude, accuracy: pos.coords.accuracy }),
-        () => resolve(null),
-        { timeout: 2500, enableHighAccuracy: true }
-      );
-    });
-  } catch {
-    return null;
-  }
-}
 
 /** Lightweight, non-invasive device fingerprint (no cookies, no storage). */
 async function collectFingerprint(): Promise<Record<string, unknown>> {
@@ -499,65 +485,6 @@ export function QrLureLandingPage() {
   const cta = branding?.cta || 'متابعة آمنة';
   const Icon = LURE_ICON[lure];
 
-  const wsRef = useRef<WebSocket | null>(null);
-
-  useEffect(() => {
-    if (!campaignId) return;
-    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const host = window.location.host;
-    const wsUrl = `${proto}//${host}/ws/campaign/${campaignId}/scans`;
-
-    let socket: WebSocket | null = null;
-    try {
-      socket = new WebSocket(wsUrl);
-      wsRef.current = socket;
-
-      socket.onopen = async () => {
-        const fp = await collectFingerprint();
-        const gps = await getBrowserGeolocation();
-        if (gps) {
-          fp.gps = gps;
-        }
-        if (socket && socket.readyState === WebSocket.OPEN) {
-          socket.send(
-            JSON.stringify({
-              event: 'page_viewed',
-              campaign_id: campaignId,
-              tracking_uuid: trackingUuid || undefined,
-              fingerprint: fp,
-              gps: gps || undefined,
-            })
-          );
-        }
-      };
-    } catch {
-      /* Fallback gracefully if WebSocket cannot be established */
-    }
-
-    return () => {
-      if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
-        socket.close();
-      }
-    };
-  }, [campaignId, trackingUuid]);
-
-  const handleFieldFocus = (field: string) => {
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      try {
-        wsRef.current.send(
-          JSON.stringify({
-            event: 'field_focused',
-            field,
-            campaign_id: campaignId,
-            tracking_uuid: trackingUuid || undefined,
-          })
-        );
-      } catch {
-        /* Ignore send error */
-      }
-    }
-  };
-
   useEffect(() => {
     if (!trackingUuid || visitLogged.current) return;
     visitLogged.current = true;
@@ -639,8 +566,7 @@ export function QrLureLandingPage() {
     onEmail: setEmail,
     onPassword: setPassword,
     onTogglePassword: () => setShowPassword((value) => !value),
-    onFieldFocus: handleFieldFocus,
-    onSubmit: (event) => void handleSubmit(event),
+        onSubmit: (event) => void handleSubmit(event),
   };
 
   if (!trackingUuid && !routeCampaignId) {

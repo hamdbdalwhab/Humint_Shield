@@ -48,6 +48,10 @@ import ScheduleIcon from '@mui/icons-material/Schedule';
 import SensorsIcon from '@mui/icons-material/Sensors';
 import VisibilityIcon from '@mui/icons-material/Visibility';
 import RadioButtonCheckedIcon from '@mui/icons-material/RadioButtonChecked';
+import AccessTimeIcon from '@mui/icons-material/AccessTime';
+import PublicIcon from '@mui/icons-material/Public';
+import DevicesIcon from '@mui/icons-material/Devices';
+import FingerprintIcon from '@mui/icons-material/Fingerprint';
 import { useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useNavigate, useParams } from 'react-router-dom';
@@ -85,6 +89,34 @@ function deviceSummary(scan: QRScan): string {
   if (fp.webgl_renderer) parts.push(String(fp.webgl_renderer).slice(0, 48));
   if (!parts.length && scan.user_agent) parts.push(scan.user_agent.slice(0, 48));
   return parts.join(' · ') || '—';
+}
+
+function parseDeviceInfo(scan: QRScan): { os: string; browser: string; screen: string } {
+  const fp = ((scan.fingerprint || {}) as Record<string, unknown>);
+  const ua = scan.user_agent || '';
+
+  let os = (scan.device_model || (fp.os as string) || (fp.platform as string) || '');
+  if (!os) {
+    if (/Windows/i.test(ua)) os = 'Windows';
+    else if (/Android/i.test(ua)) os = 'Android';
+    else if (/iPhone|iPad|iPod/i.test(ua)) os = 'iOS';
+    else if (/Macintosh|Mac OS X/i.test(ua)) os = 'macOS';
+    else if (/Linux/i.test(ua)) os = 'Linux';
+    else os = 'Unknown OS';
+  }
+
+  let browser = (fp.browser as string) || '';
+  if (!browser) {
+    if (/Edg/i.test(ua)) browser = 'Edge';
+    else if (/Chrome/i.test(ua)) browser = 'Chrome';
+    else if (/Safari/i.test(ua)) browser = 'Safari';
+    else if (/Firefox/i.test(ua)) browser = 'Firefox';
+    else browser = 'Unknown Browser';
+  }
+
+  const screen = (fp.screen || (fp.screen_width && fp.screen_height ? `${fp.screen_width}x${fp.screen_height}` : '') || fp.viewport || 'Unknown') as string;
+
+  return { os: String(os), browser: String(browser), screen: String(screen) };
 }
 
 const CATEGORY_META: Record<
@@ -239,7 +271,7 @@ export function CampaignDetailPage() {
       }
     };
     fetchRadarScans();
-    const interval = setInterval(fetchRadarScans, 3000);
+    const interval = setInterval(fetchRadarScans, 5000);
     return () => clearInterval(interval);
   }, [campaignId]);
 
@@ -850,7 +882,7 @@ export function CampaignDetailPage() {
                   <Typography variant="h3" sx={{ fontSize: '1.15rem', fontWeight: 800 }}>
                     الرادار المباشر — Live Telemetry Radar
                   </Typography>
-                  <Chip size="small" color="primary" icon={<RadioButtonCheckedIcon fontSize="small" />} label="استطلاع حي كل 3 ثوانٍ (Live Polling 3s)" sx={{ fontWeight: 700 }} />
+                  <Chip size="small" color="primary" icon={<RadioButtonCheckedIcon fontSize="small" />} label="استطلاع حي كل 5 ثوانٍ (Live Polling 5s)" sx={{ fontWeight: 700 }} />
                 </Stack>
                 <Typography variant="caption" color="text.secondary">
                   استعراض فوري لعمليات المسح المدخلة من صفحة الهبوط
@@ -871,43 +903,154 @@ export function CampaignDetailPage() {
             {radarScans.length === 0 ? (
               <Box sx={{ p: 4, textAlign: 'center', bgcolor: 'action.hover', borderRadius: 2 }}>
                 <Typography variant="body1" sx={{ fontWeight: 700, mb: 1 }}>لا توجد عمليات مسح حتى الآن (No scans yet)</Typography>
-                <Typography color="text.secondary" variant="body2">بمجرد قيام أي شخص بمسح رمز الاستجابة السريعة (QR) وتعبئة النموذج، ستظهر بيانات المسح هنا تلقائياً في الجدول.</Typography>
+                <Typography color="text.secondary" variant="body2">بمجرد قيام أي شخص بمسح رمز الاستجابة السريعة (QR) أو إدخال البيانات، ستظهر بطاقة المسح هنا فوراً.</Typography>
               </Box>
             ) : (
-              <TableContainer sx={{ border: '1px solid', borderColor: 'divider', borderRadius: 2, overflowX: 'auto' }}>
-                <Table size="small">
-                  <TableHead>
-                    <TableRow sx={{ bgcolor: 'action.hover' }}>
-                      <TableCell sx={{ fontWeight: 800 }}>Time</TableCell>
-                      <TableCell sx={{ fontWeight: 800 }}>IP</TableCell>
-                      <TableCell sx={{ fontWeight: 800 }}>User-Agent</TableCell>
-                      <TableCell sx={{ fontWeight: 800 }}>Entered Username</TableCell>
-                      <TableCell sx={{ fontWeight: 800 }}>Entered Email</TableCell>
-                    </TableRow>
-                  </TableHead>
-                  <TableBody>
-                    {radarScans.map((scan) => (
-                      <TableRow key={scan.id} hover>
-                        <TableCell sx={{ fontFamily: 'monospace', whiteSpace: 'nowrap' }}>
-                          {new Date(scan.occurred_at).toLocaleString()}
-                        </TableCell>
-                        <TableCell sx={{ fontFamily: 'monospace', whiteSpace: 'nowrap' }}>
-                          {scan.ip_address || '—'}
-                        </TableCell>
-                        <TableCell sx={{ maxWidth: 320, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: '0.78rem' }} title={scan.user_agent || ''}>
-                          {scan.user_agent || '—'}
-                        </TableCell>
-                        <TableCell sx={{ fontWeight: 700 }}>
-                          {scan.username || scan.username_entered || '—'}
-                        </TableCell>
-                        <TableCell sx={{ fontWeight: 700, color: 'primary.main' }}>
-                          {scan.email || scan.email_entered || '—'}
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </TableContainer>
+              <Grid container spacing={2}>
+                {radarScans.map((scan) => {
+                  const deviceInfo = parseDeviceInfo(scan);
+                  const matchedName = scan.employee_name;
+                  const isMatched = Boolean(matchedName || scan.employee_id);
+                  const fpHash = scan.fingerprint_hash || (scan.fingerprint as any)?.fingerprint_hash || '';
+                  const truncatedFp = fpHash ? fpHash.slice(0, 16) + '...' : '—';
+                  const loc = [scan.city, scan.country].filter(Boolean).join(', ') || scan.location_display || '';
+                  const usernameEntered = scan.username || scan.username_entered || '—';
+                  const emailEntered = scan.email || scan.email_entered || '—';
+
+                  return (
+                    <Grid item xs={12} sm={6} md={4} key={scan.id}>
+                      <Card
+                        variant="outlined"
+                        sx={{
+                          height: '100%',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          borderRadius: 2.5,
+                          borderColor: isMatched ? 'rgba(0, 230, 118, 0.45)' : 'rgba(255, 179, 0, 0.45)',
+                          bgcolor: 'background.paper',
+                          boxShadow: isMatched
+                            ? '0 4px 18px rgba(0, 230, 118, 0.08)'
+                            : '0 4px 18px rgba(255, 179, 0, 0.08)',
+                          transition: 'all 0.2s ease-in-out',
+                          '&:hover': {
+                            transform: 'translateY(-2px)',
+                            boxShadow: '0 8px 24px rgba(0,0,0,.25)',
+                          },
+                        }}
+                      >
+                        <CardContent sx={{ p: 2, '&:last-child': { pb: 2 } }}>
+                          {/* Top: Time & Matched Badge */}
+                          <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 1.5 }}>
+                            <Stack direction="row" spacing={0.8} alignItems="center">
+                              <AccessTimeIcon sx={{ fontSize: 16, color: 'text.secondary' }} />
+                              <Typography variant="caption" sx={{ fontFamily: 'monospace', fontWeight: 700 }}>
+                                {new Date(scan.occurred_at).toLocaleString('en-US', {
+                                  month: 'short',
+                                  day: '2-digit',
+                                  hour: '2-digit',
+                                  minute: '2-digit',
+                                  second: '2-digit',
+                                  hour12: false,
+                                })}
+                              </Typography>
+                            </Stack>
+                            <Chip
+                              size="small"
+                              label={isMatched ? `Matched: ${matchedName || 'Employee'}` : 'Unknown'}
+                              color={isMatched ? 'success' : 'warning'}
+                              variant={isMatched ? 'filled' : 'outlined'}
+                              sx={{ fontWeight: 800, fontSize: '0.72rem' }}
+                            />
+                          </Stack>
+
+                          {/* IP & Country/City */}
+                          <Box sx={{ mb: 1.2 }}>
+                            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.2 }}>
+                              IP & Location
+                            </Typography>
+                            <Stack direction="row" spacing={1} alignItems="center">
+                              <PublicIcon sx={{ fontSize: 16, color: 'primary.main' }} />
+                              <Typography variant="body2" sx={{ fontFamily: 'monospace', fontWeight: 700 }}>
+                                {scan.ip_address || '—'}
+                              </Typography>
+                              {loc ? (
+                                <Typography variant="caption" sx={{ color: 'text.secondary' }}>
+                                  ({loc})
+                                </Typography>
+                              ) : null}
+                            </Stack>
+                          </Box>
+
+                          {/* Device Info (OS, Browser, Screen) */}
+                          <Box sx={{ mb: 1.2 }}>
+                            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.2 }}>
+                              Device Info
+                            </Typography>
+                            <Stack direction="row" spacing={1} alignItems="center">
+                              <DevicesIcon sx={{ fontSize: 16, color: 'info.main' }} />
+                              <Typography variant="body2" sx={{ fontSize: '0.8rem', fontWeight: 600 }}>
+                                {deviceInfo.os} · {deviceInfo.browser} {deviceInfo.screen !== 'Unknown' ? `· ${deviceInfo.screen}` : ''}
+                              </Typography>
+                            </Stack>
+                          </Box>
+
+                          {/* Fingerprint Hash (truncated) */}
+                          <Box sx={{ mb: 1.2 }}>
+                            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.2 }}>
+                              Fingerprint Hash
+                            </Typography>
+                            <Stack direction="row" spacing={1} alignItems="center">
+                              <FingerprintIcon sx={{ fontSize: 16, color: 'secondary.main' }} />
+                              <Typography
+                                variant="caption"
+                                sx={{
+                                  fontFamily: 'monospace',
+                                  fontSize: '0.75rem',
+                                  bgcolor: 'action.hover',
+                                  px: 1,
+                                  py: 0.3,
+                                  borderRadius: 1,
+                                }}
+                                title={fpHash}
+                              >
+                                {truncatedFp}
+                              </Typography>
+                            </Stack>
+                          </Box>
+
+                          {/* Entered Credentials */}
+                          <Box sx={{ pt: 1, borderTop: '1px solid', borderColor: 'divider' }}>
+                            <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                              Username Entered: <strong>{usernameEntered}</strong>
+                            </Typography>
+                            <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                              Email Entered: <strong style={{ color: '#00f0ff' }}>{emailEntered}</strong>
+                            </Typography>
+                          </Box>
+
+                          {!isMatched ? (
+                            <Box sx={{ mt: 1.5, textAlign: 'right' }}>
+                              <Button
+                                size="small"
+                                variant="outlined"
+                                color="warning"
+                                startIcon={<PersonAddAlt1Icon fontSize="small" />}
+                                onClick={() => {
+                                  setAssignScan(scan);
+                                  setAssignEmployeeId('');
+                                }}
+                                sx={{ fontSize: '0.72rem', py: 0.2 }}
+                              >
+                                ربط بموظف (Assign)
+                              </Button>
+                            </Box>
+                          ) : null}
+                        </CardContent>
+                      </Card>
+                    </Grid>
+                  );
+                })}
+              </Grid>
             )}
           </CardContent>
         ) : null}
