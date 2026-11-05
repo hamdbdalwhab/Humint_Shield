@@ -41,6 +41,7 @@ import PictureAsPdfIcon from '@mui/icons-material/PictureAsPdf';
 import PersonAddAlt1Icon from '@mui/icons-material/PersonAddAlt1';
 import QrCode2Icon from '@mui/icons-material/QrCode2';
 import UsbIcon from '@mui/icons-material/Usb';
+import ComputerIcon from '@mui/icons-material/Computer';
 import CheckCircleOutlineIcon from '@mui/icons-material/CheckCircleOutline';
 import DoneAllIcon from '@mui/icons-material/DoneAll';
 import ErrorOutlineIcon from '@mui/icons-material/ErrorOutline';
@@ -452,6 +453,68 @@ export function CampaignDetailPage() {
   const isPhoneChannel = campaign.channel === 'sms' || campaign.channel === 'whatsapp';
   const isQrChannel = campaign.channel === 'qr';
   const isUsbChannel = campaign.channel === 'usb';
+
+  const usbBreaches = useMemo(() => {
+    if (!isUsbChannel) return [];
+    const rows = resultsQuery.data?.employees ?? [];
+    const list: Array<{
+      id: string;
+      hostname: string;
+      username: string;
+      domain: string;
+      arch: string;
+      scenario: string;
+      ip_address: string;
+      timestamp: string;
+      employee_name: string;
+      department: string;
+      employee_id?: string;
+      tracking_uuid: string;
+      status: string;
+    }> = [];
+
+    rows.forEach((row) => {
+      const ctx = (row as any).client_context || {};
+      const events = (ctx.breach_events as any[]) || [];
+      if (events.length > 0) {
+        events.forEach((ev: any, idx: number) => {
+          list.push({
+            id: `${row.tracking_uuid}-${idx}`,
+            hostname: ev.hostname || ctx.hostname || 'DESKTOP-ENDPOINT',
+            username: ev.username || ctx.username || 'Unknown User',
+            domain: ev.domain || ctx.domain || '',
+            arch: ev.arch || ctx.arch || '',
+            scenario: ev.scenario || ctx.scenario || '',
+            ip_address: ev.ip_address || '',
+            timestamp: ev.timestamp || row.clicked_at || row.opened_at || '',
+            employee_name: row.name !== 'طعم فيزيائي عام (Physical Drop Target)' ? row.name : (ev.username || 'موظف مجهول'),
+            department: row.department || 'Physical Assessment',
+            employee_id: row.employee_id,
+            tracking_uuid: String(row.tracking_uuid),
+            status: row.status,
+          });
+        });
+      } else if (ctx.hostname || row.status === 'clicked' || row.status === 'opened') {
+        list.push({
+          id: String(row.tracking_uuid),
+          hostname: ctx.hostname || 'DESKTOP-ENDPOINT',
+          username: ctx.username || row.name,
+          domain: ctx.domain || '',
+          arch: ctx.arch || '',
+          scenario: ctx.scenario || '',
+          ip_address: (row as any).last_ip_address || '',
+          timestamp: row.clicked_at || row.opened_at || row.sent_at || '',
+          employee_name: row.name !== 'طعم فيزيائي عام (Physical Drop Target)' ? row.name : (ctx.username || 'موظف مجهول'),
+          department: row.department || 'Physical Assessment',
+          employee_id: row.employee_id,
+          tracking_uuid: String(row.tracking_uuid),
+          status: row.status,
+        });
+      }
+    });
+
+    return list;
+  }, [isUsbChannel, resultsQuery.data]);
   const isVishingChannel = campaign.channel === 'vishing';
   const isPretextingChannel = campaign.channel === 'pretexting';
   const isLinkChannel = isVishingChannel || isPretextingChannel;
@@ -661,9 +724,10 @@ export function CampaignDetailPage() {
           onChange={(_, value: number) => setTab(value)}
           sx={{ px: 2, borderBottom: 1, borderColor: 'divider' }}
         >
-          <Tab label={`Recipients (${allEmployees.length})`} />
+          <Tab label={isUsbChannel ? `السجلات الفيزيائية (${allEmployees.length})` : `Recipients (${allEmployees.length})`} />
           <Tab label="Live activity" />
           {isQrChannel ? <Tab label={`الرادار المباشر — Live Scans (${radarScans.length || scans.length})`} /> : null}
+          {isUsbChannel ? <Tab label={`رادار اختراقات الـ USB الميداني (${usbBreaches.length})`} /> : null}
         </Tabs>
 
         {tab === 0 ? (
@@ -1080,6 +1144,161 @@ export function CampaignDetailPage() {
                     </Grid>
                   );
                 })}
+              </Grid>
+            )}
+          </CardContent>
+        ) : null}
+
+        {tab === 2 && isUsbChannel ? (
+          <CardContent>
+            <Stack
+              direction={{ xs: 'column', sm: 'row' }}
+              justifyContent="space-between"
+              alignItems={{ xs: 'stretch', sm: 'center' }}
+              sx={{ mb: 2 }}
+            >
+              <Box>
+                <Stack direction="row" spacing={1.5} alignItems="center">
+                  <Typography variant="h3" sx={{ fontSize: '1.15rem', fontWeight: 800 }}>
+                    رادار اختراقات الـ USB الميداني — Live Physical Breach Radar
+                  </Typography>
+                  <Chip
+                    size="small"
+                    color="primary"
+                    icon={<RadioButtonCheckedIcon fontSize="small" />}
+                    label="استطلاع حي وتحديث فوري"
+                    sx={{ fontWeight: 700 }}
+                  />
+                </Stack>
+                <Typography variant="caption" color="text.secondary">
+                  رصد أجهزة ومحطات العمل التي تم توصيل فلاشات التوعية بها وتشغيل ملفات المحاكاة
+                </Typography>
+              </Box>
+              <Stack direction="row" spacing={1} sx={{ mt: { xs: 1, sm: 0 } }}>
+                <Chip
+                  color={usbBreaches.length > 0 ? 'error' : 'success'}
+                  label={`محطات العمل المخترقة: ${usbBreaches.length}`}
+                  sx={{ fontWeight: 800 }}
+                />
+                <Chip
+                  variant="outlined"
+                  label="خصم النقاط: -30 Elo لكل اختراق فيزيائي"
+                />
+              </Stack>
+            </Stack>
+
+            {usbBreaches.length === 0 ? (
+              <Box sx={{ p: 4, textAlign: 'center', bgcolor: 'action.hover', borderRadius: 2 }}>
+                <Typography variant="body1" sx={{ fontWeight: 700, mb: 1 }}>
+                  لم يتم رصد أي اختراق فيزيائي حتى الآن (No USB Breaches Yet)
+                </Typography>
+                <Typography color="text.secondary" variant="body2" sx={{ maxWidth: 600, mx: 'auto' }}>
+                  بمجرد قيام أي موظف بالتقاط الفلاشة الميدانية وتوصيلها بجهاز الكمبيوتر وتشغيل أي ملف محاكاة، سيتم التقاط اسم الجهاز (Hostname) واسم المستخدم والنطاق وعرض بطاقة الاختراق هنا فوراً.
+                </Typography>
+              </Box>
+            ) : (
+              <Grid container spacing={2}>
+                {usbBreaches.map((breach) => (
+                  <Grid item xs={12} sm={6} md={4} key={breach.id}>
+                    <Card
+                      variant="outlined"
+                      sx={{
+                        height: '100%',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        borderRadius: 2.5,
+                        borderColor: 'rgba(255, 23, 68, 0.45)',
+                        bgcolor: 'background.paper',
+                        boxShadow: '0 4px 18px rgba(255, 23, 68, 0.08)',
+                        transition: 'all 0.2s ease-in-out',
+                        '&:hover': {
+                          transform: 'translateY(-2px)',
+                          boxShadow: '0 8px 24px rgba(255, 23, 68, 0.2)',
+                        },
+                      }}
+                    >
+                      <CardContent sx={{ p: 2, '&:last-child': { pb: 2 } }}>
+                        {/* Header: Timestamp and Severity */}
+                        <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 1.5 }}>
+                          <Stack direction="row" spacing={0.8} alignItems="center">
+                            <AccessTimeIcon sx={{ fontSize: 16, color: 'text.secondary' }} />
+                            <Typography variant="caption" sx={{ fontFamily: 'monospace', fontWeight: 700 }}>
+                              {breach.timestamp ? new Date(breach.timestamp).toLocaleString('ar-SA') : 'الآن'}
+                            </Typography>
+                          </Stack>
+                          <Chip
+                            size="small"
+                            label="-30 Elo (Physical Breach)"
+                            color="error"
+                            sx={{ fontWeight: 800, fontSize: '0.72rem' }}
+                          />
+                        </Stack>
+
+                        {/* Endpoint Name */}
+                        <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
+                          <ComputerIcon color="error" fontSize="medium" />
+                          <Typography variant="h6" sx={{ fontWeight: 800, fontSize: '0.95rem' }}>
+                            {breach.hostname}
+                          </Typography>
+                        </Stack>
+
+                        {/* Forensics List */}
+                        <Stack spacing={0.8} sx={{ mb: 2, bgcolor: 'action.hover', p: 1.2, borderRadius: 1.5 }}>
+                          <Stack direction="row" justifyContent="space-between">
+                            <Typography variant="caption" color="text.secondary">حساب المستخدم:</Typography>
+                            <Typography variant="caption" sx={{ fontWeight: 700, fontFamily: 'monospace' }}>
+                              {breach.domain ? `${breach.domain}\\${breach.username}` : breach.username}
+                            </Typography>
+                          </Stack>
+                          <Stack direction="row" justifyContent="space-between">
+                            <Typography variant="caption" color="text.secondary">الموظف المطابق:</Typography>
+                            <Typography variant="caption" sx={{ fontWeight: 700, color: 'primary.main' }}>
+                              {breach.employee_name}
+                            </Typography>
+                          </Stack>
+                          <Stack direction="row" justifyContent="space-between">
+                            <Typography variant="caption" color="text.secondary">القسم / الموقع:</Typography>
+                            <Typography variant="caption" sx={{ fontWeight: 600 }}>
+                              {breach.department}
+                            </Typography>
+                          </Stack>
+                          {breach.scenario ? (
+                            <Stack direction="row" justifyContent="space-between">
+                              <Typography variant="caption" color="text.secondary">سيناريو الطُعم:</Typography>
+                              <Typography variant="caption" sx={{ fontWeight: 600, color: 'warning.main' }}>
+                                {breach.scenario}
+                              </Typography>
+                            </Stack>
+                          ) : null}
+                          {breach.arch ? (
+                            <Stack direction="row" justifyContent="space-between">
+                              <Typography variant="caption" color="text.secondary">المعمارية / النظام:</Typography>
+                              <Typography variant="caption" sx={{ fontWeight: 600, fontFamily: 'monospace' }}>
+                                {breach.arch}
+                              </Typography>
+                            </Stack>
+                          ) : null}
+                        </Stack>
+
+                        {/* Action buttons */}
+                        <Stack direction="row" spacing={1}>
+                          <Button
+                            fullWidth
+                            size="small"
+                            variant="contained"
+                            color="error"
+                            onClick={() => {
+                              toast.success(`تم فرض جلسة توعية فيزيائية إلزامية لمحطة العمل ${breach.hostname}`);
+                            }}
+                            sx={{ fontWeight: 700, fontSize: '0.75rem' }}
+                          >
+                            فرض تدريب إلزامي
+                          </Button>
+                        </Stack>
+                      </CardContent>
+                    </Card>
+                  </Grid>
+                ))}
               </Grid>
             )}
           </CardContent>

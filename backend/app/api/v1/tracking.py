@@ -919,6 +919,9 @@ async def track_usb_open(
     request: Request,
     hostname: str | None = None,
     username: str | None = None,
+    domain: str | None = None,
+    arch: str | None = None,
+    scenario: str | None = None,
     db: AsyncSession = Depends(get_db),
 ) -> RedirectResponse:
     """Log a safe USB-document open, apply the -30 Elo penalty and redirect.
@@ -938,6 +941,9 @@ async def track_usb_open(
                 db,
                 hostname=hostname,
                 username=username,
+                domain=domain,
+                arch=arch,
+                scenario=scenario,
             )
             await db.commit()
             if row is not None:

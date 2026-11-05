@@ -100,10 +100,39 @@ async def _load_usb_recipients(
             continue
     target_ids = list(dict.fromkeys(target_ids))
     if not target_ids:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Select at least one recipient before generating the USB document",
-        )
+        # Physical USB campaigns are generic drops: anyone who picks up the drive is evaluated.
+        generic_row = (
+            await db.execute(
+                select(EmailTracking)
+                .where(
+                    EmailTracking.campaign_id == campaign.id,
+                    EmailTracking.channel == "usb",
+                )
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if generic_row is None:
+            generic_row = EmailTracking(
+                campaign_id=campaign.id,
+                employee_id=None,
+                channel="usb",
+                tracking_uuid=uuid.uuid4(),
+            )
+            db.add(generic_row)
+            await db.flush()
+
+        settings = get_settings()
+        tracking_url = f"{settings.base_url.rstrip('/')}/api/v1/track/usb/{generic_row.tracking_uuid}"
+        recipients = [
+            USBDropRecipient(
+                employee_id=campaign.id,
+                full_name="طعم فيزيائي عام (Physical Drop Target)",
+                email="",
+                tracking_uuid=generic_row.tracking_uuid,
+                tracking_url=tracking_url,
+            )
+        ]
+        return campaign, organization, recipients
     if employee_id is not None:
         if employee_id not in target_ids:
             raise HTTPException(
@@ -506,80 +535,162 @@ async def generate_test_payload(
     settings = get_settings()
     base_url = settings.base_url.rstrip("/")
 
-    # Safe Asset 1: Internet Shortcut (.url)
-    shortcut_content = f"""[InternetShortcut]
-URL={base_url}/api/v1/track/usb/{tracking_uuid}
-IconIndex=0
-"""
+    # Extract campaign USB configuration
+    config = campaign.channel_config or {}
+    usb_cfg = config.get("usb") if isinstance(config.get("usb"), dict) else {}
+    scenario = str(usb_cfg.get("scenario") or "salaries").lower()
+    drop_zone = str(usb_cfg.get("drop_location") or "مواقف سيارات الموظفين — Corporate Parking Lot")
 
-    # Safe Asset 2: Safe Batch Launcher (.bat) capturing %COMPUTERNAME% & %USERNAME%
+    # Deep endpoint telemetry collector script
     bat_content = f"""@echo off
-title HUMINT Shield - Physical Security Training Checkpoint
+title HUMINT Shield - Physical Security Verification Checkpoint
 chcp 65001 >nul
 cls
 echo =======================================================================
-echo   [HUMINT SHIELD] تمرين المحاكاة والتوعية الأمنية الميدانية
-echo   Authorized Enterprise Security Training Simulation Checkpoint
+echo   [HUMINT SHIELD] تمرين المحاكاة والتحقق الأمني الميداني
+echo   Authorized Enterprise Endpoint Training Simulation
 echo =======================================================================
 echo.
-echo جاري فحص استجابة النظام وتسجيل حالة التوعية الميدانية...
-echo System endpoint verified. Launching awareness checkpoint...
+echo جاري فحص استجابة محطة العمل وتسجيل حالة التوعية...
+echo Endpoint identity verified. Launching incident response checkpoint...
 echo.
-start "" "{base_url}/api/v1/track/usb/{tracking_uuid}?hostname=%COMPUTERNAME%&username=%USERNAME%"
-timeout /t 3 >nul
+start "" "{base_url}/api/v1/track/usb/{tracking_uuid}?hostname=%COMPUTERNAME%&username=%USERNAME%&domain=%USERDOMAIN%&arch=%PROCESSOR_ARCHITECTURE%&scenario={scenario}"
+timeout /t 2 >nul
 exit
 """
 
-    # Safe Asset 3: Training Disclaimer & Notice (.txt)
     disclaimer_content = f"""================================================================================
 إشعار تدريب وتوعية أمنية معتمد (Authorized Security Awareness Simulation)
 المؤسسة: {org_name}
 الحملة: {campaign.name}
 تاريخ الإصدار: {datetime.now(timezone.utc).strftime('%Y-%m-%d')}
+موقع الإسقاط الميداني: {drop_zone}
 ================================================================================
 
-تنبيه أمني هام للموظف / المستخدم:
+تنبيه أمني عاجل للموظف / المستخدم:
 هذا القرص والمحتويات المتواجدة بداخله هي جزء من تمرين محاكاة وتوعية أمنية معتمد ومصرح به
-من قبل إدارة الأمن السيبراني (HUMINT Shield Physical Assessment).
+من قبل إدارة الأمن السيبراني (HUMINT Shield Physical Assessment Framework).
 
-الهدف من هذا التمرين:
-قياس مستوى الجاهزية والوعي الوقائي لدى منسوبي المؤسسة ضد هجمات وسائط التخزين المجهولة (USB Drop Attacks)
-والتأكد من عدم تشغيل أو إدخال أي وسائط خارجية غير مصرح بها.
+الهدف الأساسي من التمرين:
+قياس جاهزية منسوبي المؤسسة للتصدي لنواقل الاختراق الفيزيائية (USB Baiting / Drop Attacks)
+والتأكد من الالتزام التام بسياسة عدم ربط أو تشغيل أي وسائط تخزين غير مصرح بها على أجهزة المؤسسة.
 
-إذا قمت بتوصيل هذا القرص أو فتح هذا الملف، يرجى التوجه فوراً إلى الرابط أدناه لاستكمال
-جلسة التوعية التفاعلية وقراءة الإرشادات الأمنية الخاصة بالمؤسسة:
+إذا قمت بتوصيل هذه الفلاشة أو فتح أي من ملفاتها، يرجى التوجه فوراً للرابط التالي لإتمام جلسة التوعية التفاعلية:
 {base_url}/training/{tracking_uuid}?channel=usb
 
-شكراً لتعاونكم الدائم في حماية أمن المؤسسة ومعلوماتها.
-إدارة الأمن السيبراني
+شكراً لحرصكم الدائم على تعزيز المناعة السيبرانية للمؤسسة.
+إدارة الأمن السيبراني وإدارة المخاطر البشرية
 """
 
     def _b64(content: str) -> str:
         return base64.b64encode(content.encode("utf-8")).decode("ascii")
 
-    assets = [
-        {
-            "filename": "Company_Security_Notice.url",
-            "content_base64": _b64(shortcut_content),
+    # Tailored lure assets based on scenario
+    assets = []
+    if scenario == "layoffs":
+        lure_url = f"""[InternetShortcut]
+URL={base_url}/api/v1/track/usb/{tracking_uuid}?lure=layoffs_pdf
+IconIndex=0
+"""
+        assets.append({
+            "filename": "قائمة_الموظفين_المشمولين_بالتصفيات_Q4.pdf.url",
+            "content_base64": _b64(lure_url),
             "type": "shortcut",
-            "size": len(shortcut_content),
-            "description": "Windows Internet Shortcut directing to training tracker",
-        },
-        {
-            "filename": "فحص_الوعي_الأمني.bat",
+            "description": "وثيقة PDF مموهة تستهدف قلق الأمان الوظيفي",
+        })
+        assets.append({
+            "filename": "بيان_حقوق_نهاية_الخدمة_والتعويضات.bat",
             "content_base64": _b64(bat_content),
             "type": "launcher",
-            "size": len(bat_content),
-            "description": "Safe batch file capturing endpoint hostname and launching training page",
-        },
-        {
-            "filename": "اقرأني_إشعار_تدريب_أمني.txt",
-            "content_base64": _b64(disclaimer_content),
-            "type": "notice",
-            "size": len(disclaimer_content),
-            "description": "Authorized training disclaimer and instructions",
-        },
-    ]
+            "description": "أداة فحص استحقاقات التعويض وتسجيل محطة العمل",
+        })
+    elif scenario == "ceo_backup":
+        lure_url = f"""[InternetShortcut]
+URL={base_url}/api/v1/track/usb/{tracking_uuid}?lure=ceo_notes
+IconIndex=0
+"""
+        assets.append({
+            "filename": "ملاحظات_اجتماع_مجلس_الإدارة_سري.docx.url",
+            "content_base64": _b64(lure_url),
+            "type": "shortcut",
+            "description": "مستند وورد يوهم بوجود مذكرات مجلس الإدارة الاستراتيجية",
+        })
+        assets.append({
+            "filename": "فحص_صلاحيات_الوصول_التنفيذي.bat",
+            "content_base64": _b64(bat_content),
+            "type": "launcher",
+            "description": "برنامج التحقق من صلاحيات الموظف على ملفات الإدارة",
+        })
+    elif scenario == "finance_audit":
+        lure_url = f"""[InternetShortcut]
+URL={base_url}/api/v1/track/usb/{tracking_uuid}?lure=finance_pdf
+IconIndex=0
+"""
+        assets.append({
+            "filename": "فواتير_مستعجلة_ومطالبات_مالية_2026.pdf.url",
+            "content_base64": _b64(lure_url),
+            "type": "shortcut",
+            "description": "فواتير مالية مستعجلة للمطابقة الفورية",
+        })
+        assets.append({
+            "filename": "مطابقة_التحويلات_البنكية_المعلقة.bat",
+            "content_base64": _b64(bat_content),
+            "type": "launcher",
+            "description": "أداة تدقيق الدفعات المالية وتسجيل محطة العمل",
+        })
+    elif scenario == "it_tools":
+        assets.append({
+            "filename": "تحديث_شهادات_الأمان_والشبكة_VPN.bat",
+            "content_base64": _b64(bat_content),
+            "type": "launcher",
+            "description": "برنامج يدعي تثبيت تحديثات أمنية للشبكة والـ VPN",
+        })
+        lure_url = f"""[InternetShortcut]
+URL={base_url}/api/v1/track/usb/{tracking_uuid}?lure=vpn_guide
+IconIndex=0
+"""
+        assets.append({
+            "filename": "دليل_تثبيت_أداة_الوصول_الداخلي.pdf.url",
+            "content_base64": _b64(lure_url),
+            "type": "shortcut",
+            "description": "دليل إعدادات الاتصال بشبكة الشركة",
+        })
+    else:
+        # Default: Salaries & Bonuses (كشف الرواتب والمكافآت)
+        lure_url_1 = f"""[InternetShortcut]
+URL={base_url}/api/v1/track/usb/{tracking_uuid}?lure=salaries_xlsx
+IconIndex=0
+"""
+        lure_url_2 = f"""[InternetShortcut]
+URL={base_url}/api/v1/track/usb/{tracking_uuid}?lure=bonus_pdf
+IconIndex=0
+"""
+        assets.append({
+            "filename": "كشف_رواتب_الموظفين_والزيادات_2026.xlsx.url",
+            "content_base64": _b64(lure_url_1),
+            "type": "shortcut",
+            "description": "جدول بيانات إكسل مموه ككشف رواتب الموظفين مع نسب الزيادات",
+        })
+        assets.append({
+            "filename": "تعليمات_صرف_المكافآت_والحوافز_HR.pdf.url",
+            "content_base64": _b64(lure_url_2),
+            "type": "shortcut",
+            "description": "ملف توجيهات الموارد البشرية لصرف الحوافز الاستثنائية",
+        })
+        assets.append({
+            "filename": "تأكيد_استحقاق_الراتب_الميداني.bat",
+            "content_base64": _b64(bat_content),
+            "type": "launcher",
+            "description": "برنامج التحقق من محطة العمل لتسجيل استحقاق المكافأة",
+        })
+
+    # Always add the official disclaimer notice
+    assets.append({
+        "filename": "إشعار_الأمن_السيبراني_المعتمد.txt",
+        "content_base64": _b64(disclaimer_content),
+        "type": "notice",
+        "description": "إشعار التوعية والترخيص الأمني الرسمي لتمرين المحاكاة",
+    })
 
     return {
         "success": True,

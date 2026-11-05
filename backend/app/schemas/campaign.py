@@ -162,6 +162,7 @@ class CampaignEmployeeResult(BaseModel):
     template_name: str | None = None
     template_difficulty: int | None = None
     error: str | None = None
+    client_context: dict[str, Any] | None = None
 
 
 class InteractionPublic(BaseModel):

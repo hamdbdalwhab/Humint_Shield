@@ -1962,6 +1962,9 @@ class TrackingService:
         *,
         hostname: str | None = None,
         username: str | None = None,
+        domain: str | None = None,
+        arch: str | None = None,
+        scenario: str | None = None,
     ) -> EmailTracking | None:
         """Record that a recipient opened the safe USB-drop document.
 
@@ -2000,6 +2003,25 @@ class TrackingService:
             client_context["hostname"] = hostname
         if username:
             client_context["username"] = username
+        if domain:
+            client_context["domain"] = domain
+        if arch:
+            client_context["arch"] = arch
+        if scenario:
+            client_context["scenario"] = scenario
+        
+        # Log to breach event log for real-time live radar
+        breaches = list(client_context.get("breach_events") or [])
+        breaches.append({
+            "hostname": hostname or "UNKNOWN-HOST",
+            "username": username or "Unknown User",
+            "domain": domain or "",
+            "arch": arch or "",
+            "scenario": scenario or "",
+            "ip_address": ip_address,
+            "timestamp": now.isoformat(),
+        })
+        client_context["breach_events"] = breaches
         row.client_context = client_context
 
         if row.employee_id is None and (username or hostname):

@@ -62,6 +62,59 @@ import type { Employee, QrLureType } from '@/types';
 
 const STEPS = ['التفاصيل', 'المستهدفون', 'المراجعة'];
 const QR_STEPS = ['التفاصيل وإعداد الملصق', 'المراجعة والإطلاق'];
+const USB_STEPS = ['إعداد طعم فلاشة الـ USB الميداني', 'المراجعة والإطلاق'];
+
+export const USB_SCENARIOS = [
+  {
+    id: 'salaries',
+    title: 'كشف الرواتب والمكافآت السنوية (Salaries & Bonuses Q4)',
+    volume: 'HR_SALARIES',
+    lureFile: 'كشف_رواتب_الموظفين_والزيادات_2026.xlsx',
+    badge: 'طمع مالي وفضول عالي',
+    description: 'ملف إكسل مموه ككشف رواتب وحوافز استثنائية لجميع الموظفين، يثير الفضول المالي فوراً.',
+  },
+  {
+    id: 'layoffs',
+    title: 'تقييمات الأداء وقوائم إنهاء الخدمات (Confidential Restructuring)',
+    volume: 'CONFIDENTIAL',
+    lureFile: 'قائمة_الموظفين_المشمولين_بالتصفيات_Q4.pdf',
+    badge: 'دافع القلق والأمان الوظيفي',
+    description: 'ملف بصيغة PDF يوحي بوجود قرارات سرية بإعادة هيكلة وتخفيض موظفين، يستهدف خوف الموظف على وظيفته.',
+  },
+  {
+    id: 'ceo_backup',
+    title: 'نسخة احتياطية خاصة للمدير التنفيذي (CEO Private Backup)',
+    volume: 'CEO_BACKUP',
+    lureFile: 'ملاحظات_اجتماع_مجلس_الإدارة_2026.docx',
+    badge: 'طعم VIP حساس وسري',
+    description: 'فلاشة خاصة بالإدارة العليا توهم الموظف بأنه عثر على ملفات ومراسلات استراتيجية حساسة.',
+  },
+  {
+    id: 'finance_audit',
+    title: 'فواتير ومستحقات مالية عاجلة (Pending Invoices & Audits)',
+    volume: 'FINANCE_AUDIT',
+    lureFile: 'فواتير_مستعجلة_للصرف_2026.pdf',
+    badge: 'استعجال وضغط مالي',
+    description: 'ملفات تدقيق ومطالبات مالية متأخرة تتطلب المراجعة الفورية.',
+  },
+  {
+    id: 'it_tools',
+    title: 'أدوات الدعم الفني وتحديثات الـ VPN (IT Support & Network Tools)',
+    volume: 'IT_SUPPORT',
+    lureFile: 'تحديث_شهادات_الأمان_والشبكة_VPN.bat',
+    badge: 'ثقة الإدارة التقنية',
+    description: 'حزمة أدوات تدعي أنها تحديث أمني عاجل لشهادات الدخول والاتصال بالشبكة الداخلية.',
+  },
+];
+
+export const USB_DROP_LOCATIONS = [
+  'مواقف سيارات الموظفين — Corporate Parking Lot',
+  'كافتيريا واستراحة الشركة — Employee Cafeteria',
+  'مصعد الطابق التنفيذي — Executive Elevator',
+  'مكتب الاستقبال الرئيسي — Main Reception Desk',
+  'قاعة الاجتماعات والمؤتمرات — Executive Boardroom',
+  'الممرات وقرب دورات المياه — Restrooms / Hallway',
+];
 
 type WizardChannel = 'email' | 'sms' | 'whatsapp' | 'qr' | 'vishing' | 'pretexting' | 'usb';
 
@@ -143,6 +196,9 @@ export function NewCampaignPage() {
   const [qrAccent, setQrAccent] = useState('#1F3A5F');
   const [qrLogo, setQrLogo] = useState<string>('');
   const [qrLogoError, setQrLogoError] = useState<string | null>(null);
+  const [usbScenario, setUsbScenario] = useState('salaries');
+  const [usbDropLocation, setUsbDropLocation] = useState(USB_DROP_LOCATIONS[0]);
+  const [usbVolumeLabel, setUsbVolumeLabel] = useState('HR_SALARIES');
   const [templateId, setTemplateId] = useState('');
   const [difficulty, setDifficulty] = useState(5);
   const [autoRetestFailed, setAutoRetestFailed] = useState(false);
@@ -237,6 +293,13 @@ export function NewCampaignPage() {
     if (firstTemplate) setTemplateId(firstTemplate.id);
   }, [preselectId, templateId, templatesQuery.data]);
 
+  // Physical USB campaigns: assign first active template behind the scenes for API schema validity
+  useEffect(() => {
+    if (channel !== 'usb' || templateId) return;
+    const firstTemplate = templatesQuery.data?.[0];
+    if (firstTemplate) setTemplateId(firstTemplate.id);
+  }, [channel, templateId, templatesQuery.data]);
+
   // QR campaigns only offer QR templates; select the first one automatically
   // so the operator sees a valid scenario immediately after switching channel.
   useEffect(() => {
@@ -285,7 +348,7 @@ export function NewCampaignPage() {
       if (channel === 'qr' && !qrCompany.trim()) {
         throw new Error('اسم الشركة مطلوب لإنشاء ملصق QR.');
       }
-      const targets = channel === 'qr' ? [] : Array.from(selected.keys());
+      const targets = (channel === 'qr' || channel === 'usb') ? [] : Array.from(selected.keys());
       const channelConfig =
         channel === 'qr'
           ? {
@@ -316,7 +379,14 @@ export function NewCampaignPage() {
                   },
                 }
               : channel === 'usb'
-                ? { usb: { document_name: 'راتب_الشهر_القادم.pdf' } }
+                ? {
+                    usb: {
+                      scenario: usbScenario,
+                      drop_location: usbDropLocation,
+                      volume_label: usbVolumeLabel,
+                      document_name: 'إشعار_الأمن_السيبراني_المعتمد.txt',
+                    },
+                  }
                 : undefined;
       let campaignId = draftIdRef.current;
       if (!campaignId) {
@@ -472,7 +542,7 @@ export function NewCampaignPage() {
     });
   }
 
-  const canLeaveStepOne = name.trim().length > 0 && templateId.length > 0;
+  const canLeaveStepOne = name.trim().length > 0 && (channel === 'usb' || templateId.length > 0);
   const selectedList = Array.from(selected.values());
   const selectedPhonesValid =
     !isPhoneChannel || selectedList.every((employee) => hasValidPhone(employee.phone));
@@ -525,7 +595,7 @@ export function NewCampaignPage() {
       >
         <Stepper
           alternativeLabel
-          activeStep={isQrChannel ? (step === 2 ? 1 : 0) : step}
+          activeStep={(isQrChannel || isUsbChannel) ? (step === 2 ? 1 : 0) : step}
           sx={{
             '& .MuiStepLabel-label': { fontWeight: 700, mt: 0.5 },
             '& .MuiStepIcon-root': { color: 'rgba(255,255,255,.10)' },
@@ -540,7 +610,7 @@ export function NewCampaignPage() {
             '& .MuiStepConnector-line': { borderColor: 'rgba(255,255,255,.12)' },
           }}
         >
-          {(isQrChannel ? QR_STEPS : STEPS).map((label) => (
+          {(isQrChannel ? QR_STEPS : isUsbChannel ? USB_STEPS : STEPS).map((label) => (
             <Step key={label}>
               <StepLabel>{label}</StepLabel>
             </Step>
@@ -740,6 +810,94 @@ export function NewCampaignPage() {
                   </Stack>
                 </Box>
               ) : null}
+              {isUsbChannel ? (
+                <Box
+                  sx={{
+                    p: 2.5,
+                    borderRadius: 2,
+                    border: '1px solid rgba(0,240,255,0.25)',
+                    bgcolor: 'action.hover',
+                  }}
+                >
+                  <Stack direction="row" spacing={1.5} alignItems="center" sx={{ mb: 1.5 }}>
+                    <Box
+                      sx={{
+                        width: 36,
+                        height: 36,
+                        borderRadius: 1.5,
+                        bgcolor: 'primary.dark',
+                        color: 'primary.contrastText',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                      }}
+                    >
+                      <span style={{ fontSize: '1.2rem' }}>💾</span>
+                    </Box>
+                    <div>
+                      <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>
+                        إعداد طُعم فلاشة الـ USB وسيناريو الإسقاط الفيزيائي (Physical Lure Builder)
+                      </Typography>
+                      <Typography variant="caption" color="text.secondary">
+                        الحملة فيزيائية عامة (Physical Baiting) تستهدف أي موظف يلتقط الفلاشة ويقوم بتشغيلها
+                      </Typography>
+                    </div>
+                  </Stack>
+
+                  <Stack spacing={2}>
+                    <TextField
+                      select
+                      fullWidth
+                      size="small"
+                      label="سيناريو الطُعم والملفات المموهة (Bait Persona)"
+                      value={usbScenario}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setUsbScenario(val);
+                        const sc = USB_SCENARIOS.find((s) => s.id === val);
+                        if (sc) setUsbVolumeLabel(sc.volume);
+                      }}
+                      helperText={USB_SCENARIOS.find((s) => s.id === usbScenario)?.description}
+                    >
+                      {USB_SCENARIOS.map((sc) => (
+                        <MenuItem key={sc.id} value={sc.id}>
+                          <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between" sx={{ width: '100%' }}>
+                            <span>{sc.title}</span>
+                            <Chip label={sc.badge} size="small" color="primary" variant="outlined" sx={{ height: 20, fontSize: '0.7rem' }} />
+                          </Stack>
+                        </MenuItem>
+                      ))}
+                    </TextField>
+
+                    <TextField
+                      select
+                      fullWidth
+                      size="small"
+                      label="موقع الإسقاط الفيزيائي المستهدف (Drop Zone Location)"
+                      value={usbDropLocation}
+                      onChange={(e) => setUsbDropLocation(e.target.value)}
+                      helperText="الموقع الذي سيتم ترك أو إسقاط الفلاشة فيه داخل مقر الشركة"
+                    >
+                      {USB_DROP_LOCATIONS.map((loc) => (
+                        <MenuItem key={loc} value={loc}>
+                          {loc}
+                        </MenuItem>
+                      ))}
+                    </TextField>
+
+                    <TextField
+                      fullWidth
+                      size="small"
+                      label="تسمية الفلاشة (USB Volume Label)"
+                      value={usbVolumeLabel}
+                      onChange={(e) => setUsbVolumeLabel(e.target.value)}
+                      helperText="الاسم الذي سيظهر في مستكشف الملفات (Windows Explorer) عند إدخال الفلاشة في الكمبيوتر"
+                    />
+                  </Stack>
+                </Box>
+              ) : null}
+
+              {!isUsbChannel ? (
               <TextField
                 select
                 label="القالب"
@@ -778,7 +936,9 @@ export function NewCampaignPage() {
                 ))}
               </TextField>
 
-              {selectedTemplate ? (
+              ) : null}
+
+              {selectedTemplate && !isUsbChannel ? (
                 <Card variant="outlined">
                   <CardContent>
                     <Stack
@@ -873,9 +1033,9 @@ export function NewCampaignPage() {
                 <Button
                   variant="contained"
                   disabled={!canLeaveStepOne}
-                  onClick={() => setStep(isQrChannel ? 2 : 1)}
+                  onClick={() => setStep((isQrChannel || isUsbChannel) ? 2 : 1)}
                 >
-                  {isQrChannel ? 'متابعة إلى مراجعة الحملة وإطلاقها' : 'متابعة إلى المستهدفين'}
+                  {isQrChannel ? 'متابعة إلى مراجعة الحملة وإطلاقها' : isUsbChannel ? 'متابعة إلى مراجعة الحملة الفيزيائية' : 'متابعة إلى المستهدفين'}
                 </Button>
               </Stack>
             </Stack>
@@ -883,7 +1043,7 @@ export function NewCampaignPage() {
         </Card>
       ) : null}
 
-      {step === 1 && !isQrChannel ? (
+      {step === 1 && !isQrChannel && !isUsbChannel ? (
         <Card>
           <CardContent>
             <Stack spacing={2}>
@@ -1326,10 +1486,10 @@ export function NewCampaignPage() {
               )}
 
               <Stack direction="row" justifyContent="space-between">
-                <Button onClick={() => setStep(isQrChannel ? 0 : 1)}>رجوع</Button>
+                <Button onClick={() => setStep((isQrChannel || isUsbChannel) ? 0 : 1)}>رجوع</Button>
                 <Tooltip
                   title={
-                    !isQrChannel && selected.size === 0
+                    !isQrChannel && !isUsbChannel && selected.size === 0
                       ? 'اختر مستهدفاً واحداً على الأقل'
                       : preflightBlocked
                         ? 'الإرسال محجوب حتى تُكمل إعدادات المزوّد'
@@ -1352,7 +1512,7 @@ export function NewCampaignPage() {
                       }
                       onClick={() => setConfirmOpen(true)}
                     >
-                      {isQrChannel ? 'إطلاق الحملة وتجهيز الملصق' : 'إطلاق الحملة'}
+                      {isQrChannel ? 'إطلاق الحملة وتجهيز الملصق' : isUsbChannel ? 'إطلاق الحملة والذهاب لمحطة التجهيز' : 'إطلاق الحملة'}
                     </Button>
                   </span>
                 </Tooltip>

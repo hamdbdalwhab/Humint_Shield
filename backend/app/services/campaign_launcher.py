@@ -583,6 +583,7 @@ class CampaignLauncher:
                     "reported_at": tracking.reported_at,
                     "quiz_score": tracking.quiz_score,
                     "quiz_total": tracking.quiz_total,
+                    "client_context": tracking.client_context or {},
                     "is_reported_safe": tracking.is_reported_safe,
                     "open_count": tracking.open_count or 0,
                     "click_count": tracking.click_count or 0,
