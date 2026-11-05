@@ -398,6 +398,16 @@ export interface QRScan {
   longitude?: number | null;
   real_time_events?: QRTimelineEvent[];
   time_on_page_seconds?: number;
+  status?: string | null;
+  repeat_status?: string | null;
+  device_owner_id?: string | null;
+  device_owner_name?: string | null;
+  entered_email?: string | null;
+  entered_username?: string | null;
+  cpu_cores?: number | null;
+  device_memory_gb?: number | null;
+  pixel_ratio?: number | null;
+  language?: string | null;
 }
 
 export interface QRSubmissionPayload {
@@ -414,6 +424,12 @@ export interface QRSubmissionPayload {
     hardware_fingerprint?: string | null;
     screen_resolution?: string | null;
     user_agent?: string | null;
+    cpu_cores?: number | null;
+    device_memory_gb?: number | null;
+    pixel_ratio?: number | null;
+    language?: string | null;
+    mDNS_name?: string | null;
+    [key: string]: unknown;
   };
   fields?: Record<string, string>;
 }

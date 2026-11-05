@@ -224,24 +224,127 @@ export function RecipientDossierDialog({
                 </Box>
 
                 
-                {record.client_context ? (
-                  <Box
-                    sx={{
-                      p: 1.5,
-                      borderRadius: 2,
-                      bgcolor: 'action.hover',
-                      border: '1px solid rgba(0,240,255,0.2)',
-                    }}
+                {/* Anti-Evasion / Repeat Alert Banner */}
+                {record.client_context && (record.client_context.repeat_status || record.client_context.status === 'evasion_attempt') ? (
+                  <Alert
+                    severity={record.client_context.status === 'evasion_attempt' ? 'error' : 'warning'}
+                    sx={{ fontWeight: 700, fontSize: '0.85rem' }}
                   >
-                    <Typography variant="subtitle2" sx={{ fontWeight: 800, color: 'primary.main', mb: 1 }}>
-                      🔬 تفاصيل العتاد والجهاز الحقيقي (Hardware Forensic Telemetry):
+                    {String(record.client_context.repeat_status || '⚠️ محاولة تهرب / انتحال: الجهاز مسجل باسم موظف آخر!')}
+                    {record.client_context.entered_email ? ` — البريد المدخل: ${String(record.client_context.entered_email)}` : ''}
+                  </Alert>
+                ) : null}
+
+                {/* Elo & Security Rating Card */}
+                <Box
+                  sx={{
+                    p: 1.8,
+                    borderRadius: 2,
+                    bgcolor: 'action.hover',
+                    border: '1px solid rgba(0,240,255,0.25)',
+                  }}
+                >
+                  <Grid container spacing={2} alignItems="center">
+                    <Grid item xs={12} sm={4}>
+                      <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>
+                        نقاط الوعي الأمني (Elo Rating)
+                      </Typography>
+                      <Typography variant="h5" sx={{ fontWeight: 900, color: (query.data.employee.elo_score ?? 1000) < 900 ? 'error.main' : 'primary.main' }}>
+                        {query.data.employee.elo_score ?? 1000}
+                      </Typography>
+                    </Grid>
+                    <Grid item xs={12} sm={4}>
+                      <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>
+                        مستوى التهديد (Threat Level)
+                      </Typography>
+                      <Typography variant="body2" sx={{ fontWeight: 700 }}>
+                        {query.data.employee.threat_level || ((query.data.employee.elo_score ?? 1000) < 900 ? 'مرتفع' : 'متوسط')}
+                      </Typography>
+                    </Grid>
+                    <Grid item xs={12} sm={4}>
+                      <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>
+                        خصم النقاط في هذه العملية
+                      </Typography>
+                      <Typography variant="body2" sx={{ fontWeight: 800, color: 'error.main' }}>
+                        {record.client_context?.status === 'evasion_attempt' ? '-15 نقطة (محاولة تهرب)' : '-25 نقطة (تسجيل بيانات)'}
+                      </Typography>
+                    </Grid>
+                  </Grid>
+                </Box>
+
+                {/* Deep Forensic Telemetry (Step 3: Cards/Table) */}
+                {record.client_context ? (
+                  <Box sx={{ mt: 1 }}>
+                    <Typography variant="subtitle2" sx={{ fontWeight: 800, color: 'primary.main', mb: 1.5 }}>
+                      🔬 تفاصيل البصمة الجنائية والعتاد الحقيقي (Forensic Telemetry):
                     </Typography>
-                    <Stack spacing={0.6} sx={{ fontSize: '0.78rem' }}>
-                      <div><strong>اسم الجهاز / النموذج:</strong> {String(record.client_context.device_real_name || record.client_context.device_model || '—')}</div>
-                      <div><strong>معالج الرسوميات (GPU):</strong> {String(record.client_context.gpu_renderer || record.client_context.webgl_renderer || '—')}</div>
-                      <div><strong>الآيبي المحلي (WebRTC Local IP):</strong> {String(record.client_context.local_ip || '—')}</div>
-                      <div><strong>بصمة العتاد (Hardware Fingerprint):</strong> <span style={{ fontFamily: 'monospace' }}>{String(record.client_context.hardware_fingerprint || record.client_context.fingerprint_hash || '—')}</span></div>
-                    </Stack>
+
+                    <Grid container spacing={1.5}>
+                      {/* Hardware Card */}
+                      <Grid item xs={12} md={6}>
+                        <Box sx={{ p: 1.5, borderRadius: 2, border: '1px solid', borderColor: 'divider', height: '100%', bgcolor: 'background.paper' }}>
+                          <Typography variant="caption" sx={{ fontWeight: 800, color: 'info.main', display: 'block', mb: 1 }}>
+                            🖥️ تفاصيل العتاد والمواصفات (Hardware)
+                          </Typography>
+                          <Stack spacing={0.6} sx={{ fontSize: '0.78rem' }}>
+                            <div><strong>اسم الجهاز الحقيقي:</strong> {String(record.client_context.device_real_name || record.client_context.device_model || '—')}</div>
+                            <div><strong>معالج الرسوميات (GPU):</strong> {String(record.client_context.gpu_renderer || record.client_context.webgl_renderer || 'Standard')}</div>
+                            <div><strong>أنوية المعالج (CPU Cores):</strong> {String(record.client_context.cpu_cores || '—')}</div>
+                            <div><strong>ذاكرة الجهاز (RAM):</strong> {record.client_context.device_memory_gb ? `${record.client_context.device_memory_gb} GB` : '—'}</div>
+                            <div><strong>بصمة العتاد:</strong> <span style={{ fontFamily: 'monospace', wordBreak: 'break-all', fontSize: '0.72rem' }}>{String(record.client_context.hardware_fingerprint || record.client_context.fingerprint_hash || '—')}</span></div>
+                          </Stack>
+                        </Box>
+                      </Grid>
+
+                      {/* Network Card */}
+                      <Grid item xs={12} md={6}>
+                        <Box sx={{ p: 1.5, borderRadius: 2, border: '1px solid', borderColor: 'divider', height: '100%', bgcolor: 'background.paper' }}>
+                          <Typography variant="caption" sx={{ fontWeight: 800, color: 'success.main', display: 'block', mb: 1 }}>
+                            🌐 بيانات الشبكة والاتصال (Network)
+                          </Typography>
+                          <Stack spacing={0.6} sx={{ fontSize: '0.78rem' }}>
+                            <div><strong>الآيبي المحلي (Local IP):</strong> {String(record.client_context.local_ip || '—')}</div>
+                            <div><strong>اسم الجهاز بالشبكة (mDNS):</strong> {String(record.client_context.mDNS_name || '—')}</div>
+                            <div><strong>الموقع الجغرافي:</strong> {[record.client_context.city, record.client_context.country].filter(Boolean).join(', ') || '—'}</div>
+                            <div><strong>مزود الخدمة (ISP):</strong> {String(record.client_context.isp || '—')}</div>
+                          </Stack>
+                        </Box>
+                      </Grid>
+
+                      {/* Screen & Display Card */}
+                      <Grid item xs={12} md={6}>
+                        <Box sx={{ p: 1.5, borderRadius: 2, border: '1px solid', borderColor: 'divider', height: '100%', bgcolor: 'background.paper' }}>
+                          <Typography variant="caption" sx={{ fontWeight: 800, color: 'warning.main', display: 'block', mb: 1 }}>
+                            📱 الشاشة والمتصفح (Display & Browser)
+                          </Typography>
+                          <Stack spacing={0.6} sx={{ fontSize: '0.78rem' }}>
+                            <div><strong>دقة الشاشة:</strong> {String(record.client_context.screen_resolution || '—')}</div>
+                            <div><strong>نسبة البكسل:</strong> {String(record.client_context.pixel_ratio || '—')}</div>
+                            <div><strong>لغة الجهاز:</strong> {String(record.client_context.language || '—')}</div>
+                            <div><strong>المتصفح:</strong> <span style={{ fontSize: '0.72rem', wordBreak: 'break-all' }}>{String(record.client_context.user_agent || '—')}</span></div>
+                          </Stack>
+                        </Box>
+                      </Grid>
+
+                      {/* Anti-Evasion Binding Card */}
+                      <Grid item xs={12} md={6}>
+                        <Box sx={{ p: 1.5, borderRadius: 2, border: '1px solid', borderColor: 'divider', height: '100%', bgcolor: 'background.paper' }}>
+                          <Typography variant="caption" sx={{ fontWeight: 800, color: 'secondary.main', display: 'block', mb: 1 }}>
+                            🛡️ حالة ارتباط الجهاز (Device Binding)
+                          </Typography>
+                          <Stack spacing={0.6} sx={{ fontSize: '0.78rem' }}>
+                            <div><strong>حالة المسح:</strong> {record.client_context.status === 'evasion_attempt' ? 'محاولة تهرب / انتحال' : record.client_context.status === 'repeat_scan' ? 'تكرار مسح' : 'مسح أول'}</div>
+                            {record.client_context.device_owner_name ? (
+                              <div><strong>صاحب الجهاز المعتمد:</strong> {String(record.client_context.device_owner_name)}</div>
+                            ) : null}
+                            {record.client_context.entered_email ? (
+                              <div><strong>البريد المدخل من الماسح:</strong> {String(record.client_context.entered_email)}</div>
+                            ) : null}
+                            <div><strong>عدد مرات المسح:</strong> {String(record.client_context.scan_count || 1)}</div>
+                          </Stack>
+                        </Box>
+                      </Grid>
+                    </Grid>
                   </Box>
                 ) : null}
 

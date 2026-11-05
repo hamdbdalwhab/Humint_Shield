@@ -954,14 +954,35 @@ export function CampaignDetailPage() {
                                 })}
                               </Typography>
                             </Stack>
-                            <Chip
-                              size="small"
-                              label={isMatched ? `Matched: ${matchedName || 'Employee'}` : 'Unknown'}
-                              color={isMatched ? 'success' : 'warning'}
-                              variant={isMatched ? 'filled' : 'outlined'}
-                              sx={{ fontWeight: 800, fontSize: '0.72rem' }}
-                            />
+                            <Stack direction="row" spacing={0.8} alignItems="center">
+                              {scan.elo_delta ? (
+                                <Chip
+                                  size="small"
+                                  label={`${scan.elo_delta} Elo`}
+                                  color={scan.elo_delta < 0 ? 'error' : 'success'}
+                                  sx={{ fontWeight: 800, fontSize: '0.72rem' }}
+                                />
+                              ) : null}
+                              <Chip
+                                size="small"
+                                label={isMatched ? `Matched: ${matchedName || 'Employee'}` : 'Unknown'}
+                                color={isMatched ? 'success' : 'warning'}
+                                variant={isMatched ? 'filled' : 'outlined'}
+                                sx={{ fontWeight: 800, fontSize: '0.72rem' }}
+                              />
+                            </Stack>
                           </Stack>
+
+                          {/* Anti-Evasion / Repeat Alert Badge */}
+                          {scan.status === 'evasion_attempt' || (scan.repeat_status && scan.repeat_status.includes('تهرب')) ? (
+                            <Box sx={{ mb: 1.2, p: 0.8, borderRadius: 1.5, bgcolor: 'error.dark', color: '#fff', fontSize: '0.72rem', fontWeight: 800 }}>
+                              ⚠️ محاولة تهرب / انتحال — الجهاز مسجل باسم {scan.device_owner_name || (scan.fingerprint as any)?.device_owner_name || scan.employee_name}
+                            </Box>
+                          ) : scan.repeat_status ? (
+                            <Box sx={{ mb: 1.2, p: 0.8, borderRadius: 1.5, bgcolor: 'warning.dark', color: '#fff', fontSize: '0.72rem', fontWeight: 700 }}>
+                              {scan.repeat_status}
+                            </Box>
+                          ) : null}
 
                           {/* IP & Country/City */}
                           <Box sx={{ mb: 1.2 }}>

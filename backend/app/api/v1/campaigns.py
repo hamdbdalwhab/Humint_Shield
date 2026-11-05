@@ -188,6 +188,16 @@ async def _qr_scan_public_rows(
                 time_on_page_seconds=time_on_page,
                 elo_delta=scan.elo_delta or 0,
                 penalty_applied=bool(scan.penalty_applied),
+                status=fingerprint.get("status"),
+                repeat_status=fingerprint.get("repeat_status"),
+                device_owner_id=fingerprint.get("device_owner_id"),
+                device_owner_name=fingerprint.get("device_owner_name"),
+                entered_email=fingerprint.get("entered_email") or scan.email,
+                entered_username=fingerprint.get("entered_username") or scan.username,
+                cpu_cores=fingerprint.get("cpu_cores"),
+                device_memory_gb=fingerprint.get("device_memory_gb"),
+                pixel_ratio=fingerprint.get("pixel_ratio"),
+                language=fingerprint.get("language"),
             )
         )
 

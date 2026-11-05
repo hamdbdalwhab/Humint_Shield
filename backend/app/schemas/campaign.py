@@ -330,6 +330,16 @@ class QRScanPublic(BaseModel):
     time_on_page_seconds: int = 0
     elo_delta: int = 0
     penalty_applied: bool = False
+    status: str | None = None
+    repeat_status: str | None = None
+    device_owner_id: uuid.UUID | None = None
+    device_owner_name: str | None = None
+    entered_email: str | None = None
+    entered_username: str | None = None
+    cpu_cores: int | None = None
+    device_memory_gb: int | float | None = None
+    pixel_ratio: float | None = None
+    language: str | None = None
 
 
 class QRScanAssignRequest(BaseModel):

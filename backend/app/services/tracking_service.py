@@ -45,6 +45,7 @@ from app.services.elo_engine import (
     PRETEXTING_FRAUD_ELO_DELTA,
     PRETEXTING_REPORT_ELO_DELTA,
     QR_CREDENTIAL_ELO_DELTA,
+    QR_REPEAT_EVASION_ELO_DELTA,
     QR_SCAN_ELO_DELTA,
     USB_OPEN_ELO_DELTA,
     VISHING_CREDENTIAL_ELO_DELTA,
@@ -1079,17 +1080,24 @@ class TrackingService:
         tracking_uuid: uuid.UUID | str | None = None,
         client: dict[str, Any] | None = None,
     ) -> QRSubmissionResult | None:
-        """Record a QR form submission, resolve its identity and apply -25 once.
+        """Record a QR form submission, enforce Device Binding & Anti-Evasion, and apply Elo deltas.
 
-        A tracking UUID is optional.  When present (the normal per-recipient
-        poster flow), the matching tracking row is updated and the event is
-        written to the interaction ledger.  When absent (a campaign-level QR
-        link), the matching employee's tracking row is reused if one exists;
-        otherwise the scan is still stored as an Unknown scan in ``qr_scans`` so
-        an administrator can inspect the entered values and assign it later.
-
-        The password value is never accepted by this method; only the
-        ``password_submitted`` boolean reaches storage.
+        A tracking UUID is optional. When present, the matching tracking row is updated.
+        When absent, the matching employee's tracking row is reused if one exists.
+        
+        ANTI-EVASION / DEVICE BINDING LOGIC:
+        1. Extract or generate canonical hardware_fingerprint. Fallback to SHA256(UserAgent + IP).
+        2. Query prior scans to check if this hardware_fingerprint was previously bound to an employee.
+        3. Rules:
+           - Rule A (First Scan): New device. Link to entered employee, deduct standard -25 Elo.
+           - Rule B (Repeat Scan - Different Email): Device exists, but entered email is different!
+             Evasion attempt: keep device owner as employee, apply EXTRA -15 Elo penalty to owner,
+             flag as evasion_attempt in metadata.
+           - Rule C (Repeat Scan - Same Email): Device exists and matches entered email.
+             Update timestamp, record repeat scan with scan_count.
+           - Rule D (Unknown Employee entered on known device):
+             BLOCK assignment to unknown email, bind to device owner, flag as evasion_attempt,
+             and apply -15 Elo penalty to owner.
         """
         campaign = await db.get(EmailCampaign, campaign_id)
         if campaign is None:
@@ -1098,28 +1106,152 @@ class TrackingService:
         if channel != "qr":
             raise ValueError("QR submissions are only valid for qr campaigns")
 
-        row: EmailTracking | None = None
-        if tracking_uuid:
-            uid = self._coerce_uuid(tracking_uuid)
-            if uid is None:
-                return None
-            row = await self._locked_tracking(db, EmailTracking.tracking_uuid, uid)
-            if row is None:
-                return None
-            if row.campaign_id != campaign.id:
-                raise ValueError("tracking link does not belong to this campaign")
-            if (row.channel or "").strip().lower() != "qr":
-                raise ValueError("tracking link does not belong to a qr campaign")
+        now = _now()
 
-        employee, resolution = await self.resolve_qr_identity(
+        # Step 1: Extract / Generate canonical hardware_fingerprint with fallback
+        fingerprint_payload: dict[str, Any] = (
+            dict(fingerprint_data) if isinstance(fingerprint_data, dict) else {}
+        )
+        hw_fp = (
+            fingerprint_payload.get("hardware_fingerprint")
+            or fingerprint_payload.get("fingerprint_hash")
+            or (client and client.get("hardware_fingerprint"))
+        )
+        if not hw_fp or not str(hw_fp).strip():
+            # Fallback SHA256(UserAgent + IP) if client fingerprint blocked/failed
+            raw_fallback = f"{(user_agent or '').strip()}|{(ip_address or '').strip()}"
+            hw_fp = hashlib.sha256(raw_fallback.encode("utf-8")).hexdigest()
+
+        hw_fp = str(hw_fp).strip()
+        fingerprint_payload["hardware_fingerprint"] = hw_fp
+        fingerprint_payload["fingerprint_hash"] = hw_fp
+
+        # Step 2: Query database for prior device binding in this organization
+        prior_scans = (
+            await db.execute(
+                select(QRScan)
+                .where(
+                    QRScan.organization_id == campaign.organization_id,
+                    QRScan.employee_id.is_not(None),
+                )
+                .order_by(QRScan.occurred_at.asc())
+            )
+        ).scalars().all()
+
+        device_owner: HumanAsset | None = None
+        for ps in prior_scans:
+            ps_fp = (ps.fingerprint_data or {}).get("hardware_fingerprint") or (ps.fingerprint_data or {}).get("fingerprint_hash")
+            if ps_fp and str(ps_fp).strip() == hw_fp and ps.employee_id:
+                device_owner = await db.get(HumanAsset, ps.employee_id)
+                if device_owner is not None:
+                    break
+
+        if device_owner is None:
+            prior_trackings = (
+                await db.execute(
+                    select(EmailTracking)
+                    .where(
+                        EmailTracking.campaign_id == campaign.id,
+                        EmailTracking.employee_id.is_not(None),
+                    )
+                    .order_by(EmailTracking.opened_at.asc())
+                )
+            ).scalars().all()
+            for pt in prior_trackings:
+                ctx = pt.client_context or {}
+                pt_fp = ctx.get("hardware_fingerprint") or ctx.get("fingerprint_hash")
+                if pt_fp and str(pt_fp).strip() == hw_fp and pt.employee_id:
+                    device_owner = await db.get(HumanAsset, pt.employee_id)
+                    if device_owner is not None:
+                        break
+
+        # Step 3: Resolve entered identity
+        entered_employee, raw_resolution = await self.resolve_qr_identity(
             db,
             campaign.organization_id,
             email=email,
             username=username,
         )
 
-        # If no tracking row is loaded yet, find or create one so that
-        # every QR scan (known or unknown) is persisted in tracking_events.
+        entered_email_clean = (email or "").strip().lower()
+        entered_user_clean = (username or "").strip()
+        owner_email_clean = (device_owner.email or "").strip().lower() if device_owner else ""
+
+        is_evasion = False
+        is_repeat_same = False
+        status_flag = "first_scan"
+        repeat_status_msg: str | None = None
+        scan_count = 1
+
+        if device_owner is not None:
+            # Device is ALREADY bound to a known employee
+            is_same = (
+                (entered_employee is not None and entered_employee.id == device_owner.id)
+                or (entered_email_clean and entered_email_clean == owner_email_clean)
+            )
+            if is_same:
+                # Rule C (Repeat Scan - Same Email)
+                is_repeat_same = True
+                status_flag = "repeat_scan"
+                employee = device_owner
+                resolution = "repeat_scan"
+                elo_delta = 0
+                penalty_applied = False
+                prior_count = (
+                    await db.scalar(
+                        select(func.count(QRScan.id)).where(
+                            QRScan.campaign_id == campaign.id,
+                            QRScan.employee_id == device_owner.id,
+                        )
+                    )
+                    or 0
+                )
+                scan_count = prior_count + 1
+                repeat_status_msg = f"⚠️ تكرار مسح - الجهاز مسجل باسم {device_owner.full_name} (المسح رقم {scan_count})"
+            else:
+                # Rule B & Rule D (Repeat Scan - Different / Unknown Email -> Evasion / Framing)
+                is_evasion = True
+                status_flag = "evasion_attempt"
+                # Keep original employee_id linked to that device
+                employee = device_owner
+                resolution = "evasion_attempt"
+                elo_delta = QR_REPEAT_EVASION_ELO_DELTA  # -15
+                employee.elo_score = apply_elo_delta(employee.elo_score, elo_delta)
+                employee.total_credential_submissions = (employee.total_credential_submissions or 0) + 1
+                employee.last_test_date = now
+                penalty_applied = True
+                repeat_status_msg = f"⚠️ محاولة تهرب / انتحال - الجهاز مسجل باسم {device_owner.full_name}"
+        else:
+            # Device is NEW
+            if entered_employee is not None:
+                # Rule A (First Scan)
+                employee = entered_employee
+                resolution = raw_resolution
+                status_flag = "first_scan"
+                elo_delta = QR_CREDENTIAL_ELO_DELTA  # -25
+                employee.elo_score = apply_elo_delta(employee.elo_score, elo_delta)
+                employee.total_credential_submissions = (employee.total_credential_submissions or 0) + 1
+                employee.last_test_date = now
+                penalty_applied = True
+            else:
+                # Unknown visitor
+                employee = None
+                resolution = "unknown"
+                status_flag = "external_visitor"
+                elo_delta = 0
+                penalty_applied = False
+
+        # Load or create EmailTracking row
+        row: EmailTracking | None = None
+        if tracking_uuid:
+            uid = self._coerce_uuid(tracking_uuid)
+            if uid is not None:
+                row = await self._locked_tracking(db, EmailTracking.tracking_uuid, uid)
+                if row is not None and row.campaign_id == campaign.id and (row.channel or "").strip().lower() == "qr":
+                    pass
+                else:
+                    row = None
+
         if row is None and employee is not None:
             row = await db.scalar(
                 select(EmailTracking).where(
@@ -1133,7 +1265,6 @@ class TrackingService:
                 row = None
 
         if row is None:
-            # Check for an unlinked scan row from this campaign
             row = await db.scalar(
                 select(EmailTracking)
                 .where(
@@ -1148,15 +1279,14 @@ class TrackingService:
                 row.employee_id = employee.id
 
         if row is None:
-            now_create = _now()
             row = EmailTracking(
                 campaign_id=campaign.id,
                 employee_id=employee.id if employee is not None else None,
                 tracking_uuid=uuid.uuid4(),
                 template_id=campaign.template_id,
                 channel="qr",
-                opened_at=now_create,
-                clicked_at=now_create,
+                opened_at=now,
+                clicked_at=now,
                 click_count=1,
                 last_ip_address=ip_address,
                 last_user_agent=(user_agent or "")[:2000] or None,
@@ -1164,213 +1294,162 @@ class TrackingService:
             db.add(row)
             await db.flush()
 
+        first_time = row.submitted_at is None
 
-        now = _now()
-        first_time = row is not None and row.submitted_at is None
-        # Deterministic SHA-256 over the canonical device evidence.  Stored
-        # inside the fingerprint payload so the admin radar can group repeat
-        # devices without ever exposing the raw canvas/WebGL strings.
-        fingerprint_payload: dict[str, Any] = (
-            dict(fingerprint_data) if isinstance(fingerprint_data, dict) else {}
-        )
-        if fingerprint_payload:
-            canonical = json.dumps(
-                fingerprint_payload,
-                sort_keys=True,
-                separators=(",", ":"),
-                default=str,
-            )
-            fingerprint_payload["fingerprint_hash"] = hashlib.sha256(
-                canonical.encode("utf-8")
-            ).hexdigest()
-        scan = None
-        if row is not None:
-            scan = await db.scalar(
-                select(QRScan)
-                .where(QRScan.tracking_id == row.id)
-                .order_by(QRScan.occurred_at.desc())
-                .limit(1)
-            )
-        if scan is None:
-            scan = QRScan(
-                organization_id=campaign.organization_id,
-                campaign_id=campaign.id,
-                tracking_id=row.id if row is not None else None,
-                occurred_at=now,
-            )
-            db.add(scan)
+        # Device detector & GeoIP
         from app.services.device_detector import detect_device_model
         from app.services.geoip_service import lookup_ip_geolocation
 
         gps_data = fingerprint_payload.get("gps") if isinstance(fingerprint_payload, dict) else None
         dev_model = detect_device_model(user_agent, fingerprint_data=fingerprint_payload)
-        dev_real_name = fingerprint_payload.get("device_real_name") or fingerprint_payload.get("hostname")
+        dev_real_name = (
+            fingerprint_payload.get("device_real_name")
+            or fingerprint_payload.get("hostname")
+            or (client and client.get("device_real_name"))
+        )
         if dev_real_name:
             dev_model = f"{dev_real_name} ({dev_model})" if dev_model else dev_real_name
             fingerprint_payload["device_real_name"] = dev_real_name
         geo_info = await lookup_ip_geolocation(ip_address, client_gps=gps_data)
 
-        scan.employee_id = employee.id if employee is not None else None
-        scan.username = username.strip()[:150] or None
-        scan.email = email.strip().lower()[:255] or None
-        scan.password_submitted = bool(password_submitted)
-        scan.identity_resolution = resolution
-        scan.event_type = "qr_submitted"
-        scan.fingerprint_data = fingerprint_payload or None
-        scan.ip_address = ip_address or scan.ip_address
-        scan.user_agent = (user_agent or scan.user_agent or None) and (user_agent or scan.user_agent)[:2000]
-        scan.device_model = dev_model
-        scan.country = geo_info.country
-        scan.city = geo_info.city
-        scan.isp = geo_info.isp
-        scan.latitude = geo_info.latitude
-        scan.longitude = geo_info.longitude
+        # Sanitize metadata JSONB to bounded, essential keys only (Step 4 hardening)
+        clean_context: dict[str, Any] = {
+            "hardware_fingerprint": hw_fp,
+            "device_real_name": dev_real_name or dev_model,
+            "device_model": dev_model,
+            "local_ip": fingerprint_payload.get("local_ip") or (client and client.get("local_ip")),
+            "mDNS_name": fingerprint_payload.get("mDNS_name") or (client and client.get("mDNS_name")),
+            "gpu_renderer": fingerprint_payload.get("gpu_renderer") or fingerprint_payload.get("webgl_renderer") or (client and client.get("gpu_renderer")),
+            "cpu_cores": fingerprint_payload.get("cpu_cores") or (client and client.get("cpu_cores")),
+            "device_memory_gb": fingerprint_payload.get("device_memory_gb") or (client and client.get("device_memory_gb")),
+            "screen_resolution": fingerprint_payload.get("screen") or fingerprint_payload.get("screen_resolution") or (client and client.get("screen_resolution")),
+            "pixel_ratio": fingerprint_payload.get("pixel_ratio") or (client and client.get("pixel_ratio")),
+            "language": fingerprint_payload.get("language") or (client and client.get("language")),
+            "user_agent": (user_agent or "")[:400],
+            "city": geo_info.city,
+            "country": geo_info.country,
+            "isp": geo_info.isp,
+            "status": status_flag,
+            "repeat_status": repeat_status_msg,
+            "scan_count": scan_count,
+            "entered_email": entered_email_clean if (is_evasion or employee is None) else None,
+            "entered_username": entered_user_clean if (is_evasion or employee is None) else None,
+            "device_owner_id": str(device_owner.id) if device_owner else None,
+            "device_owner_name": device_owner.full_name if device_owner else None,
+        }
+        clean_context = {k: v for k, v in clean_context.items() if v is not None}
 
-        timeline = list(scan.real_time_events or [])
-        if not any(ev.get("event") == "form_submitted" for ev in timeline):
-            timeline.append({
+        # Create new QRScan record for this submission
+        scan = QRScan(
+            organization_id=campaign.organization_id,
+            campaign_id=campaign.id,
+            tracking_id=row.id,
+            employee_id=employee.id if employee is not None else None,
+            username=entered_user_clean[:150] or None,
+            email=entered_email_clean[:255] or None,
+            password_submitted=bool(password_submitted),
+            identity_resolution=resolution,
+            event_type="qr_submitted",
+            fingerprint_data=clean_context,
+            elo_delta=elo_delta,
+            penalty_applied=penalty_applied,
+            ip_address=ip_address,
+            user_agent=(user_agent or "")[:2000] or None,
+            device_model=dev_model,
+            country=geo_info.country,
+            city=geo_info.city,
+            isp=geo_info.isp,
+            latitude=geo_info.latitude,
+            longitude=geo_info.longitude,
+            occurred_at=now,
+        )
+        
+        timeline_label = "تسجيل بيانات"
+        if is_evasion:
+            timeline_label = f"محاولة تهرب (جهاز {device_owner.full_name if device_owner else ''})"
+        elif is_repeat_same:
+            timeline_label = f"تكرار مسح (رقم {scan_count})"
+
+        scan.real_time_events = [
+            {
                 "event": "form_submitted",
-                "label": "إرسال البيانات المدخلة واعتماد الهوية",
+                "label": timeline_label,
                 "timestamp": now.isoformat(),
                 "time_str": now.strftime("%H:%M:%S"),
-            })
-        scan.real_time_events = timeline
-        scan.occurred_at = now
+                "status": status_flag,
+            }
+        ]
+        db.add(scan)
 
-        # Do not persist secret-looking form fields.  The password value is not
-        # passed into this method at all; this guard covers a malicious client
-        # that puts a password into ``fields``.
+        # Form fields sanitized
         safe_fields = sanitize_submitted_fields(fields or {})
         safe_fields.update(
             {
-                "username": username.strip()[:MAX_FIELD_VALUE_LENGTH],
-                "email": email.strip().lower()[:MAX_FIELD_VALUE_LENGTH],
+                "username": entered_user_clean[:MAX_FIELD_VALUE_LENGTH],
+                "email": entered_email_clean[:MAX_FIELD_VALUE_LENGTH],
                 "password_submitted": "true" if password_submitted else "false",
             }
         )
-        client_context: dict[str, Any] = {}
-        if fingerprint_payload:
-            client_context.update(fingerprint_payload)
-        if isinstance(client, dict):
-            client_context.update(client)
-        client_context["device_model"] = dev_model
-        client_context["city"] = geo_info.city
-        client_context["country"] = geo_info.country
-        client_context["isp"] = geo_info.isp
 
-        elo_delta = 0
-        penalty_applied = False
-        if row is not None:
-            if employee is not None:
-                row.employee_id = employee.id
-            row.submission_count = (row.submission_count or 0) + 1
-            if first_time:
-                row.submitted_at = now
-            row.submitted_identifier = (email.strip().lower() or username.strip())[:255] or None
-            row.submitted_username = username.strip()[:150] or None
-            row.submitted_email = email.strip().lower()[:255] or None
-            row.password_submitted = bool(password_submitted)
-            # The new QR flow records a boolean only, never a length.
-            row.password_length = None
-            row.identity_resolution = resolution
-            row.identity_resolved_employee_id = employee.id if employee is not None else None
-            row.submitted_fields = safe_fields
-            row.submitted_payload_encrypted = encrypt_payload(safe_fields)
-            row.submitted_password_encrypted = None
-            row.client_context = client_context or None
-            row.last_ip_address = ip_address or row.last_ip_address
-            row.last_user_agent = (user_agent or row.last_user_agent or "")[:2000] or None
-            await self._ensure_visit(db, row, now)
+        # Update EmailTracking row
+        if employee is not None:
+            row.employee_id = employee.id
+        row.submission_count = (row.submission_count or 0) + 1
+        if first_time:
+            row.submitted_at = now
+        row.submitted_identifier = (entered_email_clean or entered_user_clean)[:255] or None
+        row.submitted_username = entered_user_clean[:150] or None
+        row.submitted_email = entered_email_clean[:255] or None
+        row.password_submitted = bool(password_submitted)
+        row.password_length = None
+        row.identity_resolution = resolution
+        row.identity_resolved_employee_id = employee.id if employee is not None else None
+        row.submitted_fields = safe_fields
+        row.submitted_payload_encrypted = encrypt_payload(safe_fields)
+        row.client_context = clean_context
+        row.last_ip_address = ip_address or row.last_ip_address
+        row.last_user_agent = (user_agent or row.last_user_agent or "")[:2000] or None
+        row.event_type = "qr_submitted"
+        if penalty_applied:
+            row.qr_penalty_applied = True
+        await self._ensure_visit(db, row, now)
 
-            row.event_type = "qr_submitted"
-            if first_time and employee is not None and not row.qr_penalty_applied:
-                employee.total_credential_submissions = (
-                    employee.total_credential_submissions or 0
-                ) + 1
-                employee.last_test_date = now
-                employee.elo_score = apply_elo_delta(
-                    employee.elo_score, QR_CREDENTIAL_ELO_DELTA
-                )
-                row.qr_penalty_applied = True
-                penalty_applied = True
-                elo_delta = QR_CREDENTIAL_ELO_DELTA
-                try:
-                    from app.services.classification_engine import ClassificationEngine
-                    await ClassificationEngine().classify(employee.id, db)
-                except Exception as exc:
-                    logger.warning("classification_failed_on_qr", error=str(exc))
-
-            if employee is not None:
-                self._record_interaction(
-                    db,
-                    row,
-                    "qr_credential_submitted",
-                    now,
-                    ip_address,
-                    user_agent,
-                    {
-                        "channel": "qr",
-                        "submission_count": row.submission_count,
-                        "field_names": sorted(safe_fields.keys()),
-                        "password_submitted": bool(password_submitted),
-                        "password_length": None,
-                        "password_stored": False,
-                        "identity_resolution": resolution,
-                        "resolved_employee_id": str(employee.id),
-                        "resolved_employee_name": employee.full_name,
-                        "submitted_username": row.submitted_username,
-                        "submitted_email": row.submitted_email,
-                        "elo_delta": elo_delta,
-                        "qr_scan_id": str(scan.id),
-                        "client": client_context,
-                    },
-                    payload_encrypted=row.submitted_payload_encrypted,
-                )
-        elif employee is not None:
-            # There is no tracking row, but the entered identity is known.  The
-            # penalty is still tied to the employee, once per campaign.
-            prior_penalty = await db.scalar(
-                select(QRScan.id)
-                .where(
-                    QRScan.campaign_id == campaign.id,
-                    QRScan.employee_id == employee.id,
-                    QRScan.penalty_applied.is_(True),
-                )
-                .limit(1)
+        if employee is not None:
+            self._record_interaction(
+                db,
+                row,
+                "qr_credential_submitted",
+                now,
+                ip_address,
+                user_agent,
+                {
+                    "channel": "qr",
+                    "submission_count": row.submission_count,
+                    "field_names": sorted(safe_fields.keys()),
+                    "password_submitted": bool(password_submitted),
+                    "password_length": None,
+                    "password_stored": False,
+                    "identity_resolution": resolution,
+                    "resolved_employee_id": str(employee.id),
+                    "resolved_employee_name": employee.full_name,
+                    "submitted_username": row.submitted_username,
+                    "submitted_email": row.submitted_email,
+                    "elo_delta": elo_delta,
+                    "qr_scan_id": str(scan.id),
+                    "client": clean_context,
+                },
+                payload_encrypted=row.submitted_payload_encrypted,
             )
-            if prior_penalty is None:
-                employee.total_credential_submissions = (
-                    employee.total_credential_submissions or 0
-                ) + 1
-                employee.last_test_date = now
-                employee.elo_score = apply_elo_delta(
-                    employee.elo_score, QR_CREDENTIAL_ELO_DELTA
-                )
-                penalty_applied = True
-                elo_delta = QR_CREDENTIAL_ELO_DELTA
 
-        scan.elo_delta = elo_delta
-        scan.penalty_applied = penalty_applied
-
-        if employee is not None and (first_time or row is None) and penalty_applied:
+        if employee is not None and penalty_applied:
             await db.flush()
             await self._classify(employee.id, db)
 
         await db.flush()
 
-        time_on_page = 0
-        if len(scan.real_time_events or []) >= 2:
-            try:
-                from datetime import datetime as _dt
-                t0 = _dt.fromisoformat(scan.real_time_events[0]["timestamp"])
-                t_last = _dt.fromisoformat(scan.real_time_events[-1]["timestamp"])
-                time_on_page = max(0, int((t_last - t0).total_seconds()))
-            except Exception:
-                pass
-
         logger.info(
             "qr_credential_submitted",
-            tracking_uuid=str(row.tracking_uuid) if row is not None else None,
+            tracking_uuid=str(row.tracking_uuid),
             campaign_id=str(campaign.id),
             scan_id=str(scan.id),
             identity_resolution=resolution,
@@ -1378,6 +1457,7 @@ class TrackingService:
             password_submitted=bool(password_submitted),
             first_time=first_time,
             elo_delta=elo_delta,
+            status=status_flag,
         )
         return QRSubmissionResult(
             scan=scan,

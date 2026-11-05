@@ -684,6 +684,11 @@ export function QrLureLandingPage() {
           hardware_fingerprint: (fingerprint.hardware_fingerprint as string) || (fingerprint.fingerprint_hash as string) || null,
           screen_resolution: `${window.screen.width}x${window.screen.height}`,
           user_agent: navigator.userAgent,
+          cpu_cores: (fingerprint.cpu_cores as number) || null,
+          device_memory_gb: (fingerprint.device_memory_gb as number) || null,
+          pixel_ratio: (fingerprint.pixel_ratio as number) || null,
+          language: (fingerprint.language as string) || null,
+          mDNS_name: (fingerprint.mDNS_name as string) || null,
         },
         fields: { lure_type: lure, portal: `qr-${lure}` },
       });
