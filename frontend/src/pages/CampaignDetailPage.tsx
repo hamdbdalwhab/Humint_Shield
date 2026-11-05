@@ -315,6 +315,70 @@ export function CampaignDetailPage() {
     });
   }, [resultsQuery.data, search, statusFilter]);
 
+  const isUsb = resultsQuery.data?.campaign.channel === 'usb';
+
+  const usbBreaches = useMemo(() => {
+    if (!isUsb) return [];
+    const rows = resultsQuery.data?.employees ?? [];
+    const list: Array<{
+      id: string;
+      hostname: string;
+      username: string;
+      domain: string;
+      arch: string;
+      scenario: string;
+      ip_address: string;
+      timestamp: string;
+      employee_name: string;
+      department: string;
+      employee_id?: string;
+      tracking_uuid: string;
+      status: string;
+    }> = [];
+
+    rows.forEach((row) => {
+      const ctx = (row as any).client_context || {};
+      const events = (ctx.breach_events as any[]) || [];
+      if (events.length > 0) {
+        events.forEach((ev: any, idx: number) => {
+          list.push({
+            id: `${row.tracking_uuid}-${idx}`,
+            hostname: ev.hostname || ctx.hostname || 'DESKTOP-ENDPOINT',
+            username: ev.username || ctx.username || 'Unknown User',
+            domain: ev.domain || ctx.domain || '',
+            arch: ev.arch || ctx.arch || '',
+            scenario: ev.scenario || ctx.scenario || '',
+            ip_address: ev.ip_address || '',
+            timestamp: ev.timestamp || row.clicked_at || row.opened_at || '',
+            employee_name: row.name !== 'طعم فيزيائي عام (Physical Drop Target)' ? row.name : (ev.username || 'موظف مجهول'),
+            department: row.department || 'Physical Assessment',
+            employee_id: row.employee_id,
+            tracking_uuid: String(row.tracking_uuid),
+            status: row.status,
+          });
+        });
+      } else if (ctx.hostname || row.status === 'clicked' || row.status === 'opened') {
+        list.push({
+          id: String(row.tracking_uuid),
+          hostname: ctx.hostname || 'DESKTOP-ENDPOINT',
+          username: ctx.username || row.name,
+          domain: ctx.domain || '',
+          arch: ctx.arch || '',
+          scenario: ctx.scenario || '',
+          ip_address: (row as any).last_ip_address || '',
+          timestamp: row.clicked_at || row.opened_at || row.sent_at || '',
+          employee_name: row.name !== 'طعم فيزيائي عام (Physical Drop Target)' ? row.name : (ctx.username || 'موظف مجهول'),
+          department: row.department || 'Physical Assessment',
+          employee_id: row.employee_id,
+          tracking_uuid: String(row.tracking_uuid),
+          status: row.status,
+        });
+      }
+    });
+
+    return list;
+  }, [isUsb, resultsQuery.data]);
+
   async function handleExport() {
     if (!organizationId || !campaignId) return;
     try {
@@ -445,7 +509,7 @@ export function CampaignDetailPage() {
 
   if (resultsQuery.isLoading) return <LoadingState label="Loading campaign…" />;
   if (resultsQuery.error) return <Alert severity="error">{errorMessage(resultsQuery.error)}</Alert>;
-  if (!resultsQuery.data) return null;
+  if (!resultsQuery.data) return <LoadingState label="Loading campaign…" />;
 
   const { campaign, stats } = resultsQuery.data;
   const allEmployees = resultsQuery.data.employees;
@@ -453,68 +517,6 @@ export function CampaignDetailPage() {
   const isPhoneChannel = campaign.channel === 'sms' || campaign.channel === 'whatsapp';
   const isQrChannel = campaign.channel === 'qr';
   const isUsbChannel = campaign.channel === 'usb';
-
-  const usbBreaches = useMemo(() => {
-    if (!isUsbChannel) return [];
-    const rows = resultsQuery.data?.employees ?? [];
-    const list: Array<{
-      id: string;
-      hostname: string;
-      username: string;
-      domain: string;
-      arch: string;
-      scenario: string;
-      ip_address: string;
-      timestamp: string;
-      employee_name: string;
-      department: string;
-      employee_id?: string;
-      tracking_uuid: string;
-      status: string;
-    }> = [];
-
-    rows.forEach((row) => {
-      const ctx = (row as any).client_context || {};
-      const events = (ctx.breach_events as any[]) || [];
-      if (events.length > 0) {
-        events.forEach((ev: any, idx: number) => {
-          list.push({
-            id: `${row.tracking_uuid}-${idx}`,
-            hostname: ev.hostname || ctx.hostname || 'DESKTOP-ENDPOINT',
-            username: ev.username || ctx.username || 'Unknown User',
-            domain: ev.domain || ctx.domain || '',
-            arch: ev.arch || ctx.arch || '',
-            scenario: ev.scenario || ctx.scenario || '',
-            ip_address: ev.ip_address || '',
-            timestamp: ev.timestamp || row.clicked_at || row.opened_at || '',
-            employee_name: row.name !== 'طعم فيزيائي عام (Physical Drop Target)' ? row.name : (ev.username || 'موظف مجهول'),
-            department: row.department || 'Physical Assessment',
-            employee_id: row.employee_id,
-            tracking_uuid: String(row.tracking_uuid),
-            status: row.status,
-          });
-        });
-      } else if (ctx.hostname || row.status === 'clicked' || row.status === 'opened') {
-        list.push({
-          id: String(row.tracking_uuid),
-          hostname: ctx.hostname || 'DESKTOP-ENDPOINT',
-          username: ctx.username || row.name,
-          domain: ctx.domain || '',
-          arch: ctx.arch || '',
-          scenario: ctx.scenario || '',
-          ip_address: (row as any).last_ip_address || '',
-          timestamp: row.clicked_at || row.opened_at || row.sent_at || '',
-          employee_name: row.name !== 'طعم فيزيائي عام (Physical Drop Target)' ? row.name : (ctx.username || 'موظف مجهول'),
-          department: row.department || 'Physical Assessment',
-          employee_id: row.employee_id,
-          tracking_uuid: String(row.tracking_uuid),
-          status: row.status,
-        });
-      }
-    });
-
-    return list;
-  }, [isUsbChannel, resultsQuery.data]);
   const isVishingChannel = campaign.channel === 'vishing';
   const isPretextingChannel = campaign.channel === 'pretexting';
   const isLinkChannel = isVishingChannel || isPretextingChannel;
