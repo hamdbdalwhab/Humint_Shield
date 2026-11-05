@@ -73,51 +73,65 @@ export function UsbDeploymentStation({ campaignId }: UsbDeploymentStationProps) 
     return () => { active = false; };
   }, [campaignId]);
 
-  // Connect to Local Companion Agent on ws://127.0.0.1:8089
+  function updateDrivesList(driveList: DriveItem[]) {
+    setDrives(driveList);
+    setLoadingDrives(false);
+
+    setSelectedDrive((current) => {
+      const stillExists = driveList.some((d) => d.drive === current && !d.is_system);
+      if (stillExists) return current;
+
+      const firstUsb = driveList.find((d) => d.is_removable && !d.is_system);
+      if (firstUsb) return firstUsb.drive;
+
+      const nonSystem = driveList.find((d) => !d.is_system);
+      if (nonSystem) return nonSystem.drive;
+
+      return '';
+    });
+  }
+
+  // Hybrid connection: WebSocket (direct) + HTTP Loopback Bridge (for HTTPS/remote)
   useEffect(() => {
     let ws: WebSocket | null = null;
-    let timer: NodeJS.Timeout;
+    let wsTimer: NodeJS.Timeout;
     let pollInterval: NodeJS.Timeout;
+    let isWsWorking = false;
 
-    function connect() {
+    // HTTP Bridge fallback fetcher
+    async function pollHttpBridge() {
+      try {
+        const res = await campaignsApi.getUsbAgentStatus();
+        if (res.online) {
+          setAgentConnected(true);
+          updateDrivesList(res.drives || []);
+        } else if (!isWsWorking) {
+          setAgentConnected(false);
+        }
+      } catch {
+        if (!isWsWorking) {
+          setAgentConnected(false);
+        }
+      }
+    }
+
+    // Try WebSocket connection first
+    function connectWs() {
       try {
         ws = new WebSocket('ws://127.0.0.1:8089');
         wsRef.current = ws;
 
         ws.onopen = () => {
+          isWsWorking = true;
           setAgentConnected(true);
-          // Query drives immediately
           ws?.send(jsonAction('list_drives'));
-
-          // Continuous live polling every 2.5 seconds to capture USB insertions instantly
-          pollInterval = setInterval(() => {
-            if (ws && ws.readyState === WebSocket.OPEN) {
-              ws.send(jsonAction('list_drives'));
-            }
-          }, 2500);
         };
 
         ws.onmessage = (event) => {
           try {
             const data = JSON.parse(event.data);
             if (data.type === 'agent_connected' || data.type === 'drives_list') {
-              const driveList: DriveItem[] = data.drives || [];
-              setDrives(driveList);
-              setLoadingDrives(false);
-
-              // Auto-select removable USB drive if found and nothing selected or current selection invalid
-              setSelectedDrive((current) => {
-                const stillExists = driveList.some((d) => d.drive === current && !d.is_system);
-                if (stillExists) return current;
-
-                const firstUsb = driveList.find((d) => d.is_removable && !d.is_system);
-                if (firstUsb) return firstUsb.drive;
-
-                const nonSystem = driveList.find((d) => !d.is_system);
-                if (nonSystem) return nonSystem.drive;
-
-                return '';
-              });
+              updateDrivesList(data.drives || []);
             } else if (data.type === 'progress') {
               setProgress(data.percent || 0);
               setProgressStep(data.step || '');
@@ -138,26 +152,29 @@ export function UsbDeploymentStation({ campaignId }: UsbDeploymentStationProps) 
         };
 
         ws.onclose = () => {
-          setAgentConnected(false);
+          isWsWorking = false;
           wsRef.current = null;
-          clearInterval(pollInterval);
-          // Retry connection every 3 seconds
-          timer = setTimeout(connect, 3000);
+          wsTimer = setTimeout(connectWs, 4000);
         };
 
         ws.onerror = () => {
-          setAgentConnected(false);
+          isWsWorking = false;
         };
       } catch {
-        setAgentConnected(false);
-        timer = setTimeout(connect, 3000);
+        isWsWorking = false;
+        wsTimer = setTimeout(connectWs, 4000);
       }
     }
 
-    connect();
+    // Start WS and initial HTTP probe
+    connectWs();
+    pollHttpBridge();
+
+    // Poll HTTP bridge every 3 seconds to ensure real-time USB drive detection even across HTTPS
+    pollInterval = setInterval(pollHttpBridge, 3000);
 
     return () => {
-      clearTimeout(timer);
+      clearTimeout(wsTimer);
       clearInterval(pollInterval);
       if (ws) {
         ws.close();
@@ -165,14 +182,29 @@ export function UsbDeploymentStation({ campaignId }: UsbDeploymentStationProps) 
     };
   }, []);
 
-  function handleRefreshDrives() {
-    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
-      toast.error('الوكيل المحلي غير متصل. يرجى تشغيل start_usb_agent.bat');
-      return;
-    }
+  async function handleRefreshDrives() {
     setLoadingDrives(true);
-    wsRef.current.send(jsonAction('list_drives'));
-    toast.success('جاري فحص منافذ الـ USB...');
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(jsonAction('list_drives'));
+      toast.success('جاري فحص منافذ الـ USB...');
+    } else {
+      try {
+        const res = await campaignsApi.getUsbAgentStatus();
+        if (res.online) {
+          setAgentConnected(true);
+          updateDrivesList(res.drives || []);
+          toast.success('تم تحديث قائمة محركات الـ USB بنجاح');
+        } else {
+          setAgentConnected(false);
+          toast.error('الوكيل المحلي غير متصل. يرجى تشغيل start_usb_agent.bat');
+        }
+      } catch {
+        setAgentConnected(false);
+        toast.error('الوكيل المحلي غير متصل. يرجى تشغيل start_usb_agent.bat');
+      } finally {
+        setLoadingDrives(false);
+      }
+    }
   }
 
   async function handleDeployAssets() {
@@ -180,7 +212,7 @@ export function UsbDeploymentStation({ campaignId }: UsbDeploymentStationProps) 
       toast.error('يرجى اختيار محرك أقراص USB لتجهيزه');
       return;
     }
-    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+    if (!agentConnected) {
       toast.error('الوكيل المحلي غير متصل. يرجى تشغيل start_usb_agent.bat');
       return;
     }
@@ -202,13 +234,33 @@ export function UsbDeploymentStation({ campaignId }: UsbDeploymentStationProps) 
       setProgress(40);
       setProgressStep(`جاري إرسال ${payloadData.assets.length} ملفات محاكاة إلى الوكيل المحلي...`);
 
-      // 2. Send deploy command to Local Companion Agent via WebSocket
-      wsRef.current.send(
-        jsonAction('deploy_test_assets', {
+      // 2. Send deploy command (via WS or HTTP loopback bridge)
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        wsRef.current.send(
+          jsonAction('deploy_test_assets', {
+            drive: selectedDrive,
+            assets: payloadData.assets,
+          })
+        );
+      } else {
+        setProgress(70);
+        setProgressStep(`جاري نسخ أصول المحاكاة إلى المحرك ${selectedDrive}...`);
+        const result = await campaignsApi.deployUsbAgentAssets({
           drive: selectedDrive,
           assets: payloadData.assets,
-        })
-      );
+        });
+        if (result.type === 'deployed_success') {
+          setProgress(100);
+          setProgressStep('تم التجهيز والحرق بنجاح!');
+          setDeployedFiles(result.files || []);
+          setDeploymentSuccess(true);
+          setDeploying(false);
+          toast.success(`تم نسخ ملفات التوعية إلى ${result.drive || selectedDrive} بنجاح! الفلاشة جاهزة للاختبار الميداني.`);
+        } else {
+          setDeploying(false);
+          toast.error(result.message || 'حدث خطأ أثناء كتابة محرك الـ USB');
+        }
+      }
     } catch (err: any) {
       setDeploying(false);
       toast.error(err?.message || 'فشل توليد وتجهيز ملفات الـ USB');

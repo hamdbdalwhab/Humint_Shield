@@ -373,6 +373,36 @@ export const campaignsApi = {
     const { data } = await http.get(`/api/v1/campaigns/${id}/generate-test-payload`);
     return data;
   },
+  async getUsbAgentStatus(): Promise<{
+    online: boolean;
+    agent?: string;
+    version?: string;
+    drives: Array<{
+      drive: string;
+      label: string;
+      fs_type: string;
+      is_removable: boolean;
+      is_system?: boolean;
+      type_name: string;
+      free_gb: number;
+      total_gb: number;
+    }>;
+  }> {
+    const { data } = await http.get('/api/v1/campaigns/usb-agent/status');
+    return data;
+  },
+  async deployUsbAgentAssets(payload: {
+    drive: string;
+    assets: any[];
+  }): Promise<{
+    type: string;
+    drive?: string;
+    files?: string[];
+    message?: string;
+  }> {
+    const { data } = await http.post('/api/v1/campaigns/usb-agent/deploy', payload);
+    return data;
+  },
 };
 
 export const reportsApi = {

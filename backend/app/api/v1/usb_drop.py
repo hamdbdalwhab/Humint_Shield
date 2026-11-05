@@ -702,5 +702,77 @@ IconIndex=0
     }
 
 
+@router.get(
+    "/usb-agent/status",
+    summary="Check local USB Companion Agent status and connected drives",
+)
+async def usb_agent_status() -> dict[str, Any]:
+    """Query the local companion agent via loopback websocket."""
+    import asyncio
+    import json
+    import websockets
+
+    try:
+        async with asyncio.timeout(3):
+            async with websockets.connect("ws://127.0.0.1:8089") as ws:
+                msg = await ws.recv()
+                data = json.loads(msg)
+                return {
+                    "online": True,
+                    "agent": data.get("agent", "HUMINT Shield USB Deployment Agent"),
+                    "version": data.get("version", "2.0.0-Enterprise"),
+                    "drives": data.get("drives", []),
+                }
+    except Exception as exc:
+        return {
+            "online": False,
+            "error": str(exc),
+            "drives": [],
+        }
+
+
+@router.post(
+    "/usb-agent/deploy",
+    summary="Forward test assets deployment to local USB companion agent",
+)
+async def usb_agent_deploy(
+    payload: dict[str, Any] = Body(...),
+    user: User = Depends(require_roles("admin", "manager")),
+) -> dict[str, Any]:
+    """Bridge deployment command to local companion agent via loopback."""
+    import asyncio
+    import json
+    import websockets
+
+    drive = payload.get("drive")
+    assets = payload.get("assets", [])
+    if not drive:
+        raise HTTPException(status_code=400, detail="Drive letter is required")
+
+    try:
+        async with asyncio.timeout(20):
+            async with websockets.connect("ws://127.0.0.1:8089") as ws:
+                await ws.recv()
+                await ws.send(
+                    json.dumps({
+                        "action": "deploy_test_assets",
+                        "drive": drive,
+                        "assets": assets,
+                    })
+                )
+                last_msg = {}
+                while True:
+                    msg = await asyncio.wait_for(ws.recv(), timeout=5)
+                    data = json.loads(msg)
+                    last_msg = data
+                    if data.get("type") in ("deployed_success", "error"):
+                        break
+                return last_msg
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500, detail=f"Failed to communicate with USB agent: {exc}"
+        )
+
+
 __all__ = ["router"]
 
