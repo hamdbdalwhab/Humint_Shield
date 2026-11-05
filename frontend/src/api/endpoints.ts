@@ -31,6 +31,7 @@ import type {
   LiveBoard,
   Paginated,
   PhishingReport,
+  QRProbePayload,
   QRScan,
   QRSubmissionPayload,
   QRSubmissionResult,
@@ -541,6 +542,13 @@ export const trackingApi = {
   async qrCampaignContext(campaignId: string): Promise<TrackingContext> {
     const { data } = await http.get<TrackingContext>(
       `/api/v1/track/qr/campaign/${campaignId}/context`,
+    );
+    return data;
+  },
+  async probeQr(payload: QRProbePayload): Promise<{ success: boolean; status: string; message: string }> {
+    const { data } = await http.post<{ success: boolean; status: string; message: string }>(
+      '/api/v1/track/qr/probe',
+      payload,
     );
     return data;
   },

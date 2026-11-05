@@ -22,7 +22,11 @@ bearer_scheme = HTTPBearer(auto_error=False)
 
 
 def _client_ip(request: Request) -> str:
-    """Extract the client IP, honouring ``X-Forwarded-For`` from the proxy."""
+    """Extract the client IP, honouring Cloudflare and reverse proxy headers."""
+    for header in ("cf-connecting-ip", "true-client-ip", "x-real-ip"):
+        val = request.headers.get(header)
+        if val and val.strip():
+            return val.strip()
     forwarded = request.headers.get("x-forwarded-for")
     if forwarded:
         return forwarded.split(",")[0].strip()

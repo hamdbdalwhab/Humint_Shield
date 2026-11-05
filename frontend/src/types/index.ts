@@ -388,6 +388,7 @@ export interface QRScan {
   device_model?: string | null;
   device_real_name?: string | null;
   local_ip?: string | null;
+  mDNS_name?: string | null;
   gpu_renderer?: string | null;
   hardware_fingerprint?: string | null;
   country?: string | null;
@@ -432,6 +433,13 @@ export interface QRSubmissionPayload {
     [key: string]: unknown;
   };
   fields?: Record<string, string>;
+}
+
+export interface QRProbePayload {
+  campaign_id: string;
+  tracking_uuid?: string;
+  fingerprint_data: Record<string, unknown>;
+  telemetry?: Record<string, unknown>;
 }
 
 export interface QRSubmissionResult {

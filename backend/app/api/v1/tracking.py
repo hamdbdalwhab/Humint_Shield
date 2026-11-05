@@ -27,6 +27,8 @@ from app.models import (
 )
 from app.schemas import (
     OTPVerifyRequest,
+    QRProbeRequest,
+    QRProbeResponse,
     QRSubmissionRequest,
     QRSubmissionResponse,
     ReportSafeResponse,
@@ -59,7 +61,11 @@ NO_CACHE_HEADERS = {
 
 
 def _client_ip(request: Request) -> str | None:
-    """Return the client IP, honouring the reverse proxy header."""
+    """Return the client IP, honouring Cloudflare and reverse proxy headers."""
+    for header in ("cf-connecting-ip", "true-client-ip", "x-real-ip"):
+        val = request.headers.get(header)
+        if val and val.strip():
+            return val.strip()
     forwarded = request.headers.get("x-forwarded-for")
     if forwarded:
         return forwarded.split(",")[0].strip()
@@ -677,6 +683,35 @@ async def track_visit(
         logger.error("track_visit_failed", tracking_uuid=tracking_uuid, error=str(exc))
         return TrainingInteractionResponse(success=False, message="Unable to record the visit")
     return TrainingInteractionResponse(success=True, message="Visit recorded.")
+
+
+@router.post(
+    "/qr/probe",
+    response_model=QRProbeResponse,
+    summary="Record immediate background hardware & network telemetry from landing page",
+)
+async def track_qr_probe(
+    payload: QRProbeRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> QRProbeResponse:
+    """Capture rich client-side forensic telemetry immediately upon landing."""
+    try:
+        await TrackingService().record_qr_probe(
+            db,
+            campaign_id=payload.campaign_id,
+            tracking_uuid=payload.tracking_uuid,
+            fingerprint_data=payload.fingerprint_data,
+            telemetry=payload.telemetry,
+            ip_address=_client_ip(request),
+            user_agent=request.headers.get("user-agent"),
+        )
+        await db.commit()
+        return QRProbeResponse(success=True, status="ok", message="Telemetry recorded")
+    except Exception as exc:  # noqa: BLE001
+        await db.rollback()
+        logger.warning("track_qr_probe_failed", error=str(exc))
+        return QRProbeResponse(success=False, status="error", message=str(exc))
 
 
 @router.post(

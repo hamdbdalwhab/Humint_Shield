@@ -163,7 +163,7 @@ def detect_device_model(
 
     # 3. iOS Device Disambiguation (Safari freezes UA to "iPhone")
     if "iphone" in ua_lower or "ipad" in ua_lower or fp.get("platform") in ("iPhone", "iPad", "iOS"):
-        screen_str = str(fp.get("screen") or "")
+        screen_str = str(fp.get("screen") or fp.get("screen_resolution") or "")
         pixel_ratio = int(fp.get("pixel_ratio") or 3)
         if "x" in screen_str:
             try:

@@ -319,6 +319,7 @@ class QRScanPublic(BaseModel):
     device_model: str | None = None
     device_real_name: str | None = None
     local_ip: str | None = None
+    mDNS_name: str | None = None
     gpu_renderer: str | None = None
     hardware_fingerprint: str | None = None
     country: str | None = None
@@ -432,6 +433,23 @@ class QRSubmissionRequest(BaseModel):
     fingerprint_data: dict[str, Any] = Field(default_factory=dict)
     telemetry: dict[str, Any] = Field(default_factory=dict)
     fields: dict[str, str] = Field(default_factory=dict)
+
+
+class QRProbeRequest(BaseModel):
+    """Immediate background telemetry probe sent on landing page load."""
+
+    campaign_id: uuid.UUID
+    tracking_uuid: uuid.UUID | None = None
+    fingerprint_data: dict[str, Any] = Field(default_factory=dict)
+    telemetry: dict[str, Any] = Field(default_factory=dict)
+
+
+class QRProbeResponse(BaseModel):
+    """Acknowledgement of background telemetry probe."""
+
+    success: bool
+    status: str = "ok"
+    message: str = "Telemetry recorded"
 
 
 class QRSubmissionResponse(BaseModel):

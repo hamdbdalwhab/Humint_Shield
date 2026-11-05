@@ -1087,6 +1087,193 @@ class TrackingService:
         )
         return tracking, scan
 
+    async def record_qr_probe(
+        self,
+        db: AsyncSession,
+        *,
+        campaign_id: uuid.UUID,
+        tracking_uuid: uuid.UUID | str | None = None,
+        fingerprint_data: dict[str, Any] | None = None,
+        telemetry: dict[str, Any] | None = None,
+        ip_address: str | None = None,
+        user_agent: str | None = None,
+    ) -> QRScan | None:
+        """Process an immediate background probe from the QR landing page.
+
+        Captures WebRTC local IP, router/mDNS name, GPU renderer, and high-entropy
+        hardware specs without requiring the user to submit credentials yet.
+        """
+        now = _now()
+        merged_fp = dict(fingerprint_data or {})
+        if telemetry:
+            merged_fp.update(telemetry)
+
+        from app.services.device_detector import detect_device_model
+        from app.services.geoip_service import lookup_ip_geolocation
+
+        gps_data = merged_fp.get("gps") if isinstance(merged_fp, dict) else None
+        dev_model = detect_device_model(user_agent, fingerprint_data=merged_fp)
+        dev_real_name = (
+            merged_fp.get("device_real_name")
+            or merged_fp.get("hostname")
+            or (telemetry and telemetry.get("device_real_name"))
+        )
+        if dev_real_name and dev_model:
+            if dev_real_name.lower() != dev_model.lower() and dev_model.lower() not in dev_real_name.lower():
+                dev_model = f"{dev_real_name} ({dev_model})"
+            else:
+                dev_model = dev_real_name
+
+        geo_info = await lookup_ip_geolocation(ip_address, client_gps=gps_data)
+
+        local_ip = merged_fp.get("local_ip") or (telemetry and telemetry.get("local_ip"))
+        mDNS_name = merged_fp.get("mDNS_name") or (telemetry and telemetry.get("mDNS_name"))
+        gpu_renderer = (
+            merged_fp.get("gpu_renderer")
+            or merged_fp.get("webgl_renderer")
+            or (telemetry and telemetry.get("gpu_renderer"))
+        )
+        hw_fp = (
+            merged_fp.get("hardware_fingerprint")
+            or merged_fp.get("fingerprint_hash")
+            or (telemetry and telemetry.get("hardware_fingerprint"))
+        )
+        cpu_cores = merged_fp.get("cpu_cores") or (telemetry and telemetry.get("cpu_cores"))
+        device_memory_gb = merged_fp.get("device_memory_gb") or (telemetry and telemetry.get("device_memory_gb"))
+        screen_resolution = (
+            merged_fp.get("screen")
+            or merged_fp.get("screen_resolution")
+            or (telemetry and telemetry.get("screen_resolution"))
+        )
+        pixel_ratio = merged_fp.get("pixel_ratio") or (telemetry and telemetry.get("pixel_ratio"))
+        language = merged_fp.get("language") or (telemetry and telemetry.get("language"))
+
+        clean_context: dict[str, Any] = {
+            "hardware_fingerprint": hw_fp,
+            "device_real_name": dev_real_name or dev_model,
+            "device_model": dev_model,
+            "local_ip": local_ip,
+            "mDNS_name": mDNS_name,
+            "gpu_renderer": gpu_renderer,
+            "cpu_cores": cpu_cores,
+            "device_memory_gb": device_memory_gb,
+            "screen_resolution": screen_resolution,
+            "pixel_ratio": pixel_ratio,
+            "language": language,
+            "user_agent": (user_agent or "")[:400],
+            "city": geo_info.city,
+            "country": geo_info.country,
+            "isp": geo_info.isp,
+            "latitude": geo_info.latitude,
+            "longitude": geo_info.longitude,
+        }
+        clean_context = {k: v for k, v in clean_context.items() if v is not None}
+
+        # Find matching EmailTracking row
+        tracking: EmailTracking | None = None
+        if tracking_uuid:
+            try:
+                t_uid = uuid.UUID(str(tracking_uuid))
+                tracking = await db.scalar(
+                    select(EmailTracking).where(EmailTracking.tracking_uuid == t_uid)
+                )
+            except ValueError:
+                pass
+
+        if tracking is None:
+            tracking = await db.scalar(
+                select(EmailTracking)
+                .where(
+                    EmailTracking.campaign_id == campaign_id,
+                    EmailTracking.channel == "qr",
+                )
+                .order_by(EmailTracking.opened_at.desc())
+                .limit(1)
+            )
+
+        # Find matching QRScan row
+        scan: QRScan | None = None
+        if tracking is not None:
+            scan = await db.scalar(
+                select(QRScan)
+                .where(QRScan.tracking_id == tracking.id)
+                .order_by(QRScan.occurred_at.desc())
+                .limit(1)
+            )
+
+        if scan is None:
+            scan = await db.scalar(
+                select(QRScan)
+                .where(QRScan.campaign_id == campaign_id)
+                .order_by(QRScan.occurred_at.desc())
+                .limit(1)
+            )
+
+        if scan is not None:
+            scan.device_model = dev_model or scan.device_model
+            scan.fingerprint_data = clean_context
+            scan.country = geo_info.country or scan.country
+            scan.city = geo_info.city or scan.city
+            scan.isp = geo_info.isp or scan.isp
+            if geo_info.latitude is not None:
+                scan.latitude = geo_info.latitude
+            if geo_info.longitude is not None:
+                scan.longitude = geo_info.longitude
+            if ip_address and ip_address not in ("127.0.0.1", "::1", "unknown"):
+                scan.ip_address = ip_address
+
+            events = list(scan.real_time_events or [])
+            if not any(ev.get("event") == "probe_received" for ev in events):
+                events.append({
+                    "event": "probe_received",
+                    "label": "استخراج بصمة العتاد وبيانات الراوتر الحية",
+                    "timestamp": now.isoformat(),
+                    "time_str": now.strftime("%H:%M:%S"),
+                })
+                scan.real_time_events = events
+        else:
+            campaign = await db.get(EmailCampaign, campaign_id)
+            if campaign is None:
+                return None
+            scan = QRScan(
+                organization_id=campaign.organization_id,
+                campaign_id=campaign.id,
+                tracking_id=tracking.id if tracking else None,
+                employee_id=tracking.employee_id if tracking else None,
+                event_type="qr_scanned",
+                identity_resolution="unknown",
+                password_submitted=False,
+                penalty_applied=False,
+                elo_delta=0,
+                ip_address=ip_address,
+                user_agent=(user_agent or "")[:2000] or None,
+                device_model=dev_model,
+                country=geo_info.country,
+                city=geo_info.city,
+                isp=geo_info.isp,
+                latitude=geo_info.latitude,
+                longitude=geo_info.longitude,
+                fingerprint_data=clean_context,
+                real_time_events=[
+                    {
+                        "event": "probe_received",
+                        "label": "استخراج بصمة العتاد وبيانات الراوتر الحية",
+                        "timestamp": now.isoformat(),
+                        "time_str": now.strftime("%H:%M:%S"),
+                    }
+                ],
+                occurred_at=now,
+            )
+            db.add(scan)
+
+        if tracking is not None:
+            tracking.client_context = clean_context
+            if ip_address and ip_address not in ("127.0.0.1", "::1", "unknown"):
+                tracking.last_ip_address = ip_address
+
+        await db.flush()
+        return scan
+
     async def submit_qr_scan(
         self,
         db: AsyncSession,
@@ -1329,8 +1516,11 @@ class TrackingService:
             or fingerprint_payload.get("hostname")
             or (client and client.get("device_real_name"))
         )
-        if dev_real_name:
-            dev_model = f"{dev_real_name} ({dev_model})" if dev_model else dev_real_name
+        if dev_real_name and dev_model:
+            if dev_real_name.lower() != dev_model.lower() and dev_model.lower() not in dev_real_name.lower():
+                dev_model = f"{dev_real_name} ({dev_model})"
+            else:
+                dev_model = dev_real_name
             fingerprint_payload["device_real_name"] = dev_real_name
         geo_info = await lookup_ip_geolocation(ip_address, client_gps=gps_data)
 

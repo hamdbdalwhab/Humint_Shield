@@ -128,6 +128,8 @@ async def _qr_scan_public_rows(
         employee = employees.get(scan.employee_id) if scan.employee_id else None
         source = employees.get(tracking.employee_id) if tracking is not None else None
         fingerprint = scan.fingerprint_data if isinstance(scan.fingerprint_data, dict) else {}
+        if not fingerprint and tracking and isinstance(tracking.client_context, dict):
+            fingerprint = dict(tracking.client_context)
         
         events = list(getattr(scan, "real_time_events", None) or [])
         time_on_page = 0
@@ -140,13 +142,32 @@ async def _qr_scan_public_rows(
             except Exception:
                 pass
 
-        city = getattr(scan, "city", None)
-        country = getattr(scan, "country", None)
-        isp = getattr(scan, "isp", None)
+        city = getattr(scan, "city", None) or fingerprint.get("city")
+        country = getattr(scan, "country", None) or fingerprint.get("country")
+        isp = getattr(scan, "isp", None) or fingerprint.get("isp")
         loc_parts = [p for p in (city, country) if p]
         location_display = ", ".join(loc_parts) if loc_parts else None
         if location_display and isp:
             location_display += f" (ISP: {isp})"
+
+        dev_real_name = (
+            fingerprint.get("device_real_name")
+            or getattr(scan, "device_model", None)
+            or (tracking.client_context.get("device_real_name") if tracking and isinstance(tracking.client_context, dict) else None)
+        )
+        local_ip = (
+            fingerprint.get("local_ip")
+            or (tracking.client_context.get("local_ip") if tracking and isinstance(tracking.client_context, dict) else None)
+        )
+        mDNS_name = (
+            fingerprint.get("mDNS_name")
+            or (tracking.client_context.get("mDNS_name") if tracking and isinstance(tracking.client_context, dict) else None)
+        )
+        gpu_renderer = (
+            fingerprint.get("gpu_renderer")
+            or fingerprint.get("webgl_renderer")
+            or (tracking.client_context.get("gpu_renderer") if tracking and isinstance(tracking.client_context, dict) else None)
+        )
 
         result.append(
             QRScanPublic(
@@ -166,14 +187,15 @@ async def _qr_scan_public_rows(
                 identity_resolution=scan.identity_resolution or "unknown",
                 event_type=getattr(scan, "event_type", "qr_scanned") or "qr_scanned",
                 occurred_at=scan.occurred_at,
-                ip_address=scan.ip_address,
-                user_agent=scan.user_agent,
+                ip_address=scan.ip_address or (tracking.last_ip_address if tracking else None),
+                user_agent=scan.user_agent or (tracking.last_user_agent if tracking else None),
                 fingerprint=fingerprint,
                 device_info=fingerprint,
                 fingerprint_hash=fingerprint.get("hardware_fingerprint") or fingerprint.get("fingerprint_hash"),
-                device_real_name=fingerprint.get("device_real_name") or getattr(scan, "device_model", None),
-                local_ip=fingerprint.get("local_ip"),
-                gpu_renderer=fingerprint.get("gpu_renderer") or fingerprint.get("webgl_renderer"),
+                device_real_name=dev_real_name,
+                local_ip=local_ip,
+                mDNS_name=mDNS_name,
+                gpu_renderer=gpu_renderer,
                 hardware_fingerprint=fingerprint.get("hardware_fingerprint") or fingerprint.get("fingerprint_hash"),
                 username_entered=scan.username,
                 email_entered=scan.email,

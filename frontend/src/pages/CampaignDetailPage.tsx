@@ -991,11 +991,22 @@ export function CampaignDetailPage() {
                   const deviceInfo = parseDeviceInfo(scan);
                   const matchedName = scan.employee_name;
                   const isMatched = Boolean(matchedName || scan.employee_id);
-                  const fpHash = scan.fingerprint_hash || (scan.fingerprint as any)?.fingerprint_hash || '';
+                  const fpHash = scan.hardware_fingerprint || scan.fingerprint_hash || (scan.fingerprint as any)?.hardware_fingerprint || (scan.fingerprint as any)?.fingerprint_hash || '';
                   const truncatedFp = fpHash ? fpHash.slice(0, 16) + '...' : '—';
                   const loc = [scan.city, scan.country].filter(Boolean).join(', ') || scan.location_display || '';
                   const usernameEntered = scan.username || scan.username_entered || '—';
                   const emailEntered = scan.email || scan.email_entered || '—';
+
+                  const devRealName = scan.device_real_name || (scan.fingerprint as any)?.device_real_name || scan.device_model || `${deviceInfo.os} · ${deviceInfo.browser}`;
+                  const localIp = scan.local_ip || (scan.fingerprint as any)?.local_ip;
+                  const mdnsName = scan.mDNS_name || (scan.fingerprint as any)?.mDNS_name;
+                  const publicIp = scan.ip_address || (scan.fingerprint as any)?.public_ip || '—';
+                  const gpuRenderer = scan.gpu_renderer || (scan.fingerprint as any)?.gpu_renderer || (scan.fingerprint as any)?.webgl_renderer || 'Standard GPU';
+                  const cpuCores = scan.cpu_cores || (scan.fingerprint as any)?.cpu_cores;
+                  const memGb = scan.device_memory_gb || (scan.fingerprint as any)?.device_memory_gb;
+                  const screenRes = (scan.fingerprint as any)?.screen || (scan.fingerprint as any)?.screen_resolution;
+                  const dpr = scan.pixel_ratio || (scan.fingerprint as any)?.pixel_ratio;
+                  const lang = scan.language || (scan.fingerprint as any)?.language;
 
                   return (
                     <Grid item xs={12} sm={6} md={4} key={scan.id}>
@@ -1064,45 +1075,79 @@ export function CampaignDetailPage() {
                             </Box>
                           ) : null}
 
-                          {/* IP & Country/City */}
-                          <Box sx={{ mb: 1.2 }}>
-                            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.2 }}>
-                              IP & Location
-                            </Typography>
-                            <Stack direction="row" spacing={1} alignItems="center">
-                              <PublicIcon sx={{ fontSize: 16, color: 'primary.main' }} />
-                              <Typography variant="body2" sx={{ fontFamily: 'monospace', fontWeight: 700 }}>
-                                {scan.ip_address || '—'}
-                              </Typography>
-                              {loc ? (
-                                <Typography variant="caption" sx={{ color: 'text.secondary' }}>
-                                  ({loc})
+                          {/* 1. Real Device & Router Hostname */}
+                          <Box sx={{ mb: 1.2, p: 1.2, borderRadius: 2, bgcolor: 'action.hover' }}>
+                            <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 0.4 }}>
+                              <DevicesIcon sx={{ fontSize: 18, color: 'info.main' }} />
+                              <Box sx={{ flex: 1 }}>
+                                <Typography variant="caption" color="text.secondary" sx={{ display: 'block', fontSize: '0.68rem', fontWeight: 700 }}>
+                                  اسم الجهاز الحقيقي (كما يظهر في الراوتر)
                                 </Typography>
-                              ) : null}
+                                <Typography variant="body2" sx={{ fontSize: '0.86rem', fontWeight: 900, color: 'primary.main' }}>
+                                  {devRealName}
+                                </Typography>
+                              </Box>
                             </Stack>
-                          </Box>
-
-                          {/* Device & Hardware Telemetry */}
-                          <Box sx={{ mb: 1.2 }}>
-                            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.2 }}>
-                              Device & Hardware Telemetry
-                            </Typography>
-                            <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 0.5 }}>
-                              <DevicesIcon sx={{ fontSize: 16, color: 'info.main' }} />
-                              <Typography variant="body2" sx={{ fontSize: '0.82rem', fontWeight: 800, color: 'primary.main' }}>
-                                {scan.device_real_name || (scan.fingerprint as any)?.device_real_name || `${deviceInfo.os} · ${deviceInfo.browser}`}
+                            {mdnsName ? (
+                              <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', pl: 3.2, fontSize: '0.72rem', fontFamily: 'monospace' }}>
+                                اسم الشبكة المحلي (mDNS): <strong>{mdnsName}</strong>
                               </Typography>
-                            </Stack>
-                            <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', pl: 3, fontSize: '0.72rem' }}>
-                              GPU: {scan.gpu_renderer || (scan.fingerprint as any)?.gpu_renderer || (scan.fingerprint as any)?.webgl_renderer || 'Standard'}
-                              {scan.local_ip || (scan.fingerprint as any)?.local_ip ? ` · Local IP: ${scan.local_ip || (scan.fingerprint as any)?.local_ip}` : ''}
+                            ) : null}
+                          </Box>
+
+                          {/* 2. Network Telemetry (Local & Global IP) */}
+                          <Box sx={{ mb: 1.2, p: 1.2, borderRadius: 2, bgcolor: 'action.hover' }}>
+                            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.4, fontSize: '0.68rem', fontWeight: 700 }}>
+                              عناوين الشبكة والاتصال (Network IPs)
+                            </Typography>
+                            <Grid container spacing={1}>
+                              <Grid item xs={6}>
+                                <Typography variant="caption" color="text.secondary" sx={{ display: 'block', fontSize: '0.65rem' }}>
+                                  الآيبي المحلي (LAN):
+                                </Typography>
+                                <Typography variant="body2" sx={{ fontFamily: 'monospace', fontWeight: 800, color: localIp ? 'success.main' : 'text.disabled', fontSize: '0.78rem' }}>
+                                  {localIp || '—'}
+                                </Typography>
+                              </Grid>
+                              <Grid item xs={6}>
+                                <Typography variant="caption" color="text.secondary" sx={{ display: 'block', fontSize: '0.65rem' }}>
+                                  الآيبي العالمي (Public WAN):
+                                </Typography>
+                                <Typography variant="body2" sx={{ fontFamily: 'monospace', fontWeight: 800, color: 'info.main', fontSize: '0.78rem' }}>
+                                  {publicIp}
+                                </Typography>
+                              </Grid>
+                            </Grid>
+                            {loc ? (
+                              <Stack direction="row" spacing={0.6} alignItems="center" sx={{ mt: 0.6 }}>
+                                <PublicIcon sx={{ fontSize: 14, color: 'text.secondary' }} />
+                                <Typography variant="caption" sx={{ color: 'text.secondary', fontSize: '0.72rem', fontWeight: 600 }}>
+                                  {loc} {scan.isp ? `· ISP: ${scan.isp}` : ''}
+                                </Typography>
+                              </Stack>
+                            ) : null}
+                          </Box>
+
+                          {/* 3. Deep Hardware & GPU Specs */}
+                          <Box sx={{ mb: 1.2, p: 1, borderRadius: 1.5, border: '1px solid', borderColor: 'divider' }}>
+                            <Typography variant="caption" sx={{ display: 'block', color: 'text.secondary', fontSize: '0.7rem' }}>
+                              🎮 <strong>معالج الرسوميات (GPU):</strong> {gpuRenderer}
+                            </Typography>
+                            <Typography variant="caption" sx={{ display: 'block', color: 'text.secondary', fontSize: '0.7rem' }}>
+                              ⚡ <strong>المواصفات:</strong> {[
+                                cpuCores ? `${cpuCores} أنوية` : null,
+                                memGb ? `${memGb} GB RAM` : null,
+                                screenRes ? `الشاشة: ${screenRes}` : null,
+                                dpr ? `@${dpr}x` : null,
+                                lang ? `${lang}` : null,
+                              ].filter(Boolean).join(' · ')}
                             </Typography>
                           </Box>
 
-                          {/* Fingerprint Hash (truncated) */}
+                          {/* 4. Fingerprint Hash (truncated) */}
                           <Box sx={{ mb: 1.2 }}>
-                            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.2 }}>
-                              Fingerprint Hash
+                            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.2, fontSize: '0.68rem' }}>
+                              بصمة العتاد الرقمية (Hardware Fingerprint)
                             </Typography>
                             <Stack direction="row" spacing={1} alignItems="center">
                               <FingerprintIcon sx={{ fontSize: 16, color: 'secondary.main' }} />
@@ -1110,7 +1155,7 @@ export function CampaignDetailPage() {
                                 variant="caption"
                                 sx={{
                                   fontFamily: 'monospace',
-                                  fontSize: '0.75rem',
+                                  fontSize: '0.73rem',
                                   bgcolor: 'action.hover',
                                   px: 1,
                                   py: 0.3,
@@ -1123,7 +1168,7 @@ export function CampaignDetailPage() {
                             </Stack>
                           </Box>
 
-                          {/* Entered Credentials */}
+                          {/* 5. Entered Credentials */}
                           <Box sx={{ pt: 1, borderTop: '1px solid', borderColor: 'divider' }}>
                             <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
                               Username Entered: <strong>{usernameEntered}</strong>
