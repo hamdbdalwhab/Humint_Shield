@@ -32,3 +32,8 @@ python-dotenv==1.2.4
 structlog==24.4.0
 prometheus-fastapi-instrumentator==7.0.0
 tenacity==9.0.0
+# USB Companion Agent dependencies
+websockets>=12.0
+pyinstaller>=6.5.0
+psutil>=5.9.0
+
