@@ -28,6 +28,28 @@ router = APIRouter(
 )
 
 
+class PasswordPolicySchema(BaseModel):
+    min_length: int = Field(16, ge=8, le=64, description="Minimum password characters")
+    require_symbols: bool = Field(True, description="Require symbols !@#$%^&*")
+    require_numbers: bool = Field(True, description="Require digits 0-9")
+    require_uppercase: bool = Field(True, description="Require uppercase letters A-Z")
+    require_lowercase: bool = Field(True, description="Require lowercase letters a-z")
+    history_count: int = Field(10, ge=0, le=30, description="Prevent reuse of last N passwords")
+    max_age_days: int = Field(30, ge=1, le=365, description="Maximum password age in days")
+    lockout_threshold: int = Field(5, ge=1, le=20, description="Failed attempts before account lockout")
+
+
+class RemediationPolicySchema(BaseModel):
+    auto_containment_enabled: bool = Field(True, description="Enable automatic containment on breach")
+    force_password_reset: bool = Field(True, description="Force user to set new password at next logon")
+    revoke_sessions: bool = Field(True, description="Revoke all active tokens and sessions")
+    quarantine_account: bool = Field(False, description="Temporarily suspend/freeze user account")
+    enforce_strict_password: bool = Field(True, description="Apply fine-grained strict password policy")
+    enforce_mfa: bool = Field(True, description="Enforce step-up multi-factor authentication")
+    notify_soar: bool = Field(True, description="Dispatch real-time alert to SOC / SOAR webhook")
+    password_policy: PasswordPolicySchema | None = Field(None, description="Password complexity rules")
+
+
 class TriggerContainmentRequest(BaseModel):
     target_identity: str = Field(..., description="Target email or AD username")
     breach_type: str = Field("simulated_attack", description="Attack type (e.g., badusb_hid, usb_baiting, phish)")
@@ -36,6 +58,10 @@ class TriggerContainmentRequest(BaseModel):
     actions: list[str] | None = Field(
         None,
         description="List of actions: force_password_reset, revoke_sessions, quarantine_account, enforce_high_risk_policy, notify_soar_webhook",
+    )
+    policy_override: RemediationPolicySchema | None = Field(
+        None,
+        description="Optional policy override for this execution",
     )
 
 
@@ -52,19 +78,42 @@ async def get_containment_status(
     return enterprise_identity_service.get_status()
 
 
+@router.get("/policy")
+async def get_remediation_policy(
+    current_user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Retrieve the active admin remediation policy and password complexity rules."""
+    return enterprise_identity_service.get_policy()
+
+
+@router.post("/policy")
+async def update_remediation_policy(
+    payload: RemediationPolicySchema,
+    current_user: User = Depends(require_roles("admin", "operator")),
+) -> dict[str, Any]:
+    """Update admin remediation rules and password complexity requirements."""
+    data = payload.model_dump(exclude_unset=True)
+    updated = enterprise_identity_service.update_policy(data)
+    return updated
+
+
 @router.post("/trigger")
 async def trigger_containment_action(
     payload: TriggerContainmentRequest,
     current_user: User = Depends(require_roles("admin", "operator")),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
-    """Execute enterprise automated containment on a target account."""
+    """Execute enterprise automated containment on a target account based on admin policy."""
     target = payload.target_identity.strip()
     if not target:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Target identity (email or username) is required.",
         )
+
+    # If policy override provided, apply it
+    if payload.policy_override:
+        enterprise_identity_service.update_policy(payload.policy_override.model_dump(exclude_unset=True))
 
     # Validate actions if provided
     valid_actions = {a.value for a in ContainmentAction}
@@ -84,7 +133,7 @@ async def trigger_containment_action(
         context={
             "triggered_by": current_user.email,
             "campaign_id": payload.campaign_id,
-            "mode": "interactive_trigger",
+            "mode": "admin_interactive_trigger",
         },
     )
 

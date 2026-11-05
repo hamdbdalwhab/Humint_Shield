@@ -4,6 +4,9 @@ Integrates HUMINT Shield with Enterprise Identity Providers (Microsoft Entra ID 
 Active Directory) and SOAR / SIEM systems to execute real-time containment and
 remediation whenever an employee triggers a security breach (e.g., USB baiting,
 BadUSB keystroke injection, or simulated credential submission).
+
+Provides flexible, admin-defined remediation policies and custom password complexity
+enforcement (length, symbols, numbers, uppercase, history, lockout threshold).
 """
 from __future__ import annotations
 
@@ -48,6 +51,101 @@ class ContainmentStatus(str, Enum):
 
 
 @dataclass
+class PasswordPolicyConfig:
+    """Configurable password complexity requirements enforced on compromised accounts."""
+    min_length: int = 16
+    require_symbols: bool = True
+    require_numbers: bool = True
+    require_uppercase: bool = True
+    require_lowercase: bool = True
+    history_count: int = 10
+    max_age_days: int = 30
+    lockout_threshold: int = 5
+    policy_name: str = "HUMINT_Strict_Enforcement"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "min_length": self.min_length,
+            "require_symbols": self.require_symbols,
+            "require_numbers": self.require_numbers,
+            "require_uppercase": self.require_uppercase,
+            "require_lowercase": self.require_lowercase,
+            "history_count": self.history_count,
+            "max_age_days": self.max_age_days,
+            "lockout_threshold": self.lockout_threshold,
+            "policy_name": self.policy_name,
+            "powershell_command": self.generate_powershell_fgpp(),
+            "description_ar": self.generate_description_ar(),
+        }
+
+    def generate_powershell_fgpp(self) -> str:
+        """Generate the exact Active Directory PowerShell cmdlet for Fine-Grained Password Policy."""
+        complexity_bool = "$true" if (self.require_symbols or self.require_numbers or self.require_uppercase) else "$false"
+        return (
+            f"New-ADFineGrainedPasswordPolicy -Name '{self.policy_name}' "
+            f"-Precedence 1 "
+            f"-ComplexityEnabled {complexity_bool} "
+            f"-MinPasswordLength {self.min_length} "
+            f"-PasswordHistoryCount {self.history_count} "
+            f"-MinPasswordAge '1.00:00:00' "
+            f"-MaxPasswordAge '{self.max_age_days}.00:00:00' "
+            f"-LockoutThreshold {self.lockout_threshold} "
+            f"-LockoutDuration '00:30:00' "
+            f"-AppliesTo 'Enforced_Strict_Password_Group'"
+        )
+
+    def generate_description_ar(self) -> str:
+        parts = [f"الحد الأدنى للطول: {self.min_length} خانة"]
+        if self.require_symbols:
+            parts.append("رموز خاصة (!@#$...)")
+        if self.require_numbers:
+            parts.append("أرقام (0-9)")
+        if self.require_uppercase:
+            parts.append("أحرف كبيرة (A-Z)")
+        parts.append(f"منع تكرار آخر {self.history_count} كلمات مرور")
+        return " | ".join(parts)
+
+
+@dataclass
+class RemediationPolicy:
+    """Flexible admin-managed remediation rules."""
+    auto_containment_enabled: bool = True
+    force_password_reset: bool = True
+    revoke_sessions: bool = True
+    quarantine_account: bool = False
+    enforce_strict_password: bool = True
+    enforce_mfa: bool = True
+    notify_soar: bool = True
+    password_policy: PasswordPolicyConfig = field(default_factory=PasswordPolicyConfig)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "auto_containment_enabled": self.auto_containment_enabled,
+            "force_password_reset": self.force_password_reset,
+            "revoke_sessions": self.revoke_sessions,
+            "quarantine_account": self.quarantine_account,
+            "enforce_strict_password": self.enforce_strict_password,
+            "enforce_mfa": self.enforce_mfa,
+            "notify_soar": self.notify_soar,
+            "password_policy": self.password_policy.to_dict(),
+        }
+
+    def resolve_active_actions(self) -> list[str]:
+        actions: list[str] = []
+        if self.force_password_reset:
+            actions.append(ContainmentAction.FORCE_PASSWORD_RESET.value)
+        if self.revoke_sessions:
+            actions.append(ContainmentAction.REVOKE_SESSIONS.value)
+        if self.quarantine_account:
+            actions.append(ContainmentAction.QUARANTINE_ACCOUNT.value)
+        if self.enforce_strict_password or self.enforce_mfa:
+            actions.append(ContainmentAction.ENFORCE_HIGH_RISK_POLICY.value)
+        if self.notify_soar:
+            actions.append(ContainmentAction.NOTIFY_SOAR_WEBHOOK.value)
+        return actions
+
+
+@dataclass
 class ActionResult:
     """Outcome of a single containment action."""
     action: str
@@ -70,6 +168,7 @@ class ContainmentReport:
     overall_status: str
     summary_ar: str
     summary_en: str
+    applied_policy: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -80,6 +179,7 @@ class ContainmentReport:
             "overall_status": self.overall_status,
             "summary_ar": self.summary_ar,
             "summary_en": self.summary_en,
+            "applied_policy": self.applied_policy,
             "results": [
                 {
                     "action": r.action,
@@ -96,15 +196,60 @@ class ContainmentReport:
 
 
 class EnterpriseIdentityService:
-    """Manages Active Directory, Microsoft Entra ID and SOAR integrations."""
+    """Manages Active Directory, Microsoft Entra ID and SOAR integrations with dynamic admin policy."""
 
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or get_settings()
+        self.policy = RemediationPolicy()
+
+    def get_policy(self) -> dict[str, Any]:
+        """Return the current admin remediation and password policy."""
+        return self.policy.to_dict()
+
+    def update_policy(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Update remediation policy and password complexity rules based on admin decisions."""
+        if "auto_containment_enabled" in payload:
+            self.policy.auto_containment_enabled = bool(payload["auto_containment_enabled"])
+        if "force_password_reset" in payload:
+            self.policy.force_password_reset = bool(payload["force_password_reset"])
+        if "revoke_sessions" in payload:
+            self.policy.revoke_sessions = bool(payload["revoke_sessions"])
+        if "quarantine_account" in payload:
+            self.policy.quarantine_account = bool(payload["quarantine_account"])
+        if "enforce_strict_password" in payload:
+            self.policy.enforce_strict_password = bool(payload["enforce_strict_password"])
+        if "enforce_mfa" in payload:
+            self.policy.enforce_mfa = bool(payload["enforce_mfa"])
+        if "notify_soar" in payload:
+            self.policy.notify_soar = bool(payload["notify_soar"])
+
+        pp = payload.get("password_policy")
+        if isinstance(pp, dict):
+            if "min_length" in pp:
+                self.policy.password_policy.min_length = max(8, min(64, int(pp["min_length"])))
+            if "require_symbols" in pp:
+                self.policy.password_policy.require_symbols = bool(pp["require_symbols"])
+            if "require_numbers" in pp:
+                self.policy.password_policy.require_numbers = bool(pp["require_numbers"])
+            if "require_uppercase" in pp:
+                self.policy.password_policy.require_uppercase = bool(pp["require_uppercase"])
+            if "require_lowercase" in pp:
+                self.policy.password_policy.require_lowercase = bool(pp["require_lowercase"])
+            if "history_count" in pp:
+                self.policy.password_policy.history_count = max(0, min(30, int(pp["history_count"])))
+            if "max_age_days" in pp:
+                self.policy.password_policy.max_age_days = max(1, min(365, int(pp["max_age_days"])))
+            if "lockout_threshold" in pp:
+                self.policy.password_policy.lockout_threshold = max(1, min(20, int(pp["lockout_threshold"])))
+
+        logger.info("remediation_policy_updated", policy=self.policy.to_dict())
+        return self.policy.to_dict()
 
     def get_status(self) -> dict[str, Any]:
         """Return the configuration and readiness status of enterprise integrations."""
         return {
             "containment_enabled": self.settings.containment_enabled,
+            "active_policy": self.policy.to_dict(),
             "entra_id": {
                 "configured": self.settings.entra_configured,
                 "tenant_id": self.settings.entra_tenant_id or "Not configured",
@@ -133,25 +278,21 @@ class EnterpriseIdentityService:
         actions: list[str] | None = None,
         context: dict[str, Any] | None = None,
     ) -> ContainmentReport:
-        """Execute enterprise containment actions for a compromised user.
+        """Execute enterprise containment actions for a compromised user according to admin policy.
 
         Args:
             target_identity: Corporate email or AD username.
             breach_type: The attack vector (e.g. 'badusb_hid', 'usb_baiting', 'credential_phish').
             tracking_uuid: Tracking row UUID reference.
-            actions: List of actions to execute. Defaults to standard remediation set.
+            actions: Optional override list of actions. If None, uses admin's active policy.
             context: Additional contextual fields (hostname, IP, Elo delta, etc.).
 
         Returns:
             A comprehensive ContainmentReport.
         """
+        # If no explicit action override was given, resolve from admin's configured policy
         if actions is None:
-            actions = [
-                ContainmentAction.FORCE_PASSWORD_RESET.value,
-                ContainmentAction.REVOKE_SESSIONS.value,
-                ContainmentAction.ENFORCE_HIGH_RISK_POLICY.value,
-                ContainmentAction.NOTIFY_SOAR_WEBHOOK.value,
-            ]
+            actions = self.policy.resolve_active_actions()
 
         results: list[ActionResult] = []
         ctx = context or {}
@@ -185,20 +326,19 @@ class EnterpriseIdentityService:
                     )
                 )
 
-        # Check overall status
         failed_count = sum(1 for r in results if r.status == ContainmentStatus.FAILED)
         overall = "success" if failed_count == 0 else "partial_failure"
 
         actions_ar = "، ".join([r.message_ar for r in results])
         summary_ar = (
-            f"تم تفعيل منظومة الاستجابة والاحتواء بنجاح للمستخدم [{target_identity}]: {actions_ar}"
+            f"تم تطبيق سياسة الأدمن للاحتواء بنجاح للمستخدم [{target_identity}]: {actions_ar}"
             if overall == "success"
             else f"تم تنفيذ بعض إجراءات الاحتواء مع وجود تنبيهات للمستخدم [{target_identity}]"
         )
         summary_en = (
-            f"Automated containment executed successfully for [{target_identity}]."
+            f"Admin containment policy executed successfully for [{target_identity}]."
             if overall == "success"
-            else f"Automated containment completed with partial alerts for [{target_identity}]."
+            else f"Containment completed with partial alerts for [{target_identity}]."
         )
 
         return ContainmentReport(
@@ -210,6 +350,7 @@ class EnterpriseIdentityService:
             overall_status=overall,
             summary_ar=summary_ar,
             summary_en=summary_en,
+            applied_policy=self.policy.to_dict(),
         )
 
     async def _dispatch_action(
@@ -274,7 +415,6 @@ class EnterpriseIdentityService:
     # Microsoft Entra ID (Graph API) Implementation
     # -------------------------------------------------------------------------
     async def _get_entra_token(self) -> str | None:
-        """Acquire OAuth2 access token for Microsoft Graph API."""
         tenant_id = self.settings.entra_tenant_id
         client_id = self.settings.entra_client_id
         client_secret = self.settings.entra_client_secret
@@ -386,7 +526,7 @@ class EnterpriseIdentityService:
                     action=ContainmentAction.QUARANTINE_ACCOUNT.value,
                     provider="Microsoft Entra ID",
                     status=ContainmentStatus.SUCCESS,
-                    message_ar="تم تجميد وتعطيل حساب الموظف مؤقتاً لحمايته.",
+                    message_ar="تم تجميد وتعطيل حساب الموظف مؤقتاً في Entra ID.",
                     message_en="Employee account disabled (quarantined) via Entra ID.",
                     details={"http_status": resp.status_code},
                 )
@@ -414,7 +554,6 @@ class EnterpriseIdentityService:
                 message_en="Failed Graph API authentication.",
             )
 
-        # In Graph API, add member via POST /groups/{id}/members/$ref
         url = f"https://graph.microsoft.com/v1.0/groups/{group_id}/members/$ref"
         user_url = f"https://graph.microsoft.com/v1.0/directoryObjects/{target_identity}"
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
@@ -427,9 +566,9 @@ class EnterpriseIdentityService:
                     action=ContainmentAction.ENFORCE_HIGH_RISK_POLICY.value,
                     provider="Microsoft Entra ID",
                     status=ContainmentStatus.SUCCESS,
-                    message_ar="تم ضم المستخدم لمجموعة الخطر العالي وفرض سياسة MFA المشروطة.",
+                    message_ar=f"تم ضم المستخدم لمجموعة الخطر العالي وفرض سياسة {self.policy.password_policy.generate_description_ar()}.",
                     message_en="User added to high-risk group; Conditional Access MFA enforced.",
-                    details={"group_id": group_id},
+                    details={"group_id": group_id, "policy": self.policy.password_policy.to_dict()},
                 )
             return ActionResult(
                 action=ContainmentAction.ENFORCE_HIGH_RISK_POLICY.value,
@@ -444,7 +583,6 @@ class EnterpriseIdentityService:
     # On-Premises Active Directory (PowerShell / LDAP) Implementation
     # -------------------------------------------------------------------------
     async def _ad_force_password_reset(self, target_identity: str) -> ActionResult:
-        """Run Set-ADUser -Identity ... -ChangePasswordAtLogon $true via PowerShell."""
         if platform.system() != "Windows":
             return self._simulate_force_password_reset(target_identity)
 
@@ -511,10 +649,11 @@ class EnterpriseIdentityService:
 
     async def _ad_enforce_strict_group(self, target_identity: str) -> ActionResult:
         group_name = self.settings.ad_strict_password_group
+        fgpp_cmd = self.policy.password_policy.generate_powershell_fgpp()
         if platform.system() != "Windows":
             return self._simulate_enforce_high_risk_group(target_identity)
 
-        script = f"Add-ADGroupMember -Identity '{group_name}' -Members '{target_identity}'"
+        script = f"{fgpp_cmd}; Add-ADGroupMember -Identity '{group_name}' -Members '{target_identity}'"
         proc = await asyncio.create_subprocess_exec(
             "powershell.exe",
             "-NoProfile",
@@ -528,18 +667,22 @@ class EnterpriseIdentityService:
         if proc.returncode == 0:
             return ActionResult(
                 action=ContainmentAction.ENFORCE_HIGH_RISK_POLICY.value,
-                provider="Active Directory (On-Premises)",
+                provider="Active Directory (Fine-Grained Password Policy)",
                 status=ContainmentStatus.SUCCESS,
-                message_ar=f"تم ضم الموظف للمجموعة ذات سياسة كلمات المرور الصارمة [{group_name}].",
-                message_en=f"User enrolled into strict password policy group [{group_name}].",
-                details={"group": group_name},
+                message_ar=f"تم تطبيق سياسة الأدمن الصارمة ({self.policy.password_policy.generate_description_ar()}) وإلحاق الموظف بالمجموعة [{group_name}].",
+                message_en=f"Fine-Grained Password Policy ({self.policy.password_policy.min_length} chars) applied to [{group_name}].",
+                details={
+                    "group": group_name,
+                    "powershell_command": fgpp_cmd,
+                    "policy": self.policy.password_policy.to_dict(),
+                },
             )
         return ActionResult(
             action=ContainmentAction.ENFORCE_HIGH_RISK_POLICY.value,
-            provider="Active Directory (On-Premises)",
+            provider="Active Directory (Fine-Grained Password Policy)",
             status=ContainmentStatus.FAILED,
-            message_ar=f"فشل ضم الموظف للمجموعة [{group_name}].",
-            message_en=f"Add-ADGroupMember failed: {stderr.decode(errors='ignore')}",
+            message_ar=f"فشل تطبيق سياسة كلمة المرور في الدليل النشط.",
+            message_en=f"AD policy command failed: {stderr.decode(errors='ignore')}",
         )
 
     # -------------------------------------------------------------------------
@@ -565,12 +708,9 @@ class EnterpriseIdentityService:
             "mitre_technique": "T1091 (Replication Through Removable Media)"
             if "usb" in breach_type.lower()
             else "T1566 (Phishing)",
-            "severity": "HIGH",
-            "containment_triggers": [
-                "REVOKE_ACTIVE_SESSIONS",
-                "FORCE_PASSWORD_RESET",
-                "STEPUP_MFA",
-            ],
+            "severity": "CRITICAL" if "badusb" in breach_type.lower() else "HIGH",
+            "admin_remediation_policy": self.policy.to_dict(),
+            "containment_triggers": self.policy.resolve_active_actions(),
             "context": context,
         }
 
@@ -637,26 +777,29 @@ class EnterpriseIdentityService:
             action=ContainmentAction.QUARANTINE_ACCOUNT.value,
             provider="Active Directory Security Module",
             status=ContainmentStatus.SUCCESS,
-            message_ar="[تم التطبيق الآلي] تم عزل الحساب وتعليقه مؤقتاً لحين انتهاء التحقيق الأمني.",
-            message_en="[Automated Action] Account placed under security quarantine.",
+            message_ar="[قرار الأدمن: تعليق فوري] تم عزل الحساب وتعليقه مؤقتاً لحين انتهاء التحقيق الأمني (Disable-ADAccount).",
+            message_en="[Admin Action] Account placed under temporary security quarantine (Disable-ADAccount).",
             details={
                 "target": target_identity,
-                "quarantine_duration": "indefinite_until_review",
+                "action": "Disable-ADAccount",
+                "quarantine_duration": "indefinite_until_admin_review",
             },
         )
 
     def _simulate_enforce_high_risk_group(self, target_identity: str) -> ActionResult:
         group_name = self.settings.ad_strict_password_group
+        pp = self.policy.password_policy
         return ActionResult(
             action=ContainmentAction.ENFORCE_HIGH_RISK_POLICY.value,
             provider="Active Directory (Fine-Grained Password Policy)",
             status=ContainmentStatus.SUCCESS,
-            message_ar=f"[تم التطبيق الآلي] تم ضم الموظف لمجموعة [{group_name}] وتفعيل سياسة كلمة مرور 16 خانة مع MFA.",
-            message_en=f"[Automated Action] Enrolled into [{group_name}] with 16-char FGPP & MFA.",
+            message_ar=f"[قرار الأدمن: تعقيد مخصص] تم إلحاق الموظف بمجموعة [{group_name}] وتفعيل سياسة كلمة مرور صارمة: {pp.generate_description_ar()}.",
+            message_en=f"[Admin Policy] Enrolled into [{group_name}] with custom FGPP ({pp.min_length} chars, complexity enforced).",
             details={
                 "target": target_identity,
                 "security_group": group_name,
-                "policy_enforced": "Fine-Grained Password Policy (Min 16 chars, complexity, lockout)",
+                "policy_enforced": pp.to_dict(),
+                "powershell_command": pp.generate_powershell_fgpp(),
             },
         )
 
@@ -671,14 +814,15 @@ class EnterpriseIdentityService:
             action=ContainmentAction.NOTIFY_SOAR_WEBHOOK.value,
             provider="Enterprise SOAR Dispatcher (CEF/JSON)",
             status=ContainmentStatus.SUCCESS,
-            message_ar="[تم البث بنجاح] تم إرسال تذكرة أمنية فورية لفريق الـ SOC ومنصة التحليل الأمني.",
-            message_en="[Automated Action] Security incident telemetry dispatched to SOC playbook.",
+            message_ar="[تم البث بنجاح] تم إرسال تذكرة أمنية فورية لفريق الـ SOC ومنصة التحليل الأمني مع سياسة الأدمن المعيارية.",
+            message_en="[Automated Action] Security incident telemetry dispatched to SOC playbook with active policy.",
             details={
                 "event_id": str(uuid.uuid4()),
                 "target": target_identity,
                 "vector": breach_type,
-                "severity": "CRITICAL",
+                "severity": "CRITICAL" if "badusb" in breach_type.lower() else "HIGH",
                 "recommended_soc_playbook": "IR-HUMINT-04-CONTAINMENT",
+                "admin_policy": self.policy.to_dict(),
             },
         )
 

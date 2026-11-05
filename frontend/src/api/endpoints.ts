@@ -650,6 +650,16 @@ export const diagnosticsApi = {
 
 
 export const containmentApi = {
+  async getPolicy(): Promise<any> {
+    const { data } = await http.get('/api/v1/containment/policy');
+    return data;
+  },
+
+  async updatePolicy(payload: any): Promise<any> {
+    const { data } = await http.post('/api/v1/containment/policy', payload);
+    return data;
+  },
+
   async getStatus(): Promise<{
     containment_enabled: boolean;
     entra_id: { configured: boolean; tenant_id: string; client_id: string; high_risk_group_id: string };
@@ -667,6 +677,7 @@ export const containmentApi = {
     campaign_id?: string;
     tracking_uuid?: string;
     actions?: string[];
+    policy_override?: any;
   }): Promise<{
     target_identity: string;
     breach_type: string;
