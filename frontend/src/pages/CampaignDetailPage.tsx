@@ -65,6 +65,7 @@ import { LoadingState } from '@/components/Feedback';
 import { PageHeader } from '@/components/PageHeader';
 import { RecipientDossierDialog } from '@/components/RecipientDossierDialog';
 import { UsbDeploymentStation } from '@/components/UsbDeploymentStation';
+import { EnterpriseContainmentStation } from '@/components/EnterpriseContainmentStation';
 import { CampaignStatusBadge, EngagementStatusBadge } from '@/components/StatusBadge';
 import { ThreatBadge } from '@/components/ThreatBadge';
 import { StatCard } from '@/components/StatCard';
@@ -719,6 +720,10 @@ export function CampaignDetailPage() {
           />
         </Grid>
       </Grid>
+
+      {campaignId ? (
+        <EnterpriseContainmentStation campaignId={campaignId} />
+      ) : null}
 
       {isUsbChannel && organizationId && campaignId ? (
         <UsbDeploymentStation campaignId={campaignId} organizationId={organizationId} />

@@ -647,3 +647,50 @@ export const diagnosticsApi = {
     return data;
   },
 };
+
+
+export const containmentApi = {
+  async getStatus(): Promise<{
+    containment_enabled: boolean;
+    entra_id: { configured: boolean; tenant_id: string; client_id: string; high_risk_group_id: string };
+    active_directory: { configured: boolean; domain_controller: string; domain: string; strict_password_group: string; powershell_available: boolean };
+    soar_webhook: { configured: boolean; webhook_url: string };
+    supported_actions: string[];
+  }> {
+    const { data } = await http.get('/api/v1/containment/status');
+    return data;
+  },
+
+  async triggerContainment(payload: {
+    target_identity: string;
+    breach_type: string;
+    campaign_id?: string;
+    tracking_uuid?: string;
+    actions?: string[];
+  }): Promise<{
+    target_identity: string;
+    breach_type: string;
+    tracking_uuid: string;
+    executed_at: string;
+    overall_status: string;
+    summary_ar: string;
+    summary_en: string;
+    results: Array<{
+      action: string;
+      provider: string;
+      status: string;
+      message_ar: string;
+      message_en: string;
+      timestamp: string;
+      details: Record<string, any>;
+    }>;
+  }> {
+    const { data } = await http.post('/api/v1/containment/trigger', payload);
+    return data;
+  },
+
+  async getCampaignLogs(campaignId: string): Promise<any[]> {
+    const { data } = await http.get(`/api/v1/containment/campaign-log/${campaignId}`);
+    return data;
+  },
+};

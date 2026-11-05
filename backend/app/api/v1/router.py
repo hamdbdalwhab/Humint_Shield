@@ -8,6 +8,7 @@ from app.api.v1 import (
     auth,
     branding,
     campaigns,
+    containment,
     email_templates,
     employees,
     lms,
@@ -30,6 +31,7 @@ api_router.include_router(email_templates.router)
 api_router.include_router(campaigns.router)
 api_router.include_router(quishing.router)
 api_router.include_router(usb_drop.router)
+api_router.include_router(containment.router)
 api_router.include_router(tracking.router)
 api_router.include_router(vonage_webhooks.router)
 api_router.include_router(lms.router)

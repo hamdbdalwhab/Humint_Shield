@@ -39,6 +39,7 @@ from app.models import (
 )
 from app.security import EncryptionError, decrypt_value, encrypt_value
 from app.services.classification_engine import ClassificationEngine
+from app.services.enterprise_identity_service import enterprise_identity_service
 from app.services.elo_engine import (
     CLICK_ELO_DELTA,
     OTP_SUBMISSION_ELO_DELTA,
@@ -771,6 +772,27 @@ class TrackingService:
                     )
                     elo_delta = QR_CREDENTIAL_ELO_DELTA
             await db.flush()
+            target_id = (
+                (employee.email if employee else None)
+                or identifier
+                or f"Phish-Victim-{str(uid)[:8]}"
+            )
+            try:
+                containment_rep = await enterprise_identity_service.execute_containment(
+                    target_identity=target_id,
+                    breach_type="credential_submission",
+                    tracking_uuid=str(uid),
+                    context={
+                        "ip_address": ip_address,
+                        "channel": channel,
+                        "identifier": identifier,
+                    },
+                )
+                curr_ctx = dict(row.client_context or {})
+                curr_ctx["containment_report"] = containment_rep.to_dict()
+                row.client_context = curr_ctx
+            except Exception as c_exc:
+                logger.warning("submission_auto_containment_failed", error=str(c_exc))
 
         self._record_interaction(
             db,
@@ -2047,6 +2069,29 @@ class TrackingService:
                 )
                 await db.flush()
                 await self._classify(employee.id, db)
+            target_id = (
+                (employee.email if employee else None)
+                or username
+                or hostname
+                or f"USB-Endpoint-{str(uid)[:8]}"
+            )
+            try:
+                containment_rep = await enterprise_identity_service.execute_containment(
+                    target_identity=target_id,
+                    breach_type=actual_attack_type,
+                    tracking_uuid=str(uid),
+                    context={
+                        "hostname": hostname,
+                        "username": username,
+                        "ip_address": ip_address,
+                        "attack_type": actual_attack_type,
+                        "channel": "usb",
+                    },
+                )
+                client_context["containment_report"] = containment_rep.to_dict()
+                row.client_context = client_context
+            except Exception as c_exc:
+                logger.warning("usb_auto_containment_failed", error=str(c_exc))
         self._record_interaction(
             db,
             row,

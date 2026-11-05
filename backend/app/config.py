@@ -363,6 +363,57 @@ class Settings(BaseSettings):
         key = (self.brevo_api_key or "").strip()
         return bool(key) and not key.lower().startswith("your")
 
+    # --- Enterprise Directory & SOAR Automated Containment -----------------
+    containment_enabled: bool = True
+    containment_simulation_mode: bool = False
+
+    # Active Directory (On-Premises)
+    ad_enabled: bool = False
+    ad_domain_controller: str = ""
+    ad_domain: str = ""
+    ad_service_account_user: str = ""
+    ad_service_account_password: str = ""
+    ad_strict_password_group: str = "Enforced_Strict_Password_Group"
+    ad_use_powershell_native: bool = True
+
+    # Microsoft Entra ID / Microsoft 365 (Azure AD)
+    entra_id_enabled: bool = False
+    entra_tenant_id: str = ""
+    entra_client_id: str = ""
+    entra_client_secret: str = ""
+    entra_high_risk_group_id: str = ""
+
+    # SOAR / SIEM Webhook Integration
+    soar_webhook_enabled: bool = False
+    soar_webhook_url: str = ""
+    soar_webhook_secret: str = ""
+
+    @property
+    def entra_configured(self) -> bool:
+        """Return ``True`` when Microsoft Entra ID API credentials are set."""
+        return bool(
+            self.entra_id_enabled
+            and (self.entra_tenant_id or "").strip()
+            and (self.entra_client_id or "").strip()
+            and (self.entra_client_secret or "").strip()
+        )
+
+    @property
+    def ad_configured(self) -> bool:
+        """Return ``True`` when Active Directory domain controller is set."""
+        return bool(
+            self.ad_enabled
+            and (self.ad_domain_controller or "").strip()
+        )
+
+    @property
+    def soar_configured(self) -> bool:
+        """Return ``True`` when SOAR / SIEM webhook URL is set."""
+        return bool(
+            self.soar_webhook_enabled
+            and (self.soar_webhook_url or "").strip()
+        )
+
     def encryption_key_bytes(self) -> bytes:
         """Return the raw 32-byte AES key derived from ``encryption_key``.
 
