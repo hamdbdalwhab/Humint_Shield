@@ -20,7 +20,7 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import EmailCampaign, EmailTemplate, EmailTracking, HumanAsset, TrainingInteraction
@@ -406,7 +406,10 @@ class InteractionReportService:
                 .outerjoin(EmailTemplate, EmailTemplate.id == EmailTracking.template_id)
                 .where(
                     EmailTracking.campaign_id == campaign.id,
-                    EmailTracking.employee_id == employee.id,
+                    or_(
+                        EmailTracking.employee_id == employee.id,
+                        EmailTracking.id == employee.id,
+                    ),
                 )
             )
         ).first()

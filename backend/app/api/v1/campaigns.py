@@ -784,9 +784,50 @@ async def campaign_recipient(
     Raises:
         HTTPException: 404 when the campaign or the recipient is unknown.
     """
+    from datetime import datetime, timezone
+    from decimal import Decimal
+
     campaign = await _get_campaign(db, org_id, campaign_id)
     employee = await db.get(HumanAsset, employee_id)
-    if employee is None or employee.organization_id != org_id:
+    if employee is None:
+        tracking = await db.get(EmailTracking, employee_id)
+        if tracking is None:
+            tracking = await db.scalar(
+                select(EmailTracking).where(
+                    EmailTracking.campaign_id == campaign.id,
+                    EmailTracking.tracking_uuid == employee_id,
+                )
+            )
+        if tracking is not None and tracking.campaign_id == campaign.id:
+            if tracking.employee_id:
+                employee = await db.get(HumanAsset, tracking.employee_id)
+            if employee is None:
+                now_ts = datetime.now(timezone.utc)
+                employee = HumanAsset(
+                    id=tracking.id,
+                    organization_id=org_id,
+                    email=tracking.submitted_email or "unknown@qr.visitor",
+                    first_name=tracking.submitted_username or "زائر QR",
+                    last_name="(غير مسجل)",
+                    department="QR Capture",
+                    job_title="Mobile / External",
+                    access_level=1,
+                    immunity_score=Decimal("0.0"),
+                    elo_score=1000,
+                    behavioral_category="unaware",
+                    total_tests_received=1,
+                    total_clicks=1,
+                    total_reports=0,
+                    total_credential_submissions=1 if tracking.submitted_at else 0,
+                    total_ignores=0,
+                    is_active=True,
+                    is_on_leave=False,
+                    requires_mandatory_training=False,
+                    under_enhanced_monitoring=False,
+                    created_at=tracking.created_at or now_ts,
+                    updated_at=tracking.submitted_at or now_ts,
+                )
+    if employee is None or (hasattr(employee, "organization_id") and employee.organization_id != org_id):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
     service = InteractionReportService()
     try:
