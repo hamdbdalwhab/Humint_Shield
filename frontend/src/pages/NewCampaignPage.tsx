@@ -644,7 +644,7 @@ export function NewCampaignPage() {
                   isQrChannel
                     ? 'حملة QR لا ترسل رسائل: بعد الإطلاق تُنزّل ملصقاً واحداً (PDF) يحمل رمز QR عاماً للحملة. اطبع نسخة واحدة وعلّقها في الموقع المستهدف. القالب يُستخدم كمرجع للطُعم فقط.'
                     : isUsbChannel
-                      ? 'حملة USB لا ترسل رسائل: بعد الإطلاق تُنزّل ملف HTML آمن باسم الرواتب_السرية.html، وتنسخه على فلاشات مصرّح بها. كل ملف يحمل رابط تتبع فريداً. القالب يُستخدم كمرجع للسيناريو فقط.'
+                      ? 'حملة USB الفيزيائية: اختر سيناريو الطُعم وموقع الإسقاط، ثم اضغط إطلاق الحملة لتجهيز وحرق الفلاشات مباشرة عبر محطة التجهيز الميدانية.'
                       : isVishingChannel || isPretextingChannel
                         ? 'هذه قناة محاكاة يدوية: لا تُرسل مكالمة أو رسالة حقيقية. بعد الإطلاق تنسخ رابط المحاكاة الفريد لكل موظف من صفحة الحملة. القالب يُستخدم كمرجع للسيناريو فقط.'
                         : 'البريد الإلكتروني يُرسل عبر Brevo، وSMS وواتساب يُرسلان عبر Vonage. أرقام الهاتف يجب أن تكون بصيغة E.164 مثل +966500000000.'
@@ -658,15 +658,7 @@ export function NewCampaignPage() {
                 <MenuItem value="pretexting">محادثة CEO — Pretexting</MenuItem>
                 <MenuItem value="usb">فلاشة USB — HTML/PDF توعوي</MenuItem>
               </TextField>
-              {isUsbChannel ? (
-                <Alert severity="info">
-                  سيتم إنشاء ملف HTML قياسي وآمن باسم{' '}
-                  <strong>الرواتب_السرية.html</strong> يعرض تحذيراً أحمر فور فتحه ويسجل
-                  الحدث <span dir="ltr" className="mc-mono">usb_opened</span>. يمكنك أيضاً
-                  تنزيل نسخة PDF من صفحة الحملة. لا يحتوي أي ملف على برامج أو أوامر تنفيذية،
-                  ولا يُشغّل أي شيء تلقائياً. راجع <strong>README_USB.md</strong> قبل التوزيع.
-                </Alert>
-              ) : null}
+
               {isVishingChannel || isPretextingChannel ? (
                 <Alert severity="info">
                   {isVishingChannel
@@ -1279,21 +1271,43 @@ export function NewCampaignPage() {
                   <Typography variant="body2">
                     <strong>القناة:</strong> {CHANNEL_LABELS[channel]}
                   </Typography>
-                  <Typography variant="body2">
-                    <strong>القالب:</strong> {selectedTemplate?.name ?? '—'}
-                  </Typography>
-                  <Typography variant="body2">
-                    <strong>الموضوع:</strong> {selectedTemplate?.subject ?? '—'}
-                  </Typography>
-                  <Typography variant="body2">
-                    <strong>الصعوبة:</strong> {difficulty} — {difficultyLabel(difficulty)}
-                  </Typography>
-                  <Typography variant="body2">
-                    <strong>المستهدفون:</strong>{' '}
-                    {isQrChannel
-                      ? 'طُعم عام (Generic Lure — أي شخص يقوم بمسح الرمز)'
-                      : `${selected.size} موظفاً`}
-                  </Typography>
+                  {isUsbChannel ? (
+                    <>
+                      <Typography variant="body2">
+                        <strong>طبيعة الحملة:</strong> محاكاة فيزيائية ميدانية (Physical USB Baiting)
+                      </Typography>
+                      <Typography variant="body2">
+                        <strong>سيناريو الطُعم:</strong> {USB_SCENARIOS.find((s) => s.id === usbScenario)?.title}
+                      </Typography>
+                      <Typography variant="body2">
+                        <strong>موقع الإسقاط الفيزيائي:</strong> {usbDropLocation}
+                      </Typography>
+                      <Typography variant="body2">
+                        <strong>تسمية الفلاشة (Volume Label):</strong> {usbVolumeLabel}
+                      </Typography>
+                      <Typography variant="body2">
+                        <strong>المستهدفون:</strong> طُعم فيزيائي عام (أي موظف يلتقط الفلاشة ويقوم بتشغيلها)
+                      </Typography>
+                    </>
+                  ) : (
+                    <>
+                      <Typography variant="body2">
+                        <strong>القالب:</strong> {selectedTemplate?.name ?? '—'}
+                      </Typography>
+                      <Typography variant="body2">
+                        <strong>الموضوع:</strong> {selectedTemplate?.subject ?? '—'}
+                      </Typography>
+                      <Typography variant="body2">
+                        <strong>الصعوبة:</strong> {difficulty} — {difficultyLabel(difficulty)}
+                      </Typography>
+                      <Typography variant="body2">
+                        <strong>المستهدفون:</strong>{' '}
+                        {isQrChannel
+                          ? 'طُعم عام (Generic Lure — أي شخص يقوم بمسح الرمز)'
+                          : `${selected.size} موظفاً`}
+                      </Typography>
+                    </>
+                  )}
                   <Typography variant="body2">
                     <strong>إعادة الاختبار التلقائي:</strong>{' '}
                     {autoRetestFailed ? 'مفعل (بعد 72 ساعة للموظفين غير المجتازين)' : 'معطل'}
@@ -1318,6 +1332,22 @@ export function NewCampaignPage() {
                   </Typography>
                   <Typography variant="body2" color="text.secondary" sx={{ lineHeight: 1.7 }}>
                     لا تتطلب هذه الحملة تحديد موظفين مسبقاً. فور النقر على زر «إطلاق الحملة وتجهيز الملصق»، سيتم تفعيل الحملة وتجهيز ملصق PDF واحد عام يحمل رمز QR الثابت للحملة (بدون أسماء موظفين). ستتمكن من تحميله فوراً وطباعته وتعليقه في الموقع المطلوب.
+                  </Typography>
+                </Box>
+              ) : isUsbChannel ? (
+                <Box
+                  sx={{
+                    p: 2.5,
+                    borderRadius: 2,
+                    bgcolor: 'rgba(0, 240, 255, 0.05)',
+                    border: '1px solid rgba(0, 240, 255, 0.3)',
+                  }}
+                >
+                  <Typography variant="subtitle1" sx={{ fontWeight: 800, color: 'primary.main', mb: 1 }}>
+                    حملة طُعم فيزيائي عام (Physical USB Baiting):
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary" sx={{ lineHeight: 1.8 }}>
+                    هذه الحملة لا تتطلب اختيار موظفين مسبقاً؛ بل تعتمد على ترك فلاشات توعية مجهزة في موقع الإسقاط المحدد (<strong>{usbDropLocation}</strong>). فور النقر على زر «إطلاق الحملة والذهاب لمحطة التجهيز»، ستنتقل مباشرة إلى <strong>محطة تجهيز وحرق وسائط الـ USB</strong> لنسخ ملفات السيناريو بنقرة واحدة ورصد أي جهاز مخترق في الرادار المباشر فورياً.
                   </Typography>
                 </Box>
               ) : (
@@ -1507,7 +1537,7 @@ export function NewCampaignPage() {
                       }
                       disabled={
                         launchMutation.isPending ||
-                        (!isQrChannel && selected.size === 0) ||
+                        (!isQrChannel && !isUsbChannel && selected.size === 0) ||
                         preflightBlocked
                       }
                       onClick={() => setConfirmOpen(true)}
@@ -1544,7 +1574,7 @@ export function NewCampaignPage() {
           isQrChannel
             ? 'سيتم إطلاق حملة QR كطُعم عام وتجهيز ملصق PDF جاهز للطباعة بدقة عالية. هل تريد المتابعة؟'
             : isUsbChannel
-              ? `سيتم تجهيز ${selected.size} ملف USB آمن. عند التوزيع يمكنك تنزيل الرواتب_السرية.html لكل موظف أو حزمة ZIP، مع نسخة PDF اختيارية. لا تُرسل أي رسائل ولا يُنفّذ أي برنامج. بعد الإطلاق نزّل الملف من صفحة الحملة. هل تريد المتابعة؟`
+              ? `سيتم إطلاق حملة الـ USB الميدانية وتوجيهك مباشرة إلى محطة التجهيز المباشرة لنشر ملفات المحاكاة على الفلاشة ورصد الأجهزة في الرادار. هل تريد المتابعة؟`
               : isVishingChannel || isPretextingChannel
                 ? `سيتم تجهيز ${selected.size} رابط محاكاة فريد. لا تُجرى مكالمة أو محادثة حقيقية ولا تُرسل أي رسالة. بعد الإطلاق افتح صفحة الحملة لعرض الروابط وتعليمات التسليم. هل تريد المتابعة؟`
                 : `سيتم إرسال ${selected.size} ${channelNoun} حقيقية عبر ${providerName} إلى الموظفين المحددين. هل تريد المتابعة؟`
@@ -1553,7 +1583,7 @@ export function NewCampaignPage() {
           isQrChannel
             ? 'إطلاق وتجهيز الملصق'
             : isUsbChannel
-              ? 'تجهيز مستند USB'
+              ? 'إطلاق والذهاب لمحطة التجهيز'
               : isVishingChannel || isPretextingChannel
                 ? 'تجهيز روابط المحاكاة'
                 : 'إرسال الرسائل'
