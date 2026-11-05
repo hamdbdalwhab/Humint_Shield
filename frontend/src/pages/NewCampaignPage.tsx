@@ -1397,14 +1397,7 @@ export function NewCampaignPage() {
                   <span dir="ltr" className="mc-mono">credential_submitted</span> وتُخصم 25
                   نقطة Elo مرة واحدة. كلمة المرور لا تُخزَّن أبداً.
                 </Alert>
-              ) : isUsbChannel ? (
-                <Alert severity="info">
-                  قناة USB لا تستخدم مزوّد إرسال. سيتم إنشاء ملف HTML آمن باسم{' '}
-                  <strong>الرواتب_السرية.html</strong> يعرض تحذيراً أحمر فور فتحه ويسجّل{' '}
-                  <span dir="ltr" className="mc-mono">usb_opened</span> ويخصم 30 نقطة Elo مرة
-                  واحدة. يمكنك أيضاً تنزيل نسخة PDF من صفحة الحملة. لا يحتوي أي ملف على
-                  برنامج أو أمر تنفيذي.
-                </Alert>
+
               ) : isVishingChannel || isPretextingChannel ? (
                 <Alert severity="info">
                   {isVishingChannel
@@ -1497,15 +1490,7 @@ export function NewCampaignPage() {
                   {QR_LURES.find((lure) => lure.value === qrPretext)?.label}» لصالح{' '}
                   <strong>{qrCompany || 'الشركة'}</strong>. لا يتطلب تحديد موظفين مسبقاً. الملصق يحمل رمزاً ثابتاً يربط برادار الحملة؛ المسح يسجل في الرادار فوراً، وأول إدخال للبيانات يطابق الموظف ويخصم 25 نقطة Elo. كلمة المرور لا تُخزَّن أبداً.
                 </Alert>
-              ) : isUsbChannel ? (
-                <Alert severity="info">
-                  سيتم تجهيز <strong>{selected.size} ملف USB آمن</strong> باسم{' '}
-                  <strong>الرواتب_السرية.html</strong> (وعند تعدد المستهدفين يُنزَّل ZIP بمجلد
-                  لكل موظف). عند أول فتح يسجّل{' '}
-                  <span dir="ltr" className="mc-mono">usb_opened</span> ويخصم 30 نقطة Elo ثم
-                  يعرض التحذير وزر التدريب. يتوفر ملف PDF احتياطي من صفحة الحملة بعد الإطلاق، ولا
-                  توزّع أي ملف إلا ضمن تمرين مصرّح به.
-                </Alert>
+
               ) : (
                 <Alert severity="warning">
                   سيتم إرسال <strong>{selected.size} {channelNoun} حقيقية</strong> عبر {providerName} من

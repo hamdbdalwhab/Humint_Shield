@@ -130,12 +130,34 @@ class CampaignLauncher:
         target_ids = [self._coerce_uuid(t) for t in (campaign.target_employee_ids or [])]
         target_ids = [t for t in target_ids if t is not None]
         if not target_ids:
-            if channel == "qr":
+            if channel in ("qr", "usb"):
                 campaign.status = "active"
                 campaign.launched_at = _now()
                 campaign.total_targets = 0
                 campaign.sent_count = 1
                 campaign.failed_count = 0
+
+                # Ensure at least one generic tracking row exists for USB physical drop
+                if channel == "usb":
+                    from app.models import EmailTracking
+                    import uuid
+                    existing_tracking = (
+                        await db.execute(
+                            select(EmailTracking)
+                            .where(EmailTracking.campaign_id == campaign.id, EmailTracking.channel == "usb")
+                            .limit(1)
+                        )
+                    ).scalar_one_or_none()
+                    if existing_tracking is None:
+                        generic_tracking = EmailTracking(
+                            campaign_id=campaign.id,
+                            employee_id=None,
+                            channel="usb",
+                            tracking_uuid=uuid.uuid4(),
+                        )
+                        db.add(generic_tracking)
+                        await db.flush()
+
                 await db.commit()
                 return {
                     "campaign_id": cid,
