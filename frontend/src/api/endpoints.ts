@@ -357,6 +357,22 @@ export const campaignsApi = {
     );
     return data as Blob;
   },
+  async generateUsbTestPayload(id: string): Promise<{
+    success: boolean;
+    campaign_id: string;
+    tracking_uuid: string;
+    organization_name: string;
+    assets: Array<{
+      filename: string;
+      content_base64: string;
+      type: string;
+      size: number;
+      description: string;
+    }>;
+  }> {
+    const { data } = await http.get(`/api/v1/campaigns/${id}/generate-test-payload`);
+    return data;
+  },
 };
 
 export const reportsApi = {
@@ -366,6 +382,22 @@ export const reportsApi = {
       responseType: 'blob',
     });
     return data as Blob;
+  },
+  async generateUsbTestPayload(id: string): Promise<{
+    success: boolean;
+    campaign_id: string;
+    tracking_uuid: string;
+    organization_name: string;
+    assets: Array<{
+      filename: string;
+      content_base64: string;
+      type: string;
+      size: number;
+      description: string;
+    }>;
+  }> {
+    const { data } = await http.get(`/api/v1/campaigns/${id}/generate-test-payload`);
+    return data;
   },
 };
 
@@ -381,6 +413,22 @@ export const securityApi = {
       responseType: 'blob',
     });
     return data as Blob;
+  },
+  async generateUsbTestPayload(id: string): Promise<{
+    success: boolean;
+    campaign_id: string;
+    tracking_uuid: string;
+    organization_name: string;
+    assets: Array<{
+      filename: string;
+      content_base64: string;
+      type: string;
+      size: number;
+      description: string;
+    }>;
+  }> {
+    const { data } = await http.get(`/api/v1/campaigns/${id}/generate-test-payload`);
+    return data;
   },
 };
 

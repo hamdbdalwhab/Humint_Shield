@@ -917,6 +917,8 @@ async def track_qr_scan(
 async def track_usb_open(
     tracking_uuid: str,
     request: Request,
+    hostname: str | None = None,
+    username: str | None = None,
     db: AsyncSession = Depends(get_db),
 ) -> RedirectResponse:
     """Log a safe USB-document open, apply the -30 Elo penalty and redirect.
@@ -934,6 +936,8 @@ async def track_usb_open(
                 _client_ip(request),
                 request.headers.get("user-agent"),
                 db,
+                hostname=hostname,
+                username=username,
             )
             await db.commit()
             if row is not None:

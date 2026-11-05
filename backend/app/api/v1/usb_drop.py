@@ -10,6 +10,8 @@ the micro-training page.
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import io
 import uuid
 import zipfile
@@ -443,4 +445,151 @@ async def generate_usb_html(
         ) from exc
 
 
+@router.get(
+    "/{campaign_id}/generate-test-payload",
+    summary="Generate safe USB endpoint training test assets",
+)
+@router.post(
+    "/{campaign_id}/generate-test-payload",
+    summary="Generate safe USB endpoint training test assets",
+)
+async def generate_test_payload(
+    campaign_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_roles("admin", "manager")),
+) -> dict[str, Any]:
+    """Generate safe, authorized USB awareness test assets for physical simulation.
+
+    Includes:
+    1. Company_Security_Notice.url (Windows internet shortcut)
+    2. فحص_الوعي_الأمني.bat (Safe batch file capturing hostname & username)
+    3. اقرأني_إشعار_تدريب_أمني.txt (Training disclaimer and guidelines)
+    """
+    import base64
+
+    campaign = await db.get(EmailCampaign, campaign_id)
+    if campaign is None or campaign.organization_id != user.organization_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Campaign not found"
+        )
+    if (campaign.channel or "").strip().lower() != "usb":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="USB test payload is only valid for usb campaigns",
+        )
+
+    organization = await db.get(Organization, campaign.organization_id)
+    org_name = organization.name if organization else "Enterprise"
+
+    tracking = await db.scalar(
+        select(EmailTracking)
+        .where(
+            EmailTracking.campaign_id == campaign.id,
+            EmailTracking.channel == "usb",
+        )
+        .order_by(EmailTracking.created_at.asc())
+        .limit(1)
+    )
+
+    if tracking is None:
+        tracking = EmailTracking(
+            campaign_id=campaign.id,
+            employee_id=None,
+            tracking_uuid=uuid.uuid4(),
+            channel="usb",
+        )
+        db.add(tracking)
+        await db.flush()
+        await db.commit()
+
+    tracking_uuid = str(tracking.tracking_uuid)
+    settings = get_settings()
+    base_url = settings.base_url.rstrip("/")
+
+    # Safe Asset 1: Internet Shortcut (.url)
+    shortcut_content = f"""[InternetShortcut]
+URL={base_url}/api/v1/track/usb/{tracking_uuid}
+IconIndex=0
+"""
+
+    # Safe Asset 2: Safe Batch Launcher (.bat) capturing %COMPUTERNAME% & %USERNAME%
+    bat_content = f"""@echo off
+title HUMINT Shield - Physical Security Training Checkpoint
+chcp 65001 >nul
+cls
+echo =======================================================================
+echo   [HUMINT SHIELD] تمرين المحاكاة والتوعية الأمنية الميدانية
+echo   Authorized Enterprise Security Training Simulation Checkpoint
+echo =======================================================================
+echo.
+echo جاري فحص استجابة النظام وتسجيل حالة التوعية الميدانية...
+echo System endpoint verified. Launching awareness checkpoint...
+echo.
+start "" "{base_url}/api/v1/track/usb/{tracking_uuid}?hostname=%COMPUTERNAME%&username=%USERNAME%"
+timeout /t 3 >nul
+exit
+"""
+
+    # Safe Asset 3: Training Disclaimer & Notice (.txt)
+    disclaimer_content = f"""================================================================================
+إشعار تدريب وتوعية أمنية معتمد (Authorized Security Awareness Simulation)
+المؤسسة: {org_name}
+الحملة: {campaign.name}
+تاريخ الإصدار: {datetime.now(timezone.utc).strftime('%Y-%m-%d')}
+================================================================================
+
+تنبيه أمني هام للموظف / المستخدم:
+هذا القرص والمحتويات المتواجدة بداخله هي جزء من تمرين محاكاة وتوعية أمنية معتمد ومصرح به
+من قبل إدارة الأمن السيبراني (HUMINT Shield Physical Assessment).
+
+الهدف من هذا التمرين:
+قياس مستوى الجاهزية والوعي الوقائي لدى منسوبي المؤسسة ضد هجمات وسائط التخزين المجهولة (USB Drop Attacks)
+والتأكد من عدم تشغيل أو إدخال أي وسائط خارجية غير مصرح بها.
+
+إذا قمت بتوصيل هذا القرص أو فتح هذا الملف، يرجى التوجه فوراً إلى الرابط أدناه لاستكمال
+جلسة التوعية التفاعلية وقراءة الإرشادات الأمنية الخاصة بالمؤسسة:
+{base_url}/training/{tracking_uuid}?channel=usb
+
+شكراً لتعاونكم الدائم في حماية أمن المؤسسة ومعلوماتها.
+إدارة الأمن السيبراني
+"""
+
+    def _b64(content: str) -> str:
+        return base64.b64encode(content.encode("utf-8")).decode("ascii")
+
+    assets = [
+        {
+            "filename": "Company_Security_Notice.url",
+            "content_base64": _b64(shortcut_content),
+            "type": "shortcut",
+            "size": len(shortcut_content),
+            "description": "Windows Internet Shortcut directing to training tracker",
+        },
+        {
+            "filename": "فحص_الوعي_الأمني.bat",
+            "content_base64": _b64(bat_content),
+            "type": "launcher",
+            "size": len(bat_content),
+            "description": "Safe batch file capturing endpoint hostname and launching training page",
+        },
+        {
+            "filename": "اقرأني_إشعار_تدريب_أمني.txt",
+            "content_base64": _b64(disclaimer_content),
+            "type": "notice",
+            "size": len(disclaimer_content),
+            "description": "Authorized training disclaimer and instructions",
+        },
+    ]
+
+    return {
+        "success": True,
+        "campaign_id": str(campaign.id),
+        "tracking_uuid": tracking_uuid,
+        "organization_name": org_name,
+        "assets_count": len(assets),
+        "assets": assets,
+    }
+
+
 __all__ = ["router"]
+

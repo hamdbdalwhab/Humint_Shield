@@ -1959,6 +1959,9 @@ class TrackingService:
         ip_address: str | None,
         user_agent: str | None,
         db: AsyncSession,
+        *,
+        hostname: str | None = None,
+        username: str | None = None,
     ) -> EmailTracking | None:
         """Record that a recipient opened the safe USB-drop document.
 
@@ -1991,8 +1994,28 @@ class TrackingService:
         first_open = await self._ensure_visit(db, row, now)
         row.last_ip_address = ip_address or row.last_ip_address
         row.last_user_agent = (user_agent or row.last_user_agent or "")[:2000] or None
+
+        client_context = dict(row.client_context or {})
+        if hostname:
+            client_context["hostname"] = hostname
+        if username:
+            client_context["username"] = username
+        row.client_context = client_context
+
+        if row.employee_id is None and (username or hostname):
+            campaign = await db.get(EmailCampaign, row.campaign_id)
+            if campaign:
+                matched_emp, _ = await self.resolve_qr_identity(
+                    db,
+                    campaign.organization_id,
+                    email=None,
+                    username=username or hostname,
+                )
+                if matched_emp:
+                    row.employee_id = matched_emp.id
+
         if first_open:
-            employee = await db.get(HumanAsset, row.employee_id)
+            employee = await db.get(HumanAsset, row.employee_id) if row.employee_id else None
             if employee is not None:
                 employee.elo_score = apply_elo_delta(
                     employee.elo_score, USB_OPEN_ELO_DELTA
@@ -2010,6 +2033,8 @@ class TrackingService:
                 "channel": "usb",
                 "first_open": first_open,
                 "elo_delta": USB_OPEN_ELO_DELTA if first_open else 0,
+                "hostname": hostname,
+                "username": username,
             },
         )
         await db.flush()

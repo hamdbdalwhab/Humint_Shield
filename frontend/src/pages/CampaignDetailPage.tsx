@@ -62,6 +62,7 @@ import { InteractionTimeline } from '@/components/InteractionTimeline';
 import { LoadingState } from '@/components/Feedback';
 import { PageHeader } from '@/components/PageHeader';
 import { RecipientDossierDialog } from '@/components/RecipientDossierDialog';
+import { UsbDeploymentStation } from '@/components/UsbDeploymentStation';
 import { CampaignStatusBadge, EngagementStatusBadge } from '@/components/StatusBadge';
 import { ThreatBadge } from '@/components/ThreatBadge';
 import { StatCard } from '@/components/StatCard';
@@ -649,6 +650,10 @@ export function CampaignDetailPage() {
           />
         </Grid>
       </Grid>
+
+      {isUsbChannel && organizationId && campaignId ? (
+        <UsbDeploymentStation campaignId={campaignId} organizationId={organizationId} />
+      ) : null}
 
       <Card>
         <Tabs
