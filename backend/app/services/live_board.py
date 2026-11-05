@@ -119,7 +119,7 @@ class LiveBoardService:
         rows = (
             await db.execute(
                 select(EmailTracking, HumanAsset)
-                .join(HumanAsset, HumanAsset.id == EmailTracking.employee_id)
+                .outerjoin(HumanAsset, HumanAsset.id == EmailTracking.employee_id)
                 .where(EmailTracking.campaign_id == campaign.id)
                 .order_by(EmailTracking.created_at.asc())
             )
@@ -137,7 +137,7 @@ class LiveBoardService:
             .all()
         )
 
-        names = {employee.id: employee.full_name for _, employee in rows}
+        names = {employee.id: employee.full_name for _, employee in rows if employee is not None}
         interaction_counts = Counter(item.tracking_id for item in interactions)
         last_interaction: dict[uuid.UUID, TrainingInteraction] = {}
         for item in interactions:
@@ -173,14 +173,26 @@ class LiveBoardService:
                 else tracking.last_user_agent
             )
 
+            emp_id = employee.id if employee is not None else tracking.id
+            emp_name = (
+                employee.full_name
+                if employee is not None
+                else (tracking.submitted_username or tracking.submitted_email or "Unknown QR Visitor")
+            )
+            emp_email = employee.email if employee is not None else (tracking.submitted_email or "—")
+            emp_dept = employee.department if employee is not None else "QR Capture"
+            emp_job = employee.job_title if employee is not None else "External / Mobile"
+            immunity = float(employee.immunity_score) if (employee is not None and employee.immunity_score is not None) else None
+            behavioral_cat = employee.behavioral_category if employee is not None else "unaware"
+
             recipients.append(
                 {
-                    "employee_id": employee.id,
+                    "employee_id": emp_id,
                     "tracking_id": tracking.id,
-                    "name": employee.full_name,
-                    "email": employee.email,
-                    "department": employee.department,
-                    "job_title": employee.job_title,
+                    "name": emp_name,
+                    "email": emp_email,
+                    "department": emp_dept,
+                    "job_title": emp_job,
                     "status": status,
                     "reported": bool(tracking.is_reported_safe)
                     or tracking.reported_at is not None,
@@ -211,10 +223,8 @@ class LiveBoardService:
                     "seconds_since_last_event": _seconds_between(last_at, now),
                     "last_ip_address": last_ip,
                     "last_user_agent": last_user_agent,
-                    "immunity_score": float(employee.immunity_score)
-                    if employee.immunity_score is not None
-                    else None,
-                    "behavioral_category": employee.behavioral_category,
+                    "immunity_score": immunity,
+                    "behavioral_category": behavioral_cat,
                     "password_length": tracking.password_length,
                     "submitted_identifier": tracking.submitted_identifier,
                 }

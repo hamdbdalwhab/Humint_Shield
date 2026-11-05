@@ -418,6 +418,27 @@ export function LiveBoardPage() {
         }
       />
 
+      
+      {campaign.channel === 'qr' ? (
+        <Alert
+          severity="info"
+          sx={{ mb: 2, alignItems: 'center', fontWeight: 600 }}
+          action={
+            <Button
+              color="primary"
+              variant="contained"
+              size="small"
+              onClick={() => navigate(`/campaigns/${campaign.id}`)}
+              sx={{ fontWeight: 800 }}
+            >
+              فتح الرادار المباشر والملصق
+            </Button>
+          }
+        >
+          هذه حملة QR (Generic Lure). مراقبة عمليات المسح وبصمات الأجهزة والبيانات المدخلة في الوقت الفعلي متوفرة في صفحة الحملة والرادار المباشر.
+        </Alert>
+      ) : null}
+
       <Card
         sx={{
           mb: 2,

@@ -514,7 +514,7 @@ class CampaignLauncher:
         rows = (
             await db.execute(
                 select(EmailTracking, HumanAsset, EmailTemplate)
-                .join(HumanAsset, HumanAsset.id == EmailTracking.employee_id)
+                .outerjoin(HumanAsset, HumanAsset.id == EmailTracking.employee_id)
                 .outerjoin(EmailTemplate, EmailTemplate.id == EmailTracking.template_id)
                 .where(EmailTracking.campaign_id == campaign.id)
                 .order_by(EmailTracking.created_at.asc())
@@ -543,16 +543,30 @@ class CampaignLauncher:
             clicked += 1 if tracking.clicked_at else 0
             submitted += 1 if tracking.submitted_at else 0
             completed += 1 if tracking.completed_at else 0
+            emp_id = employee.id if employee is not None else tracking.id
+            emp_name = (
+                employee.full_name
+                if employee is not None
+                else (tracking.submitted_username or tracking.submitted_email or "Unknown QR Visitor")
+            )
+            emp_email = employee.email if employee is not None else (tracking.submitted_email or "—")
+            emp_dept = employee.department if employee is not None else "QR Capture"
+            emp_job = employee.job_title if employee is not None else "External / Mobile"
+            immunity = float(employee.immunity_score) if (employee is not None and employee.immunity_score is not None) else None
+            behavioral_cat = employee.behavioral_category if employee is not None else "unaware"
+            elo_val = int(employee.elo_score or 1000) if employee is not None else 1000
+            threat_val = threat_level_for_elo(employee.elo_score) if employee is not None else "medium"
+
             employees.append(
                 {
-                    "employee_id": employee.id,
+                    "employee_id": emp_id,
                     "tracking_uuid": tracking.tracking_uuid,
-                    "name": employee.full_name,
-                    "email": employee.email,
-                    "phone": employee.phone,
+                    "name": emp_name,
+                    "email": emp_email,
+                    "phone": employee.phone if employee is not None else None,
                     "channel": tracking.channel or campaign.channel or "email",
-                    "department": employee.department,
-                    "job_title": employee.job_title,
+                    "department": emp_dept,
+                    "job_title": emp_job,
                     "status": status,
                     "sent_at": tracking.sent_at,
                     "delivered_at": tracking.delivered_at,
@@ -577,12 +591,10 @@ class CampaignLauncher:
                     "submitted_fields": tracking.submitted_fields or None,
                     "submitted_values": latest_submitted_values(tracking),
                     "password_length": tracking.password_length,
-                    "immunity_score": float(employee.immunity_score)
-                    if employee.immunity_score is not None
-                    else None,
-                    "behavioral_category": employee.behavioral_category,
-                    "elo_score": int(employee.elo_score or 1000),
-                    "threat_level": threat_level_for_elo(employee.elo_score),
+                    "immunity_score": immunity,
+                    "behavioral_category": behavioral_cat,
+                    "elo_score": elo_val,
+                    "threat_level": threat_val,
                     "template_name": (
                         delivered_template.name if delivered_template is not None else None
                     ),
@@ -595,8 +607,11 @@ class CampaignLauncher:
                 }
             )
 
-        sent = campaign.sent_count or 0
+        is_qr = (campaign.channel or "").strip().lower() == "qr"
         total = campaign.total_targets or len(employees)
+        if is_qr and total == 0:
+            total = len(employees)
+        sent = campaign.sent_count or (len(employees) if is_qr else 0)
         stats = {
             "total": total,
             "sent": sent,

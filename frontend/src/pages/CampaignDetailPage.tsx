@@ -658,7 +658,7 @@ export function CampaignDetailPage() {
         >
           <Tab label={`Recipients (${allEmployees.length})`} />
           <Tab label="Live activity" />
-          {isQrChannel ? <Tab label={`Live scans — الرادار (${scans.length})`} /> : null}
+          {isQrChannel ? <Tab label={`الرادار المباشر — Live Scans (${radarScans.length || scans.length})`} /> : null}
         </Tabs>
 
         {tab === 0 ? (
