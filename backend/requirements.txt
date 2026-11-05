@@ -14,6 +14,12 @@ python-jose[cryptography]==3.3.0
 bcrypt==4.2.1
 cryptography==44.0.0
 celery[redis]==5.4.0
+# kombu is a transitive dependency of celery and is NOT pinned by it. kombu >= 5.6
+# requires redis-py >= 6.1.0 while celery 5.4.0's [redis] extra caps redis-py at
+# < 6.0.0, which makes the worker crash-loop with:
+#   kombu.exceptions.VersionMismatch: Redis transport requires redis-py versions 6.1.0 or later.
+# Pin the version celery 5.4.0 was released against.
+kombu==5.4.0
 redis==5.2.1
 sib-api-v3-sdk==7.6.0
 httpx==0.28.1
