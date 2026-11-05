@@ -41,6 +41,7 @@ import PictureAsPdfIcon from '@mui/icons-material/PictureAsPdf';
 import PersonAddAlt1Icon from '@mui/icons-material/PersonAddAlt1';
 import QrCode2Icon from '@mui/icons-material/QrCode2';
 import UsbIcon from '@mui/icons-material/Usb';
+import KeyboardIcon from '@mui/icons-material/Keyboard';
 import ComputerIcon from '@mui/icons-material/Computer';
 import CheckCircleOutlineIcon from '@mui/icons-material/CheckCircleOutline';
 import DoneAllIcon from '@mui/icons-material/DoneAll';
@@ -334,6 +335,7 @@ export function CampaignDetailPage() {
       employee_id?: string;
       tracking_uuid: string;
       status: string;
+      attack_type: string;
     }> = [];
 
     rows.forEach((row) => {
@@ -355,6 +357,7 @@ export function CampaignDetailPage() {
             employee_id: row.employee_id,
             tracking_uuid: String(row.tracking_uuid),
             status: row.status,
+            attack_type: ev.attack_type || ctx.attack_type || 'baiting',
           });
         });
       } else if (ctx.hostname || row.status === 'clicked' || row.status === 'opened') {
@@ -372,6 +375,7 @@ export function CampaignDetailPage() {
           employee_id: row.employee_id,
           tracking_uuid: String(row.tracking_uuid),
           status: row.status,
+          attack_type: ctx.attack_type || 'baiting',
         });
       }
     });
@@ -1220,7 +1224,16 @@ export function CampaignDetailPage() {
                       }}
                     >
                       <CardContent sx={{ p: 2, '&:last-child': { pb: 2 } }}>
-                        {/* Header: Timestamp and Severity */}
+                        {/* Red Alert Banner */}
+                        <Chip
+                          size="small"
+                          label="اختراق فيزيائي عاجل — Critical Physical Breach"
+                          color="error"
+                          variant="filled"
+                          sx={{ fontWeight: 800, mb: 1.2, width: '100%' }}
+                        />
+
+                        {/* Header: Timestamp and Attack Vector */}
                         <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 1.5 }}>
                           <Stack direction="row" spacing={0.8} alignItems="center">
                             <AccessTimeIcon sx={{ fontSize: 16, color: 'text.secondary' }} />
@@ -1228,12 +1241,31 @@ export function CampaignDetailPage() {
                               {breach.timestamp ? new Date(breach.timestamp).toLocaleString('ar-SA') : 'الآن'}
                             </Typography>
                           </Stack>
-                          <Chip
-                            size="small"
-                            label="-30 Elo (Physical Breach)"
-                            color="error"
-                            sx={{ fontWeight: 800, fontSize: '0.72rem' }}
-                          />
+                          <Stack direction="row" spacing={0.8} alignItems="center">
+                            {breach.attack_type === 'badusb_hid' ? (
+                              <Chip
+                                size="small"
+                                icon={<KeyboardIcon />}
+                                label="BadUSB (HID)"
+                                color="warning"
+                                sx={{ fontWeight: 700, fontSize: '0.72rem' }}
+                              />
+                            ) : (
+                              <Chip
+                                size="small"
+                                icon={<UsbIcon />}
+                                label="USB Baiting"
+                                color="info"
+                                sx={{ fontWeight: 700, fontSize: '0.72rem' }}
+                              />
+                            )}
+                            <Chip
+                              size="small"
+                              label={breach.attack_type === 'badusb_hid' ? "-40 Elo" : "-30 Elo"}
+                              color="error"
+                              sx={{ fontWeight: 800, fontSize: '0.72rem' }}
+                            />
+                          </Stack>
                         </Stack>
 
                         {/* Endpoint Name */}
@@ -1246,6 +1278,18 @@ export function CampaignDetailPage() {
 
                         {/* Forensics List */}
                         <Stack spacing={0.8} sx={{ mb: 2, bgcolor: 'action.hover', p: 1.2, borderRadius: 1.5 }}>
+                          <Stack direction="row" justifyContent="space-between">
+                            <Typography variant="caption" color="text.secondary">نوع ناقل الهجوم:</Typography>
+                            <Typography variant="caption" sx={{ fontWeight: 800, color: breach.attack_type === 'badusb_hid' ? 'warning.main' : 'info.main' }}>
+                              {breach.attack_type === 'badusb_hid' ? 'محاكاة كيبورد (BadUSB HID)' : 'طعم تخزين فيزيائي (Storage Bait)'}
+                            </Typography>
+                          </Stack>
+                          <Stack direction="row" justifyContent="space-between">
+                            <Typography variant="caption" color="text.secondary">عنوان الـ IP:</Typography>
+                            <Typography variant="caption" sx={{ fontWeight: 700, fontFamily: 'monospace' }}>
+                              {breach.ip_address || '—'}
+                            </Typography>
+                          </Stack>
                           <Stack direction="row" justifyContent="space-between">
                             <Typography variant="caption" color="text.secondary">حساب المستخدم:</Typography>
                             <Typography variant="caption" sx={{ fontWeight: 700, fontFamily: 'monospace' }}>

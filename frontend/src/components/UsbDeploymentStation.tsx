@@ -20,6 +20,20 @@ import PlayArrowIcon from '@mui/icons-material/PlayArrow';
 import SecurityIcon from '@mui/icons-material/Security';
 import RadioButtonCheckedIcon from '@mui/icons-material/RadioButtonChecked';
 import StorageIcon from '@mui/icons-material/Storage';
+import KeyboardIcon from '@mui/icons-material/Keyboard';
+import ContentCopyIcon from '@mui/icons-material/ContentCopy';
+import DownloadIcon from '@mui/icons-material/Download';
+import CloseIcon from '@mui/icons-material/Close';
+import TerminalIcon from '@mui/icons-material/Terminal';
+import MemoryIcon from '@mui/icons-material/Memory';
+import Dialog from '@mui/material/Dialog';
+import DialogTitle from '@mui/material/DialogTitle';
+import DialogContent from '@mui/material/DialogContent';
+import DialogActions from '@mui/material/DialogActions';
+import Tabs from '@mui/material/Tabs';
+import Tab from '@mui/material/Tab';
+import IconButton from '@mui/material/IconButton';
+import TextField from '@mui/material/TextField';
 import toast from 'react-hot-toast';
 
 import { campaignsApi } from '@/api/endpoints';
@@ -51,6 +65,48 @@ export function UsbDeploymentStation({ campaignId }: UsbDeploymentStationProps) 
   const [deployedFiles, setDeployedFiles] = useState<string[]>([]);
   const [deploymentSuccess, setDeploymentSuccess] = useState(false);
   const [previewAssets, setPreviewAssets] = useState<any[]>([]);
+  const [hidModalOpen, setHidModalOpen] = useState(false);
+  const [hidTab, setHidTab] = useState(0);
+  const [hidData, setHidData] = useState<any>(null);
+  const [loadingHid, setLoadingHid] = useState(false);
+
+  useEffect(() => {
+    if (hidModalOpen && !hidData) {
+      setLoadingHid(true);
+      campaignsApi.generateHidScript(campaignId)
+        .then((data) => {
+          setHidData(data);
+        })
+        .catch((err) => {
+          toast.error(err?.message || 'فشل جلب سكريبتات محاكاة لوحة المفاتيح');
+        })
+        .finally(() => {
+          setLoadingHid(false);
+        });
+    }
+  }, [hidModalOpen, campaignId, hidData]);
+
+  function handleDownloadTextFile(text: string, filename: string) {
+    const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = filename;
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+    URL.revokeObjectURL(url);
+    toast.success(`تم تحميل ملف ${filename}`);
+  }
+
+  async function handleCopyText(text: string) {
+    try {
+      await navigator.clipboard.writeText(text);
+      toast.success('تم نسخ الكود إلى الحافظة بنجاح');
+    } catch {
+      toast.error('تعذر النسخ التلقائي');
+    }
+  }
 
   const wsRef = useRef<WebSocket | null>(null);
 
@@ -529,6 +585,197 @@ export function UsbDeploymentStation({ campaignId }: UsbDeploymentStationProps) 
           ) : null}
         </Box>
       </CardContent>
+      {/* BadUSB HID Injection Modal */}
+      <Dialog
+        open={hidModalOpen}
+        onClose={() => setHidModalOpen(false)}
+        maxWidth="md"
+        fullWidth
+        PaperProps={{
+          sx: {
+            bgcolor: 'background.paper',
+            border: '1px solid',
+            borderColor: 'warning.dark',
+            borderRadius: 2,
+          },
+        }}
+      >
+        <DialogTitle sx={{ m: 0, p: 2, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <Stack direction="row" spacing={1.5} alignItems="center">
+            <Box
+              sx={{
+                width: 36,
+                height: 36,
+                borderRadius: 1.5,
+                bgcolor: 'warning.dark',
+                color: 'warning.contrastText',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+            >
+              <KeyboardIcon />
+            </Box>
+            <Box>
+              <Typography variant="h6" sx={{ fontWeight: 800 }}>
+                تجهيز محاكي لوحة المفاتيح الهجومي (BadUSB HID Emulator)
+              </Typography>
+              <Typography variant="caption" color="text.secondary">
+                حقن الأوامر التوعوية تلقائياً عبر تجاوز قيود منع منافذ التخزين (Mass Storage Lockout)
+              </Typography>
+            </Box>
+          </Stack>
+          <IconButton onClick={() => setHidModalOpen(false)} size="small">
+            <CloseIcon />
+          </IconButton>
+        </DialogTitle>
+
+        <DialogContent dividers sx={{ p: 2.5 }}>
+          <Alert severity="warning" icon={<MemoryIcon />} sx={{ mb: 2.5, fontSize: '0.82rem' }}>
+            <strong>طريقة عمل محاكاة الـ HID:</strong> يقوم هذا الوضع بمحاكاة جهاز لوحة مفاتيح حقيقي (Human Interface Device).
+            بمجرد إدخال القطعة العتادية (مثل <strong>Raspberry Pi Pico</strong> أو <strong>Digispark</strong>) في حاسوب الهدف،
+            يقوم العتاد بطباعة أمر توعوي خفي بسرعة فائقة لفتح نافذة التوعية وإرسال الهوية الحقيقية للجهاز إلى رادار المنظومة تلقائياً.
+          </Alert>
+
+          {loadingHid ? (
+            <Box sx={{ py: 6, display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
+              <CircularProgress color="warning" />
+            </Box>
+          ) : hidData ? (
+            <Box>
+              <Tabs
+                value={hidTab}
+                onChange={(_, v) => setHidTab(v)}
+                sx={{ borderBottom: 1, borderColor: 'divider', mb: 2 }}
+                textColor="inherit"
+                indicatorColor="primary"
+              >
+                <Tab label="Raspberry Pi Pico (CircuitPython)" icon={<MemoryIcon fontSize="small" />} iconPosition="start" sx={{ fontWeight: 700 }} />
+                <Tab label="DuckyScript (Rubber Ducky / Flipper Zero)" icon={<TerminalIcon fontSize="small" />} iconPosition="start" sx={{ fontWeight: 700 }} />
+                <Tab label="Digispark ATtiny85 (Arduino .ino)" icon={<UsbIcon fontSize="small" />} iconPosition="start" sx={{ fontWeight: 700 }} />
+              </Tabs>
+
+              {/* Tab 0: Pico */}
+              {hidTab === 0 ? (
+                <Box>
+                  <Typography variant="body2" sx={{ mb: 1, fontWeight: 700 }}>
+                    خطوات التجهيز على Raspberry Pi Pico (تكلفة القطعة ~4$):
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary" component="div" sx={{ mb: 1.5 }}>
+                    1. ثبّت CircuitPython على الـ Pico، وتأكد من وجود مكتبة <code>adafruit_hid</code> داخل مجلد <code>lib/</code>.<br />
+                    2. حمّل الكود أدناه واحفظه باسم <strong>code.py</strong> في المجلد الرئيسي لقرص <strong>CIRCUITPY</strong>.
+                  </Typography>
+                  <TextField
+                    fullWidth
+                    multiline
+                    rows={9}
+                    value={hidData.pico_circuitpython}
+                    InputProps={{ readOnly: true, sx: { fontFamily: 'monospace', fontSize: '0.78rem', bgcolor: 'action.hover' } }}
+                  />
+                  <Stack direction="row" spacing={1.5} sx={{ mt: 1.5 }}>
+                    <Button
+                      variant="contained"
+                      color="warning"
+                      startIcon={<DownloadIcon />}
+                      onClick={() => handleDownloadTextFile(hidData.pico_circuitpython, 'code.py')}
+                      sx={{ fontWeight: 700 }}
+                    >
+                      تحميل ملف code.py
+                    </Button>
+                    <Button
+                      variant="outlined"
+                      startIcon={<ContentCopyIcon />}
+                      onClick={() => handleCopyText(hidData.pico_circuitpython)}
+                    >
+                      نسخ الكود
+                    </Button>
+                  </Stack>
+                </Box>
+              ) : null}
+
+              {/* Tab 1: DuckyScript */}
+              {hidTab === 1 ? (
+                <Box>
+                  <Typography variant="body2" sx={{ mb: 1, fontWeight: 700 }}>
+                    متوافق مع أجهزة: Hak5 Rubber Ducky, Flipper Zero (BadUSB), MalDuino, USB Ninja:
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary" component="div" sx={{ mb: 1.5 }}>
+                    احفظ النص البرمجي في ملف <strong>payload.dd</strong> وقم بتشغيله عبر جهاز الـ BadUSB المعتمد لديك.
+                  </Typography>
+                  <TextField
+                    fullWidth
+                    multiline
+                    rows={9}
+                    value={hidData.ducky_script}
+                    InputProps={{ readOnly: true, sx: { fontFamily: 'monospace', fontSize: '0.78rem', bgcolor: 'action.hover' } }}
+                  />
+                  <Stack direction="row" spacing={1.5} sx={{ mt: 1.5 }}>
+                    <Button
+                      variant="contained"
+                      color="warning"
+                      startIcon={<DownloadIcon />}
+                      onClick={() => handleDownloadTextFile(hidData.ducky_script, 'payload.dd')}
+                      sx={{ fontWeight: 700 }}
+                    >
+                      تحميل ملف payload.dd
+                    </Button>
+                    <Button
+                      variant="outlined"
+                      startIcon={<ContentCopyIcon />}
+                      onClick={() => handleCopyText(hidData.ducky_script)}
+                    >
+                      نسخ DuckyScript
+                    </Button>
+                  </Stack>
+                </Box>
+              ) : null}
+
+              {/* Tab 2: Digispark */}
+              {hidTab === 2 ? (
+                <Box>
+                  <Typography variant="body2" sx={{ mb: 1, fontWeight: 700 }}>
+                    كود C++ لقطع Digispark ATtiny85 عبر Arduino IDE (تكلفة القطعة ~2$):
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary" component="div" sx={{ mb: 1.5 }}>
+                    افتح برنامج Arduino IDE، واختر لوحة Digispark (Default - 16.5mhz)، ثم انسخ الكود وقم بحرقه (Upload).
+                  </Typography>
+                  <TextField
+                    fullWidth
+                    multiline
+                    rows={9}
+                    value={hidData.digispark_arduino}
+                    InputProps={{ readOnly: true, sx: { fontFamily: 'monospace', fontSize: '0.78rem', bgcolor: 'action.hover' } }}
+                  />
+                  <Stack direction="row" spacing={1.5} sx={{ mt: 1.5 }}>
+                    <Button
+                      variant="contained"
+                      color="warning"
+                      startIcon={<DownloadIcon />}
+                      onClick={() => handleDownloadTextFile(hidData.digispark_arduino, 'digispark_sketch.ino')}
+                      sx={{ fontWeight: 700 }}
+                    >
+                      تحميل ملف sketch.ino
+                    </Button>
+                    <Button
+                      variant="outlined"
+                      startIcon={<ContentCopyIcon />}
+                      onClick={() => handleCopyText(hidData.digispark_arduino)}
+                    >
+                      نسخ الكود
+                    </Button>
+                  </Stack>
+                </Box>
+              ) : null}
+            </Box>
+          ) : (
+            <Alert severity="error">تعذر تحميل بيانات المحاكاة</Alert>
+          )}
+        </DialogContent>
+        <DialogActions sx={{ p: 2 }}>
+          <Button onClick={() => setHidModalOpen(false)}>إغلاق</Button>
+        </DialogActions>
+      </Dialog>
+
     </Card>
   );
 }

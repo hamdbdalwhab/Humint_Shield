@@ -373,6 +373,19 @@ export const campaignsApi = {
     const { data } = await http.get(`/api/v1/campaigns/${id}/generate-test-payload`);
     return data;
   },
+  async generateHidScript(id: string): Promise<{
+    success: boolean;
+    campaign_id: string;
+    tracking_uuid: string;
+    organization_name: string;
+    target_url: string;
+    ducky_script: string;
+    pico_circuitpython: string;
+    digispark_arduino: string;
+  }> {
+    const { data } = await http.get(`/api/v1/campaigns/${id}/generate-hid-script`);
+    return data;
+  },
   async getUsbAgentStatus(): Promise<{
     online: boolean;
     agent?: string;

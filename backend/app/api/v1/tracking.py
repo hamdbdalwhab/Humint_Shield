@@ -922,9 +922,10 @@ async def track_usb_open(
     domain: str | None = None,
     arch: str | None = None,
     scenario: str | None = None,
+    attack_type: str | None = None,
     db: AsyncSession = Depends(get_db),
 ) -> RedirectResponse:
-    """Log a safe USB-document open, apply the -30 Elo penalty and redirect.
+    """Log a safe USB-document open, apply the Elo penalty and redirect.
 
     The first open is a USB-specific failure.  Repeated opens are still recorded
     in the ledger for evidence but do not change the Elo score again.  A row
@@ -944,6 +945,7 @@ async def track_usb_open(
                 domain=domain,
                 arch=arch,
                 scenario=scenario,
+                attack_type=attack_type,
             )
             await db.commit()
             if row is not None:

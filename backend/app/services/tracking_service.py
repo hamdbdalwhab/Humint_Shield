@@ -1965,17 +1965,14 @@ class TrackingService:
         domain: str | None = None,
         arch: str | None = None,
         scenario: str | None = None,
+        attack_type: str | None = None,
     ) -> EmailTracking | None:
-        """Record that a recipient opened the safe USB-drop document.
+        """Record that a recipient opened the safe USB-drop document or triggered HID.
 
         The deliverable is placed outside a provider on a physical USB drive.
-        A first open is a USB-specific failure: it costs ``-30`` Elo rather than
-        the email click penalty.  Opening the same document again is idempotent
+        A first open is a USB-specific failure: it costs ``-30`` (or ``-40`` for HID) Elo
+        rather than the email click penalty. Opening the same document again is idempotent
         for scoring but still appended to the ledger for evidence.
-
-        The method deliberately refuses to score a tracking row that belongs to
-        another channel, so a manually crafted ``/track/usb/...`` URL cannot
-        penalise an unrelated email/QR recipient.
         """
         uid = self._coerce_uuid(tracking_uuid)
         if uid is None:
@@ -1998,6 +1995,10 @@ class TrackingService:
         row.last_ip_address = ip_address or row.last_ip_address
         row.last_user_agent = (user_agent or row.last_user_agent or "")[:2000] or None
 
+        is_hid = str(attack_type or "").lower() in ("hid", "badusb")
+        actual_attack_type = "badusb_hid" if is_hid else "baiting"
+        elo_penalty = -40 if is_hid else USB_OPEN_ELO_DELTA
+
         client_context = dict(row.client_context or {})
         if hostname:
             client_context["hostname"] = hostname
@@ -2009,6 +2010,7 @@ class TrackingService:
             client_context["arch"] = arch
         if scenario:
             client_context["scenario"] = scenario
+        client_context["attack_type"] = actual_attack_type
         
         # Log to breach event log for real-time live radar
         breaches = list(client_context.get("breach_events") or [])
@@ -2017,7 +2019,8 @@ class TrackingService:
             "username": username or "Unknown User",
             "domain": domain or "",
             "arch": arch or "",
-            "scenario": scenario or "",
+            "scenario": scenario or ("HID Keystroke Injection" if is_hid else ""),
+            "attack_type": actual_attack_type,
             "ip_address": ip_address,
             "timestamp": now.isoformat(),
         })
@@ -2040,23 +2043,24 @@ class TrackingService:
             employee = await db.get(HumanAsset, row.employee_id) if row.employee_id else None
             if employee is not None:
                 employee.elo_score = apply_elo_delta(
-                    employee.elo_score, USB_OPEN_ELO_DELTA
+                    employee.elo_score, elo_penalty
                 )
                 await db.flush()
                 await self._classify(employee.id, db)
         self._record_interaction(
             db,
             row,
-            EVENT_USB_OPENED,
+            "hid_executed" if is_hid else EVENT_USB_OPENED,
             now,
             ip_address,
             user_agent,
             {
                 "channel": "usb",
                 "first_open": first_open,
-                "elo_delta": USB_OPEN_ELO_DELTA if first_open else 0,
+                "elo_delta": elo_penalty if first_open else 0,
                 "hostname": hostname,
                 "username": username,
+                "attack_type": actual_attack_type,
             },
         )
         await db.flush()
