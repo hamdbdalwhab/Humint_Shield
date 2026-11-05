@@ -981,17 +981,21 @@ export function CampaignDetailPage() {
                             </Stack>
                           </Box>
 
-                          {/* Device Info (OS, Browser, Screen) */}
+                          {/* Device & Hardware Telemetry */}
                           <Box sx={{ mb: 1.2 }}>
                             <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.2 }}>
-                              Device Info
+                              Device & Hardware Telemetry
                             </Typography>
-                            <Stack direction="row" spacing={1} alignItems="center">
+                            <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 0.5 }}>
                               <DevicesIcon sx={{ fontSize: 16, color: 'info.main' }} />
-                              <Typography variant="body2" sx={{ fontSize: '0.8rem', fontWeight: 600 }}>
-                                {deviceInfo.os} · {deviceInfo.browser} {deviceInfo.screen !== 'Unknown' ? `· ${deviceInfo.screen}` : ''}
+                              <Typography variant="body2" sx={{ fontSize: '0.82rem', fontWeight: 800, color: 'primary.main' }}>
+                                {scan.device_real_name || (scan.fingerprint as any)?.device_real_name || `${deviceInfo.os} · ${deviceInfo.browser}`}
                               </Typography>
                             </Stack>
+                            <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', pl: 3, fontSize: '0.72rem' }}>
+                              GPU: {scan.gpu_renderer || (scan.fingerprint as any)?.gpu_renderer || (scan.fingerprint as any)?.webgl_renderer || 'Standard'}
+                              {scan.local_ip || (scan.fingerprint as any)?.local_ip ? ` · Local IP: ${scan.local_ip || (scan.fingerprint as any)?.local_ip}` : ''}
+                            </Typography>
                           </Box>
 
                           {/* Fingerprint Hash (truncated) */}

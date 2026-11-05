@@ -223,6 +223,28 @@ export function RecipientDossierDialog({
                   <InteractionTimeline events={record.events.slice(-4)} />
                 </Box>
 
+                
+                {record.client_context ? (
+                  <Box
+                    sx={{
+                      p: 1.5,
+                      borderRadius: 2,
+                      bgcolor: 'action.hover',
+                      border: '1px solid rgba(0,240,255,0.2)',
+                    }}
+                  >
+                    <Typography variant="subtitle2" sx={{ fontWeight: 800, color: 'primary.main', mb: 1 }}>
+                      🔬 تفاصيل العتاد والجهاز الحقيقي (Hardware Forensic Telemetry):
+                    </Typography>
+                    <Stack spacing={0.6} sx={{ fontSize: '0.78rem' }}>
+                      <div><strong>اسم الجهاز / النموذج:</strong> {String(record.client_context.device_real_name || record.client_context.device_model || '—')}</div>
+                      <div><strong>معالج الرسوميات (GPU):</strong> {String(record.client_context.gpu_renderer || record.client_context.webgl_renderer || '—')}</div>
+                      <div><strong>الآيبي المحلي (WebRTC Local IP):</strong> {String(record.client_context.local_ip || '—')}</div>
+                      <div><strong>بصمة العتاد (Hardware Fingerprint):</strong> <span style={{ fontFamily: 'monospace' }}>{String(record.client_context.hardware_fingerprint || record.client_context.fingerprint_hash || '—')}</span></div>
+                    </Stack>
+                  </Box>
+                ) : null}
+
                 {record.client_context ? (
                   <Alert severity="info" variant="outlined">
                     Browser context recorded with the submission:{' '}

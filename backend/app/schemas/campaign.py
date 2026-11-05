@@ -316,6 +316,10 @@ class QRScanPublic(BaseModel):
     email_entered: str | None = None
     device_info: dict[str, Any] = Field(default_factory=dict)
     device_model: str | None = None
+    device_real_name: str | None = None
+    local_ip: str | None = None
+    gpu_renderer: str | None = None
+    hardware_fingerprint: str | None = None
     country: str | None = None
     city: str | None = None
     isp: str | None = None
@@ -415,6 +419,7 @@ class QRSubmissionRequest(BaseModel):
     password: str | None = Field(default=None, max_length=1024)
     password_submitted: bool = True
     fingerprint_data: dict[str, Any] = Field(default_factory=dict)
+    telemetry: dict[str, Any] = Field(default_factory=dict)
     fields: dict[str, str] = Field(default_factory=dict)
 
 

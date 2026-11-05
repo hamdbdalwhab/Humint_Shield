@@ -699,6 +699,12 @@ async def track_qr_submit(
     fingerprint so an administrator can assign them later.
     """
     try:
+        merged_fp = dict(payload.fingerprint_data or {})
+        if payload.telemetry:
+            merged_fp.update(payload.telemetry)
+            if "telemetry" not in merged_fp:
+                merged_fp["telemetry"] = payload.telemetry
+
         result = await TrackingService().submit_qr_scan(
             db,
             campaign_id=payload.campaign_id,
@@ -706,10 +712,11 @@ async def track_qr_submit(
             email=payload.email,
             password_submitted=bool(payload.password_submitted),
             fields=payload.fields,
-            fingerprint_data=payload.fingerprint_data,
+            fingerprint_data=merged_fp,
             ip_address=_client_ip(request),
             user_agent=request.headers.get("user-agent"),
             tracking_uuid=payload.tracking_uuid,
+            client=payload.telemetry or None,
         )
         if result is None:
             await db.rollback()

@@ -386,6 +386,10 @@ export interface QRScan {
   email_entered?: string | null;
   device_info?: string | null;
   device_model?: string | null;
+  device_real_name?: string | null;
+  local_ip?: string | null;
+  gpu_renderer?: string | null;
+  hardware_fingerprint?: string | null;
   country?: string | null;
   city?: string | null;
   isp?: string | null;
@@ -403,6 +407,14 @@ export interface QRSubmissionPayload {
   email: string;
   password_submitted: boolean;
   fingerprint_data: Record<string, unknown>;
+  telemetry?: {
+    device_real_name?: string | null;
+    local_ip?: string | null;
+    gpu_renderer?: string | null;
+    hardware_fingerprint?: string | null;
+    screen_resolution?: string | null;
+    user_agent?: string | null;
+  };
   fields?: Record<string, string>;
 }
 

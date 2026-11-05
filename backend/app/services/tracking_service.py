@@ -1204,6 +1204,10 @@ class TrackingService:
 
         gps_data = fingerprint_payload.get("gps") if isinstance(fingerprint_payload, dict) else None
         dev_model = detect_device_model(user_agent, fingerprint_data=fingerprint_payload)
+        dev_real_name = fingerprint_payload.get("device_real_name") or fingerprint_payload.get("hostname")
+        if dev_real_name:
+            dev_model = f"{dev_real_name} ({dev_model})" if dev_model else dev_real_name
+            fingerprint_payload["device_real_name"] = dev_real_name
         geo_info = await lookup_ip_geolocation(ip_address, client_gps=gps_data)
 
         scan.employee_id = employee.id if employee is not None else None
