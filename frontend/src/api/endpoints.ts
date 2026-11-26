@@ -15,8 +15,10 @@ import type {
   Campaign,
   CampaignActivity,
   CampaignCreate,
+  CampaignGuardrails,
   CampaignRecipientDetail,
   CampaignResults,
+  CooldownCheckResponse,
   DashboardSummary,
   EmailDesign,
   EmailTemplate,
@@ -27,9 +29,14 @@ import type {
   EmployeeDossier,
   EmployeeUpdate,
   HealthReport,
+  IllyVoIPVerification,
   LaunchResult,
   LiveBoard,
+  MonthlyArchiveResponse,
+  MonthlyArchiveRunResult,
+  MonthlyEloPoint,
   Paginated,
+  PermissionCatalog,
   PhishingReport,
   QRProbePayload,
   QRScan,
@@ -49,8 +56,11 @@ import type {
   TrackingContext,
   TrackingSubmission,
   TrainingModule,
+  SmsVerification,
   User,
-  VonageVerification,
+  UserAdmin,
+  UserCreatePayload,
+  UserUpdatePayload,
 } from '@/types';
 
 export interface EmployeeListParams {
@@ -79,6 +89,47 @@ export const authApi = {
     const { data } = await http.get<User>('/api/v1/auth/me');
     return data;
   },
+  /**
+   * Rotate the signed-in operator's password. The backend revokes every old
+   * token and returns a fresh pair, which the caller must store.
+   */
+  async changePassword(currentPassword: string, newPassword: string): Promise<TokenResponse> {
+    const { data } = await http.post<TokenResponse>('/api/v1/auth/change-password', {
+      current_password: currentPassword,
+      new_password: newPassword,
+    });
+    return data;
+  },
+};
+
+export const usersApi = {
+  /** Permission catalog and the default grants of every role. */
+  async permissions(): Promise<PermissionCatalog> {
+    const { data } = await http.get<PermissionCatalog>('/api/v1/users/permissions');
+    return data;
+  },
+  async list(): Promise<UserAdmin[]> {
+    const { data } = await http.get<UserAdmin[]>('/api/v1/users');
+    return data;
+  },
+  async create(payload: UserCreatePayload): Promise<UserAdmin> {
+    const { data } = await http.post<UserAdmin>('/api/v1/users', payload);
+    return data;
+  },
+  async update(id: string, payload: UserUpdatePayload): Promise<UserAdmin> {
+    const { data } = await http.patch<UserAdmin>(`/api/v1/users/${id}`, payload);
+    return data;
+  },
+  async resetPassword(id: string, newPassword: string): Promise<UserAdmin> {
+    const { data } = await http.post<UserAdmin>(`/api/v1/users/${id}/reset-password`, {
+      new_password: newPassword,
+    });
+    return data;
+  },
+  async deactivate(id: string): Promise<UserAdmin> {
+    const { data } = await http.delete<UserAdmin>(`/api/v1/users/${id}`);
+    return data;
+  },
 };
 
 export const employeesApi = {
@@ -91,6 +142,13 @@ export const employeesApi = {
   },
   async get(orgId: string, id: string): Promise<Employee> {
     const { data } = await http.get<Employee>(`/api/v1/organizations/${orgId}/employees/${id}`);
+    return data;
+  },
+  /** Distinct departments (with headcounts) for campaign segmentation. */
+  async departments(orgId: string): Promise<{ department: string; count: number }[]> {
+    const { data } = await http.get<{ department: string; count: number }[]>(
+      `/api/v1/organizations/${orgId}/employees/departments`,
+    );
     return data;
   },
   async create(orgId: string, payload: EmployeeCreate): Promise<Employee> {
@@ -131,6 +189,50 @@ export const employeesApi = {
       `/api/v1/organizations/${orgId}/employees/${id}/dossier`,
     );
     return data;
+  },
+  async monthlyEloTrend(orgId: string): Promise<MonthlyEloPoint[]> {
+    const { data } = await http.get<MonthlyEloPoint[]>(
+      `/api/v1/organizations/${orgId}/employees/monthly-elo-trend`,
+    );
+    return data;
+  },
+  async monthlyArchives(orgId: string, month?: string): Promise<MonthlyArchiveResponse> {
+    const { data } = await http.get<MonthlyArchiveResponse>(
+      `/api/v1/organizations/${orgId}/employees/monthly-archives`,
+      { params: month ? { month } : {} },
+    );
+    return data;
+  },
+  async runMonthlyArchive(
+    orgId: string,
+    payload: { month?: string; force?: boolean } = {},
+  ): Promise<MonthlyArchiveRunResult> {
+    const { data } = await http.post<MonthlyArchiveRunResult>(
+      `/api/v1/organizations/${orgId}/employees/monthly-archives/run`,
+      payload,
+    );
+    return data;
+  },
+  async monthlyReportPdf(orgId: string, month: string): Promise<Blob> {
+    const { data } = await http.get(
+      `/api/v1/organizations/${orgId}/employees/monthly-report`,
+      { params: { month }, responseType: 'blob' },
+    );
+    return data as Blob;
+  },
+  async certificatesZip(orgId: string, month: string): Promise<Blob> {
+    const { data } = await http.get(
+      `/api/v1/organizations/${orgId}/employees/certificates.zip`,
+      { params: { month }, responseType: 'blob' },
+    );
+    return data as Blob;
+  },
+  async certificatePdf(orgId: string, employeeId: string, month: string): Promise<Blob> {
+    const { data } = await http.get(
+      `/api/v1/organizations/${orgId}/employees/${employeeId}/certificate`,
+      { params: { month }, responseType: 'blob' },
+    );
+    return data as Blob;
   },
 };
 
@@ -259,9 +361,37 @@ export const campaignsApi = {
     );
     return data;
   },
-  async launch(orgId: string, id: string): Promise<LaunchResult> {
+  async launch(orgId: string, id: string, background = false): Promise<LaunchResult> {
     const { data } = await http.post<LaunchResult>(
       `/api/v1/organizations/${orgId}/email-campaigns/${id}/launch`,
+      undefined,
+      { params: background ? { background: true } : undefined },
+    );
+    return data;
+  },
+  async cooldownCheck(
+    orgId: string,
+    payload: { employee_ids: string[]; is_mandatory_training?: boolean },
+  ): Promise<CooldownCheckResponse> {
+    const { data } = await http.post<CooldownCheckResponse>(
+      `/api/v1/organizations/${orgId}/email-campaigns/cooldown-check`,
+      payload,
+    );
+    return data;
+  },
+  async guardrails(orgId: string): Promise<CampaignGuardrails> {
+    const { data } = await http.get<CampaignGuardrails>(
+      `/api/v1/organizations/${orgId}/email-campaigns/guardrails`,
+    );
+    return data;
+  },
+  async updateGuardrails(
+    orgId: string,
+    payload: CampaignGuardrails,
+  ): Promise<CampaignGuardrails> {
+    const { data } = await http.put<CampaignGuardrails>(
+      `/api/v1/organizations/${orgId}/email-campaigns/guardrails`,
+      payload,
     );
     return data;
   },
@@ -405,6 +535,47 @@ export const campaignsApi = {
     const { data } = await http.get('/api/v1/campaigns/usb-agent/status');
     return data;
   },
+  /** Drives physically attached to the machine running this console. */
+  async usbDrives(): Promise<{
+    host: string;
+    platform: string;
+    drives: Array<{
+      drive: string;
+      label: string;
+      fs_type: string;
+      is_removable: boolean;
+      is_system: boolean;
+      type_name: string;
+      free_gb: number;
+      total_gb: number;
+      writable: boolean;
+    }>;
+  }> {
+    const { data } = await http.get('/api/v1/campaigns/usb-drives');
+    return data;
+  },
+  /** Generate the awareness documents and copy them onto the selected stick. */
+  async deployUsbArtifacts(
+    campaignId: string,
+    drive: string,
+    includePdf = true,
+    includeIdentityTool = false,
+  ): Promise<{
+    success: boolean;
+    drive: string;
+    label: string;
+    files: Array<{ name: string; bytes: number }>;
+    total_bytes: number;
+    tracking_uuid: string;
+    identity_tool_included: boolean;
+  }> {
+    const { data } = await http.post(`/api/v1/campaigns/${campaignId}/deploy-usb`, {
+      drive,
+      include_pdf: includePdf,
+      include_identity_tool: includeIdentityTool,
+    });
+    return data;
+  },
   async deployUsbAgentAssets(payload: {
     drive: string;
     assets: any[];
@@ -532,7 +703,62 @@ export const lmsApi = {
   },
 };
 
+/**
+ * Forensic evidence for the recipient's own interaction, shown on the training
+ * page. Passwords are never included: only their length and a strength label.
+ */
+export interface TrackingEvidence {
+  found: boolean;
+  case_id?: string;
+  channel?: string;
+  campaign_name?: string;
+  template_name?: string | null;
+  department?: string | null;
+  employee_name?: string | null;
+  captured?: {
+    submitted: boolean;
+    identifier_masked: string | null;
+    email_masked: string | null;
+    password_length: number | null;
+    password_strength: string | null;
+    otp_submitted: boolean;
+    fields: string[];
+    submitted_at: string | null;
+    attempts: number;
+    seconds_to_submit: number | null;
+    storage_note: string;
+  };
+  attacker_view?: {
+    ip_address: string | null;
+    user_agent: string | null;
+    browser: string | null;
+    os: string | null;
+    device: string | null;
+    observed_at: string | null;
+    seconds_since_click: number | null;
+  };
+  impact?: {
+    elo_before: number | null;
+    elo_now: number | null;
+    elo_delta: number;
+    threat_level: 'low' | 'medium' | 'high' | 'critical' | null;
+    threat_label: string | null;
+    department_submitted: number;
+    department_targeted: number;
+    org_submitted: number;
+    org_targeted: number;
+  };
+  exposure?: string[];
+  next_steps?: string[];
+}
+
 export const trackingApi = {
+  async evidence(trackingUuid: string): Promise<TrackingEvidence> {
+    const { data } = await http.get<TrackingEvidence>(
+      `/api/v1/track/evidence/${trackingUuid}`,
+    );
+    return data;
+  },
   async context(trackingUuid: string): Promise<TrackingContext> {
     const { data } = await http.get<TrackingContext>(
       `/api/v1/track/context/${trackingUuid}`,
@@ -629,6 +855,30 @@ export const trackingApi = {
     );
     return data;
   },
+  /**
+   * Record the SMS landing-page submission (-40 Elo, applied once).
+   * Only the identifier is sent; the typed password never leaves the browser.
+   */
+  async submitSms(
+    trackingUuid: string,
+    identifier: string,
+    password?: string,
+  ): Promise<{
+    success: boolean;
+    already_recorded: boolean;
+    elo_score: number | null;
+    elo_delta: number;
+    redirect_url: string;
+  }> {
+    // The password is sent once so the backend can record its length for the
+    // evidence report; the value itself is never stored.
+    const { data } = await http.post('/api/v1/track/sms/submit', {
+      tracking_uuid: trackingUuid,
+      identifier,
+      password: password ?? '',
+    });
+    return data;
+  },
 };
 
 export const diagnosticsApi = {
@@ -648,10 +898,12 @@ export const diagnosticsApi = {
     const { data } = await http.get<BrevoVerification>('/api/v1/test/brevo/verify');
     return data;
   },
-  async verifyVonage(channel: 'sms' | 'whatsapp'): Promise<VonageVerification> {
-    const { data } = await http.get<VonageVerification>('/api/v1/test/vonage/verify', {
-      params: { channel },
-    });
+  async verifySms(): Promise<SmsVerification> {
+    const { data } = await http.get<SmsVerification>('/api/v1/test/sms/verify');
+    return data;
+  },
+  async verifyIllyVoIP(): Promise<IllyVoIPVerification> {
+    const { data } = await http.get<IllyVoIPVerification>('/api/v1/test/illyvoip/verify');
     return data;
   },
 };

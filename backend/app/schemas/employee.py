@@ -8,6 +8,7 @@ from typing import Generic, TypeVar
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, computed_field, field_validator
 
+from app.schemas.sanitization import sanitize_plain_text
 from app.services.elo_engine import threat_level_for_elo
 
 T = TypeVar("T")
@@ -70,6 +71,17 @@ class EmployeeBase(BaseModel):
     def _validate_identifier(cls, value: object) -> object:
         return _normalize_optional_text(value)
 
+    @field_validator("first_name", "last_name", "department", "job_title", mode="before")
+    @classmethod
+    def _sanitize_text(cls, value: object) -> object:
+        """Strip markup and reject active content in free-text fields."""
+        if value is None:
+            return value
+        cleaned = sanitize_plain_text(str(value), "field") or ""
+        if len(cleaned) > 100:
+            raise ValueError("field must be at most 100 characters long")
+        return cleaned
+
 
 class EmployeeCreate(EmployeeBase):
     """Payload for creating an employee."""
@@ -99,6 +111,17 @@ class EmployeeUpdate(BaseModel):
     @classmethod
     def _validate_identifier(cls, value: object) -> object:
         return _normalize_optional_text(value)
+
+    @field_validator("first_name", "last_name", "department", "job_title", mode="before")
+    @classmethod
+    def _sanitize_text(cls, value: object) -> object:
+        """Strip markup and reject active content in free-text fields."""
+        if value is None:
+            return value
+        cleaned = sanitize_plain_text(str(value), "field") or ""
+        if len(cleaned) > 100:
+            raise ValueError("field must be at most 100 characters long")
+        return cleaned
 
 
 class EmployeePublic(BaseModel):
@@ -135,6 +158,9 @@ class EmployeePublic(BaseModel):
     is_on_leave: bool
     requires_mandatory_training: bool
     under_enhanced_monitoring: bool
+    is_blacklisted: bool = False
+    blacklist_reason: str | None = None
+    blacklisted_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -170,3 +196,64 @@ class BulkImportResult(BaseModel):
     updated: int
     skipped: int
     errors: list[str] = Field(default_factory=list)
+
+
+class MonthlyArchiveRow(BaseModel):
+    """One employee's archived month, joined with their profile."""
+
+    employee_id: uuid.UUID
+    employee_name: str
+    email: str
+    department: str | None = None
+    month_year: str
+    final_elo_score: int
+    total_reports: int = 0
+    total_clicks: int = 0
+    total_submissions: int = 0
+    awareness_level: str
+    awareness_level_ar: str
+    is_blacklisted: bool = False
+
+
+class MonthlyArchiveMonth(BaseModel):
+    """Aggregate for one archived month."""
+
+    month_year: str
+    employee_count: int
+    average_elo: float
+
+
+class MonthlyArchiveResponse(BaseModel):
+    """Monthly archive list for the reports page."""
+
+    month: str | None = None
+    months: list[MonthlyArchiveMonth] = Field(default_factory=list)
+    rows: list[MonthlyArchiveRow] = Field(default_factory=list)
+    average_elo: float | None = None
+
+
+class MonthlyEloPoint(BaseModel):
+    """Average Elo for one month (reports line chart)."""
+
+    month_year: str
+    average_elo: float
+    employee_count: int
+
+
+class MonthlyArchiveRunRequest(BaseModel):
+    """Manual archive trigger (admin use / local testing)."""
+
+    month: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}$")
+    force: bool = True
+
+
+class MonthlyArchiveRunResult(BaseModel):
+    """Result of a manual monthly archive run."""
+
+    status: str
+    month: str
+    archived: int = 0
+    blacklisted: int = 0
+    reset: int = 0
+    skipped_existing: int = 0
+    reason: str | None = None

@@ -8,6 +8,7 @@ import Stack from '@mui/material/Stack';
 import Chip from '@mui/material/Chip';
 import Alert from '@mui/material/Alert';
 import FormControl from '@mui/material/FormControl';
+import FormControlLabel from '@mui/material/FormControlLabel';
 import InputLabel from '@mui/material/InputLabel';
 import Select from '@mui/material/Select';
 import MenuItem from '@mui/material/MenuItem';
@@ -34,6 +35,7 @@ import Tabs from '@mui/material/Tabs';
 import Tab from '@mui/material/Tab';
 import IconButton from '@mui/material/IconButton';
 import TextField from '@mui/material/TextField';
+import Switch from '@mui/material/Switch';
 import toast from 'react-hot-toast';
 
 import { campaignsApi } from '@/api/endpoints';
@@ -56,6 +58,7 @@ interface UsbDeploymentStationProps {
 
 export function UsbDeploymentStation({ campaignId }: UsbDeploymentStationProps) {
   const [agentConnected, setAgentConnected] = useState(false);
+  const [hostLabel, setHostLabel] = useState('');
   const [drives, setDrives] = useState<DriveItem[]>([]);
   const [selectedDrive, setSelectedDrive] = useState<string>('');
   const [loadingDrives, setLoadingDrives] = useState(false);
@@ -64,6 +67,7 @@ export function UsbDeploymentStation({ campaignId }: UsbDeploymentStationProps) 
   const [progressStep, setProgressStep] = useState('');
   const [deployedFiles, setDeployedFiles] = useState<string[]>([]);
   const [deploymentSuccess, setDeploymentSuccess] = useState(false);
+  const [includeIdentityTool, setIncludeIdentityTool] = useState(false);
   const [previewAssets, setPreviewAssets] = useState<any[]>([]);
   const [hidModalOpen, setHidModalOpen] = useState(false);
   const [hidTab, setHidTab] = useState(0);
@@ -151,20 +155,28 @@ export function UsbDeploymentStation({ campaignId }: UsbDeploymentStationProps) 
   useEffect(() => {
     let ws: WebSocket | null = null;
     let wsTimer: NodeJS.Timeout;
-    let pollInterval: NodeJS.Timeout;
     let isWsWorking = false;
 
-    // HTTP Bridge fallback fetcher
+    // The console runs on the operator's own machine, so the server lists the
+    // drives that are physically plugged in.  This is the primary source; the
+    // optional companion agent is only a fallback.
     async function pollHttpBridge() {
       try {
-        const res = await campaignsApi.getUsbAgentStatus();
-        if (res.online) {
-          setAgentConnected(true);
-          updateDrivesList(res.drives || []);
-        } else if (!isWsWorking) {
-          setAgentConnected(false);
-        }
+        const res = await campaignsApi.usbDrives();
+        setAgentConnected(true);
+        setHostLabel(res.host);
+        updateDrivesList(res.drives || []);
       } catch {
+        try {
+          const legacy = await campaignsApi.getUsbAgentStatus();
+          if (legacy.online) {
+            setAgentConnected(true);
+            updateDrivesList(legacy.drives || []);
+            return;
+          }
+        } catch {
+          /* fall through to disconnected */
+        }
         if (!isWsWorking) {
           setAgentConnected(false);
         }
@@ -227,7 +239,7 @@ export function UsbDeploymentStation({ campaignId }: UsbDeploymentStationProps) 
     pollHttpBridge();
 
     // Poll HTTP bridge every 3 seconds to ensure real-time USB drive detection even across HTTPS
-    pollInterval = setInterval(pollHttpBridge, 3000);
+    const pollInterval = setInterval(pollHttpBridge, 3000);
 
     return () => {
       clearTimeout(wsTimer);
@@ -240,37 +252,59 @@ export function UsbDeploymentStation({ campaignId }: UsbDeploymentStationProps) 
 
   async function handleRefreshDrives() {
     setLoadingDrives(true);
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(jsonAction('list_drives'));
-      toast.success('جاري فحص منافذ الـ USB...');
-    } else {
-      try {
-        const res = await campaignsApi.getUsbAgentStatus();
-        if (res.online) {
-          setAgentConnected(true);
-          updateDrivesList(res.drives || []);
-          toast.success('تم تحديث قائمة محركات الـ USB بنجاح');
-        } else {
-          setAgentConnected(false);
-          toast.error('الوكيل المحلي غير متصل. يرجى تشغيل start_usb_agent.bat');
-        }
-      } catch {
-        setAgentConnected(false);
-        toast.error('الوكيل المحلي غير متصل. يرجى تشغيل start_usb_agent.bat');
-      } finally {
-        setLoadingDrives(false);
-      }
+    try {
+      const res = await campaignsApi.usbDrives();
+      setAgentConnected(true);
+      setHostLabel(res.host);
+      updateDrivesList(res.drives || []);
+      const removable = (res.drives || []).filter((d) => d.is_removable);
+      toast.success(
+        removable.length
+          ? `تم العثور على ${removable.length} فلاشة متصلة`
+          : 'لم يتم العثور على فلاشة. أدخل الفلاشة ثم اضغط تحديث.',
+      );
+    } catch {
+      setAgentConnected(false);
+      toast.error('تعذر قراءة قائمة الأقراص من الخادم المحلي');
+    } finally {
+      setLoadingDrives(false);
     }
   }
 
   async function handleDeployAssets() {
     if (!selectedDrive) {
-      toast.error('يرجى اختيار محرك أقراص USB لتجهيزه');
+      toast.error('يرجى اختيار فلاشة USB لتجهيزها');
       return;
     }
-    if (!agentConnected) {
-      toast.error('الوكيل المحلي غير متصل. يرجى تشغيل start_usb_agent.bat');
-      return;
+
+    // Preferred path: the local server generates the documents and writes them
+    // directly onto the chosen stick (no companion agent needed).
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+      try {
+        setDeploying(true);
+        setDeploymentSuccess(false);
+        setProgress(30);
+        setProgressStep(`جاري توليد الملفات ونسخها إلى ${selectedDrive}...`);
+        const result = await campaignsApi.deployUsbArtifacts(
+          campaignId,
+          selectedDrive,
+          true,
+          includeIdentityTool,
+        );
+        setProgress(100);
+        setProgressStep('تم النسخ بنجاح!');
+        setDeployedFiles(result.files.map((f) => f.name));
+        setDeploymentSuccess(true);
+        setDeploying(false);
+        toast.success(
+          `تم نسخ ${result.files.length} ملف إلى ${result.drive} — الفلاشة جاهزة للاختبار الميداني.`,
+        );
+        return;
+      } catch (err: any) {
+        setDeploying(false);
+        toast.error(err?.response?.data?.detail || err?.message || 'فشل نسخ الملفات إلى الفلاشة');
+        return;
+      }
     }
 
     try {
@@ -374,7 +408,11 @@ export function UsbDeploymentStation({ campaignId }: UsbDeploymentStationProps) 
           {/* Local Companion Agent Status Badge */}
           <Chip
             icon={agentConnected ? <CheckCircleIcon fontSize="small" /> : undefined}
-            label={agentConnected ? 'الوكيل المحلي متصل (ws://127.0.0.1:8089)' : 'الوكيل المحلي غير متصل'}
+            label={
+              agentConnected
+                ? `الخادم المحلي متصل${hostLabel ? ` · ${hostLabel}` : ''}`
+                : 'تعذر قراءة الأقراص من الخادم المحلي'
+            }
             color={agentConnected ? 'success' : 'error'}
             variant={agentConnected ? 'filled' : 'outlined'}
             sx={{ fontWeight: 800, fontSize: '0.8rem', px: 1 }}
@@ -385,10 +423,12 @@ export function UsbDeploymentStation({ campaignId }: UsbDeploymentStationProps) 
         {!agentConnected ? (
           <Alert severity="warning" sx={{ mb: 2.5 }}>
             <Typography variant="subtitle2" sx={{ fontWeight: 800, mb: 0.5 }}>
-              وكيل النشر المساعد (Local Companion Agent) غير مشغل حالياً:
+              تعذر قراءة الأقراص من الخادم المحلي:
             </Typography>
             <Typography variant="body2" sx={{ fontSize: '0.83rem', mb: 1 }}>
-              لتمكين رصد منافذ الـ USB والكتابة التلقائية المباشرة، يرجى تشغيل المشغل التلقائي المرفق بنقرة واحدة:
+              رصد الفلاشات يتم من الخادم المحلي مباشرة — لا حاجة لأي وكيل مساعد. إذا لم
+              تظهر القائمة: تأكد أن الواجهة تُفتح من نفس الجهاز الذي يعمل عليه الخادم، ثم
+              أدخل الفلاشة واضغط «تحديث».
             </Typography>
             <Box
               sx={{
@@ -399,9 +439,20 @@ export function UsbDeploymentStation({ campaignId }: UsbDeploymentStationProps) 
                 fontFamily: 'monospace',
                 fontSize: '0.82rem',
                 border: '1px solid rgba(255,255,255,0.1)',
+                mb: 1.5,
               }}
             >
-              start_usb_agent.bat &nbsp; (أو تنفيذ: python deployment_agent.py)
+              GET /api/v1/campaigns/usb-drives
+            </Box>
+            <Box>
+              <Button
+                size="small"
+                variant="outlined"
+                onClick={handleRefreshDrives}
+                disabled={loadingDrives}
+              >
+                إعادة محاولة قراءة الأقراص
+              </Button>
             </Box>
           </Alert>
         ) : null}
@@ -502,6 +553,48 @@ export function UsbDeploymentStation({ campaignId }: UsbDeploymentStationProps) 
               {deploying ? 'جاري النسخ والتجهيز...' : 'تجهيز وحرق ملفات الفلاشة'}
             </Button>
           </Stack>
+
+          {/* Optional local identity collector */}
+          <Box
+            sx={{
+              mt: 2,
+              p: 1.5,
+              borderRadius: 2,
+              border: '1px dashed',
+              borderColor: includeIdentityTool ? 'warning.main' : 'divider',
+            }}
+          >
+            <FormControlLabel
+              control={
+                <Switch
+                  checked={includeIdentityTool}
+                  onChange={(event) => setIncludeIdentityTool(event.target.checked)}
+                  disabled={deploying}
+                />
+              }
+              label={
+                <Typography variant="body2" sx={{ fontWeight: 800 }}>
+                  إضافة أداة جمع اسم حساب Windows واسم الجهاز الحقيقي (اختياري)
+                </Typography>
+              }
+            />
+            <Typography variant="caption" color="text.secondary" component="div" sx={{ mt: 0.5 }}>
+              تُنسخ أداة صغيرة بجوار ملف التوعية: <code>HUMINT_Identity_Check.cmd</code> +{' '}
+              <code>HUMINT_Identity_Check.ps1</code>. صفحة HTML محجوبة عن قراءة اسم حساب النظام واسم
+              الجهاز، وهذه الأداة تقرأهما وترسلهما إلى نفس سجل الفتح. لا تُشغَّل تلقائياً ولا تُعدّل شيئاً
+              على جهاز الموظف.
+            </Typography>
+            {includeIdentityTool ? (
+              <Alert severity="warning" sx={{ mt: 1.2, fontSize: '0.8rem' }}>
+                <strong>تحذير SmartScreen المتوقع:</strong> عند أول تشغيل للأداة على جهاز الموظف قد يعرض
+                Windows رسالة «Windows protected your PC» لأن الملف غير موقّع رقمياً. هذا سلوك طبيعي وليس
+                دليلاً على خطر الملف؛ المسار هو <strong>More info</strong> ← <strong>Run anyway</strong>.
+                إن منعت سياسة PowerShell تشغيل السكربت، شغّل ملف <code>.cmd</code> من موجّه الأوامر أو
+                استخدم <code>Unblock-File</code>. لن يظهر اسم الحساب واسم الجهاز في نافذة التفاصيل إلا بعد
+                تشغيل الأداة على الجهاز.
+              </Alert>
+            ) : null}
+          </Box>
 
           {/* Preview of Assets to be Deployed */}
           {previewAssets.length > 0 ? (

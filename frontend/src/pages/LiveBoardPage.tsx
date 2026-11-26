@@ -71,10 +71,17 @@ const STATUS_META: Record<
   completed: { label: 'Completed', color: 'success', accent: '#2e7d32', hint: 'Micro-training finished' },
   reported_safe: { label: 'Reported Safe', color: 'success', accent: '#FFD54F', hint: 'Employee reported the simulation safe' },
   failed: { label: 'Failed', color: 'error', accent: '#b71c1c', hint: 'The email could not be sent' },
+  no_answer: {
+    label: 'No answer',
+    color: 'warning',
+    accent: '#ef6c00',
+    hint: 'The phone rang but nobody picked up before the carrier ended the call',
+  },
 };
 
 const STATUS_ORDER: Record<LiveStatus, number> = {
   failed: 0,
+  no_answer: 0,
   pending: 1,
   sent: 2,
   opened: 3,
@@ -263,6 +270,52 @@ function RecipientCard({
             <Chip size="small" color="warning" label={`password ${recipient.password_length} chars`} />
           ) : null}
         </Stack>
+
+        {recipient.device_summary || recipient.geo_label || recipient.source_path ? (
+          <Box
+            sx={{
+              bgcolor: 'action.hover',
+              borderRadius: 1,
+              px: 0.9,
+              py: 0.6,
+              display: 'grid',
+              gap: 0.15,
+            }}
+          >
+            {recipient.device_summary ? (
+              <Typography variant="caption" noWrap title={recipient.device_summary} display="block">
+                🖥 {recipient.device_summary}
+              </Typography>
+            ) : null}
+            {[recipient.device_hostname, recipient.device_username].filter(Boolean).length > 0 ? (
+              <Typography variant="caption" color="text.secondary" noWrap display="block">
+                👤 {[recipient.device_hostname, recipient.device_username].filter(Boolean).join(' · ')}
+              </Typography>
+            ) : null}
+            {recipient.geo_label ? (
+              <Typography variant="caption" color="text.secondary" noWrap display="block">
+                📍 {recipient.geo_label}
+              </Typography>
+            ) : null}
+            {recipient.source_path ? (
+              <Typography
+                variant="caption"
+                color="text.secondary"
+                noWrap
+                title={recipient.source_path}
+                display="block"
+                sx={{ fontFamily: 'monospace', fontSize: 10.5, direction: 'ltr', textAlign: 'right' }}
+              >
+                📄 {recipient.source_path}
+              </Typography>
+            ) : null}
+            {!recipient.telemetry_received ? (
+              <Typography variant="caption" color="warning.main" noWrap display="block">
+                device profile pending — the document could not reach the server yet
+              </Typography>
+            ) : null}
+          </Box>
+        ) : null}
 
         <Stack direction="row" spacing={0.75} alignItems="center" justifyContent="space-between">
           <Box sx={{ minWidth: 0 }}>
@@ -642,6 +695,7 @@ export function LiveBoardPage() {
                   />
                   <Typography variant="body2" sx={{ flex: 1 }} noWrap>
                     {event.employee_name}
+                    {event.ip_address ? ` · ${event.ip_address}` : ''}
                   </Typography>
                   <Typography
                     variant="caption"

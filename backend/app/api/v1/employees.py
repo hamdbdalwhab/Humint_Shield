@@ -7,26 +7,57 @@ import math
 import uuid
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    UploadFile,
+    status,
+)
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.deps import get_current_user, get_organization_or_404, rate_limit, require_roles
+from app.deps import (
+    get_organization_or_404,
+    rate_limit,
+    require_permissions,
+    require_roles,
+)
 from app.logging_config import get_logger
-from app.models import EmailCampaign, EmailTracking, HumanAsset, User
+from app.models import EmailCampaign, EmailTracking, HumanAsset, MonthlyArchive, User
 from app.schemas import (
     BulkImportResult,
     EmployeeCreate,
     EmployeeDossier,
     EmployeePublic,
     EmployeeUpdate,
+    MonthlyArchiveMonth,
+    MonthlyArchiveResponse,
+    MonthlyArchiveRow,
+    MonthlyArchiveRunRequest,
+    MonthlyArchiveRunResult,
+    MonthlyEloPoint,
     Paginated,
     TimelineEvent,
 )
+from app.services.audit_service import log_audit
+from app.services.elo_engine import awareness_level_ar, awareness_level_for_elo
+from app.services.encryption_service import try_decrypt_text
+from app.services.employee_service import (
+    archive_monthly_scores,
+    build_certificate_pdf,
+    build_certificates_zip,
+    build_monthly_report_pdf,
+    validate_month,
+)
 from app.services.interaction_report import InteractionReportService
 from app.services.tracking_service import decrypt_payload
-from app.services.vonage_service import is_e164_phone
+from app.services.textbee_service import is_e164_phone
 
 logger = get_logger(__name__)
 router = APIRouter(
@@ -37,6 +68,22 @@ router = APIRouter(
 
 MAX_CSV_BYTES = 5 * 1024 * 1024
 REQUIRED_CSV_COLUMNS = {"email", "first_name"}
+
+
+def _employee_snapshot(employee: HumanAsset) -> dict:
+    """Return the auditable, non-secret view of an employee row."""
+    return {
+        "email": employee.email,
+        "first_name": employee.first_name,
+        "last_name": employee.last_name,
+        "department": employee.department,
+        "job_title": employee.job_title,
+        "phone": employee.phone,
+        "access_level": employee.access_level,
+        "is_active": employee.is_active,
+        "is_on_leave": employee.is_on_leave,
+        "organization_id": str(employee.organization_id),
+    }
 
 
 async def _get_employee(
@@ -63,7 +110,7 @@ async def list_employees(
     is_active: bool | None = Query(None),
     db: AsyncSession = Depends(get_db),
     organization=Depends(get_organization_or_404),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permissions("employees.view")),
 ) -> Paginated[EmployeePublic]:
     """Return a paginated, filterable list of employees.
 
@@ -117,6 +164,41 @@ async def list_employees(
     )
 
 
+@router.get(
+    "/departments",
+    response_model=list[dict],
+    summary="List departments with employee counts",
+)
+async def list_departments(
+    org_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    organization=Depends(get_organization_or_404),
+    user: User = Depends(require_permissions("employees.view")),
+) -> list[dict]:
+    """Return the organization's distinct departments and their headcounts.
+
+    Departments are entered by HR imports and are therefore free-form; the
+    campaign wizard uses this list to segment targets server-side.
+    """
+    rows = (
+        await db.execute(
+            select(HumanAsset.department, func.count(HumanAsset.id))
+            .where(
+                HumanAsset.organization_id == org_id,
+                HumanAsset.department.is_not(None),
+                HumanAsset.department != "",
+            )
+            .group_by(HumanAsset.department)
+            .order_by(HumanAsset.department.asc())
+        )
+    ).all()
+    return [
+        {"department": department, "count": int(count)}
+        for department, count in rows
+        if department
+    ]
+
+
 @router.post(
     "",
     response_model=EmployeePublic,
@@ -126,9 +208,10 @@ async def list_employees(
 async def create_employee(
     org_id: uuid.UUID,
     payload: EmployeeCreate,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     organization=Depends(get_organization_or_404),
-    user: User = Depends(require_roles("admin", "manager")),
+    user: User = Depends(require_permissions("employees.manage")),
 ) -> EmployeePublic:
     """Create a single employee.
 
@@ -159,6 +242,16 @@ async def create_employee(
     data["email"] = payload.email.lower()
     employee = HumanAsset(organization_id=org_id, **data)
     db.add(employee)
+    await db.flush()
+    log_audit(
+        db,
+        user=user,
+        action="CREATE",
+        target_table="human_assets",
+        target_id=str(employee.id),
+        new=_employee_snapshot(employee),
+        request=request,
+    )
     await db.commit()
     await db.refresh(employee)
     logger.info("employee_created", employee_id=str(employee.id), org_id=str(org_id))
@@ -175,7 +268,7 @@ async def bulk_import(
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
     organization=Depends(get_organization_or_404),
-    user: User = Depends(require_roles("admin", "manager")),
+    user: User = Depends(require_permissions("employees.manage")),
 ) -> BulkImportResult:
     """Import employees from a CSV upload.
 
@@ -293,13 +386,291 @@ async def bulk_import(
     return BulkImportResult(created=created, updated=updated, skipped=skipped, errors=errors[:100])
 
 
+# --------------------------------------------------------------------------- #
+# Monthly archives, certificates and reports (modules 2 and 5)
+# --------------------------------------------------------------------------- #
+async def _load_archive_payloads(
+    db: AsyncSession, org_id: uuid.UUID, month_year: str
+) -> list[dict]:
+    """Load archived rows joined with their employee profile."""
+    rows = (
+        await db.execute(
+            select(MonthlyArchive, HumanAsset)
+            .join(HumanAsset, HumanAsset.id == MonthlyArchive.employee_id)
+            .where(
+                HumanAsset.organization_id == org_id,
+                MonthlyArchive.month_year == month_year,
+            )
+            .order_by(
+                MonthlyArchive.final_elo_score.asc(),
+                HumanAsset.first_name.asc(),
+                HumanAsset.last_name.asc(),
+            )
+        )
+    ).all()
+    payloads: list[dict] = []
+    for archive, employee in rows:
+        payloads.append(
+            {
+                "employee": employee,
+                "employee_id": employee.id,
+                "employee_name": employee.full_name,
+                "email": employee.email,
+                "department": employee.department,
+                "month_year": archive.month_year,
+                "final_elo_score": int(archive.final_elo_score),
+                "total_reports": int(archive.total_reports or 0),
+                "total_clicks": int(archive.total_clicks or 0),
+                "total_submissions": int(archive.total_submissions or 0),
+                "awareness_level": awareness_level_for_elo(archive.final_elo_score),
+                "awareness_level_ar": awareness_level_ar(archive.final_elo_score),
+                "is_blacklisted": bool(employee.is_blacklisted),
+            }
+        )
+    return payloads
+
+
+def _archive_row(payload: dict) -> MonthlyArchiveRow:
+    """Convert an internal payload to the public archive row schema."""
+    return MonthlyArchiveRow(
+        **{key: value for key, value in payload.items() if key != "employee"}
+    )
+
+
+@router.get(
+    "/monthly-elo-trend",
+    response_model=list[MonthlyEloPoint],
+    summary="Monthly average Elo trend",
+)
+async def monthly_elo_trend(
+    org_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    organization=Depends(get_organization_or_404),
+    user: User = Depends(require_permissions("employees.view")),
+) -> list[MonthlyEloPoint]:
+    """Return one average-Elo point per archived month, oldest first."""
+    rows = (
+        await db.execute(
+            select(
+                MonthlyArchive.month_year,
+                func.avg(MonthlyArchive.final_elo_score),
+                func.count(MonthlyArchive.id),
+            )
+            .join(HumanAsset, HumanAsset.id == MonthlyArchive.employee_id)
+            .where(HumanAsset.organization_id == org_id)
+            .group_by(MonthlyArchive.month_year)
+            .order_by(MonthlyArchive.month_year.asc())
+        )
+    ).all()
+    return [
+        MonthlyEloPoint(
+            month_year=row[0],
+            average_elo=round(float(row[1] or 0), 1),
+            employee_count=int(row[2] or 0),
+        )
+        for row in rows
+    ]
+
+
+@router.get(
+    "/monthly-archives",
+    response_model=MonthlyArchiveResponse,
+    summary="Monthly archive rows",
+)
+async def monthly_archives(
+    org_id: uuid.UUID,
+    month: str | None = Query(
+        None, pattern=r"^\d{4}-(0[1-9]|1[0-2])$", description="YYYY-MM"
+    ),
+    db: AsyncSession = Depends(get_db),
+    organization=Depends(get_organization_or_404),
+    user: User = Depends(require_permissions("employees.view")),
+) -> MonthlyArchiveResponse:
+    """Return available archive months and the selected month's rows."""
+    month_rows = (
+        await db.execute(
+            select(
+                MonthlyArchive.month_year,
+                func.count(MonthlyArchive.id),
+                func.avg(MonthlyArchive.final_elo_score),
+            )
+            .join(HumanAsset, HumanAsset.id == MonthlyArchive.employee_id)
+            .where(HumanAsset.organization_id == org_id)
+            .group_by(MonthlyArchive.month_year)
+            .order_by(MonthlyArchive.month_year.desc())
+        )
+    ).all()
+    months = [
+        MonthlyArchiveMonth(
+            month_year=row[0],
+            employee_count=int(row[1] or 0),
+            average_elo=round(float(row[2] or 0), 1),
+        )
+        for row in month_rows
+    ]
+    selected = month or (months[0].month_year if months else None)
+    payloads = (
+        await _load_archive_payloads(db, org_id, selected) if selected else []
+    )
+    average = (
+        round(
+            sum(row["final_elo_score"] for row in payloads) / len(payloads),
+            1,
+        )
+        if payloads
+        else None
+    )
+    return MonthlyArchiveResponse(
+        month=selected,
+        months=months,
+        rows=[_archive_row(row) for row in payloads],
+        average_elo=average,
+    )
+
+
+@router.post(
+    "/monthly-archives/run",
+    response_model=MonthlyArchiveRunResult,
+    summary="Run the monthly archive now (admin)",
+)
+async def run_monthly_archive(
+    org_id: uuid.UUID,
+    payload: MonthlyArchiveRunRequest,
+    db: AsyncSession = Depends(get_db),
+    organization=Depends(get_organization_or_404),
+    user: User = Depends(require_permissions("employees.manage")),
+    _admin: User = Depends(require_roles("admin")),
+) -> MonthlyArchiveRunResult:
+    """Manually snapshot the month and reset live Elo scores.
+
+    This is the local/demo path for environments without a Celery worker; the
+    scheduled task calls the same service function.
+    """
+    result = await archive_monthly_scores(
+        db,
+        month_year=payload.month,
+        force=payload.force,
+        organization_id=org_id,
+    )
+    return MonthlyArchiveRunResult(**result)
+
+
+@router.get(
+    "/monthly-report",
+    summary="Download the monthly PDF report",
+)
+async def monthly_report(
+    org_id: uuid.UUID,
+    month: str = Query(
+        ..., pattern=r"^\d{4}-(0[1-9]|1[0-2])$", description="YYYY-MM"
+    ),
+    db: AsyncSession = Depends(get_db),
+    organization=Depends(get_organization_or_404),
+    user: User = Depends(require_permissions("reports.view")),
+) -> Response:
+    """Render the monthly archive report as a PDF."""
+    validate_month(month)
+    payloads = await _load_archive_payloads(db, org_id, month)
+    if not payloads:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No monthly archive exists for {month}",
+        )
+    pdf = build_monthly_report_pdf(organization.name, month, payloads)
+    return Response(
+        content=pdf,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="monthly-report-{month}.pdf"'
+        },
+    )
+
+
+@router.get(
+    "/certificates.zip",
+    summary="Download all monthly certificates as a ZIP",
+)
+async def certificates_zip(
+    org_id: uuid.UUID,
+    month: str = Query(
+        ..., pattern=r"^\d{4}-(0[1-9]|1[0-2])$", description="YYYY-MM"
+    ),
+    db: AsyncSession = Depends(get_db),
+    organization=Depends(get_organization_or_404),
+    user: User = Depends(require_permissions("reports.view")),
+) -> Response:
+    """Bundle every archived employee certificate for a month into a ZIP."""
+    validate_month(month)
+    payloads = await _load_archive_payloads(db, org_id, month)
+    if not payloads:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No monthly archive exists for {month}",
+        )
+    archive = build_certificates_zip(month, payloads)
+    return Response(
+        content=archive,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="certificates-{month}.zip"'
+        },
+    )
+
+
+@router.get(
+    "/{employee_id}/certificate",
+    summary="Download one employee's monthly certificate",
+)
+async def employee_certificate(
+    org_id: uuid.UUID,
+    employee_id: uuid.UUID,
+    month: str = Query(
+        ..., pattern=r"^\d{4}-(0[1-9]|1[0-2])$", description="YYYY-MM"
+    ),
+    db: AsyncSession = Depends(get_db),
+    organization=Depends(get_organization_or_404),
+    user: User = Depends(require_permissions("reports.view")),
+) -> Response:
+    """Render one employee's archived monthly certificate as a PDF."""
+    validate_month(month)
+    employee = await _get_employee(db, org_id, employee_id)
+    archive = await db.scalar(
+        select(MonthlyArchive).where(
+            MonthlyArchive.employee_id == employee.id,
+            MonthlyArchive.month_year == month,
+        )
+    )
+    if archive is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No monthly archive exists for this employee in {month}",
+        )
+    pdf = build_certificate_pdf(
+        employee,
+        month,
+        int(archive.final_elo_score),
+        int(archive.total_reports or 0),
+        int(archive.total_clicks or 0),
+        int(archive.total_submissions or 0),
+    )
+    return Response(
+        content=pdf,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="certificate-{employee.id}-{month}.pdf"'
+            )
+        },
+    )
+
+
 @router.get("/{employee_id}", response_model=EmployeePublic, summary="Get an employee")
 async def get_employee(
     org_id: uuid.UUID,
     employee_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
     organization=Depends(get_organization_or_404),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permissions("employees.view")),
 ) -> EmployeePublic:
     """Return a single employee."""
     employee = await _get_employee(db, org_id, employee_id)
@@ -313,7 +684,7 @@ async def update_employee(
     payload: EmployeeUpdate,
     db: AsyncSession = Depends(get_db),
     organization=Depends(get_organization_or_404),
-    user: User = Depends(require_roles("admin", "manager")),
+    user: User = Depends(require_permissions("employees.manage")),
 ) -> EmployeePublic:
     """Apply a partial update to an employee.
 
@@ -353,15 +724,53 @@ async def update_employee(
 async def delete_employee(
     org_id: uuid.UUID,
     employee_id: uuid.UUID,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     organization=Depends(get_organization_or_404),
-    user: User = Depends(require_roles("admin")),
+    user: User = Depends(require_permissions("employees.delete")),
 ) -> None:
-    """Delete an employee."""
+    """Delete an employee and record the last known state in the audit trail."""
     employee = await _get_employee(db, org_id, employee_id)
+    log_audit(
+        db,
+        user=user,
+        action="DELETE",
+        target_table="human_assets",
+        target_id=str(employee.id),
+        old=_employee_snapshot(employee),
+        request=request,
+    )
     await db.delete(employee)
     await db.commit()
     logger.info("employee_deleted", employee_id=str(employee_id))
+
+
+@router.get(
+    "/{employee_id}/sensitive",
+    summary="Decrypted employee PII (admin only)",
+)
+async def employee_sensitive(
+    org_id: uuid.UUID,
+    employee_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    organization=Depends(get_organization_or_404),
+    user: User = Depends(require_permissions("employees.manage")),
+    _admin: User = Depends(require_roles("admin")),
+) -> dict:
+    """Return the PII decrypted from the ``BYTEA`` columns.
+
+    The general employee payloads stay redaction-friendly; this dedicated,
+    admin-only route is the single place where the sealed e-mail/phone are
+    returned in plaintext.  It falls back to the legacy columns for rows that
+    predate the encryption migration.
+    """
+    employee = await _get_employee(db, org_id, employee_id)
+    return {
+        "employee_id": str(employee.id),
+        "email": try_decrypt_text(employee.email_encrypted) or employee.email,
+        "phone": try_decrypt_text(employee.phone_encrypted) or employee.phone,
+        "encrypted_at_rest": bool(employee.email_encrypted),
+    }
 
 
 @router.get(
@@ -374,7 +783,7 @@ async def employee_dossier(
     employee_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
     organization=Depends(get_organization_or_404),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permissions("employees.view")),
 ) -> EmployeeDossier:
     """Return the employee's complete training dossier.
 
@@ -398,7 +807,7 @@ async def employee_timeline(
     employee_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
     organization=Depends(get_organization_or_404),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permissions("employees.view")),
 ) -> list[TimelineEvent]:
     """Build the employee's timeline from tracking + campaign data.
 

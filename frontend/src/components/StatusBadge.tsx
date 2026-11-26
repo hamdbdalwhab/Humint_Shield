@@ -30,6 +30,7 @@ const ENGAGEMENT_COLORS: Record<
   completed: 'success',
   reported_safe: 'success',
   failed: 'error',
+  no_answer: 'warning',
 };
 
 const ENGAGEMENT_ACCENT: Record<EngagementStatus, string> = {
@@ -41,6 +42,7 @@ const ENGAGEMENT_ACCENT: Record<EngagementStatus, string> = {
   completed: '#00E676',
   reported_safe: '#FFD54F',
   failed: '#FF1744',
+  no_answer: '#EF6C00',
 };
 
 function Dot({ color }: { color: string }) {

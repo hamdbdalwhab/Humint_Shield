@@ -354,12 +354,27 @@ export function EmployeesPage() {
                     <TableCell align="center">{employee.total_clicks}</TableCell>
                     <TableCell align="center">{employee.total_reports}</TableCell>
                     <TableCell align="center">
-                      <Chip
-                        size="small"
-                        label={employee.is_active ? 'active' : 'inactive'}
-                        color={employee.is_active ? 'success' : 'default'}
-                        variant="outlined"
-                      />
+                      <Stack
+                        direction="row"
+                        spacing={0.5}
+                        justifyContent="center"
+                        sx={{ flexWrap: 'wrap', gap: 0.5 }}
+                      >
+                        <Chip
+                          size="small"
+                          label={employee.is_active ? 'active' : 'inactive'}
+                          color={employee.is_active ? 'success' : 'default'}
+                          variant="outlined"
+                        />
+                        {employee.is_blacklisted ? (
+                          <Chip
+                            size="small"
+                            color="error"
+                            label="BLACKLISTED: Repeated Failure"
+                            sx={{ fontWeight: 800 }}
+                          />
+                        ) : null}
+                      </Stack>
                     </TableCell>
                     <TableCell align="right">
                       <Tooltip title="Send simulation">

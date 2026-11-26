@@ -98,7 +98,7 @@ TokenType = Literal["access", "refresh"]
 
 
 def _create_token(subject: str, token_type: TokenType, expires_delta: timedelta,
-                  extra: dict[str, Any] | None = None) -> str:
+                  extra: dict[str, Any] | None = None, version: int = 0) -> str:
     """Create a signed JWT.
 
     Args:
@@ -106,6 +106,8 @@ def _create_token(subject: str, token_type: TokenType, expires_delta: timedelta,
         token_type: ``access`` or ``refresh``.
         expires_delta: Lifetime of the token.
         extra: Additional claims to embed.
+        version: The account's ``token_version`` at issue time.  A later
+            mismatch means the token was revoked (logout / password change).
 
     Returns:
         The encoded JWT string.
@@ -115,6 +117,7 @@ def _create_token(subject: str, token_type: TokenType, expires_delta: timedelta,
     payload: dict[str, Any] = {
         "sub": str(subject),
         "type": token_type,
+        "ver": int(version),
         "iat": int(now.timestamp()),
         "exp": int((now + expires_delta).timestamp()),
         "jti": base64.urlsafe_b64encode(os.urandom(12)).decode().rstrip("="),
@@ -124,19 +127,39 @@ def _create_token(subject: str, token_type: TokenType, expires_delta: timedelta,
     return jwt.encode(payload, settings.secret_key, algorithm=settings.jwt_algorithm)
 
 
-def create_access_token(subject: str, extra: dict[str, Any] | None = None) -> str:
+def claim_version(claims: dict[str, Any]) -> int:
+    """Return the token's session-generation claim (``0`` for legacy tokens)."""
+    try:
+        return int(claims.get("ver", 0))
+    except (TypeError, ValueError):
+        return -1
+
+
+def create_access_token(
+    subject: str, extra: dict[str, Any] | None = None, version: int = 0
+) -> str:
     """Create an access token for ``subject``."""
     settings = get_settings()
     return _create_token(
-        subject, "access", timedelta(minutes=settings.access_token_expire_minutes), extra
+        subject,
+        "access",
+        timedelta(minutes=settings.access_token_expire_minutes),
+        extra,
+        version,
     )
 
 
-def create_refresh_token(subject: str, extra: dict[str, Any] | None = None) -> str:
+def create_refresh_token(
+    subject: str, extra: dict[str, Any] | None = None, version: int = 0
+) -> str:
     """Create a refresh token for ``subject``."""
     settings = get_settings()
     return _create_token(
-        subject, "refresh", timedelta(days=settings.refresh_token_expire_days), extra
+        subject,
+        "refresh",
+        timedelta(days=settings.refresh_token_expire_days),
+        extra,
+        version,
     )
 
 

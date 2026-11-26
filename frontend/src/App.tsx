@@ -13,6 +13,7 @@ import { ProtectedRoute } from '@/components/ProtectedRoute';
 import { AssignmentsPage } from '@/pages/AssignmentsPage';
 import { CampaignDetailPage } from '@/pages/CampaignDetailPage';
 import { CampaignsPage } from '@/pages/CampaignsPage';
+import { ChangePasswordPage } from '@/pages/ChangePasswordPage';
 import { DashboardPage } from '@/pages/DashboardPage';
 import { EmployeeDossierPage } from '@/pages/EmployeeDossierPage';
 import { EmployeesPage } from '@/pages/EmployeesPage';
@@ -27,7 +28,10 @@ import { PhishingLandingPage } from '@/pages/PhishingLandingPage';
 import { PretextingSimulationPage } from '@/pages/PretextingSimulationPage';
 import { QrLureLandingPage } from '@/pages/QrLureLandingPage';
 import { ReportInboxPage } from '@/pages/ReportInboxPage';
+import { ReportsPage } from '@/pages/ReportsPage';
 import { SettingsPage } from '@/pages/SettingsPage';
+import { SmsLureLandingPage } from '@/pages/SmsLureLandingPage';
+import { WhatsAppLureLandingPage } from '@/pages/WhatsAppLureLandingPage';
 import { TemplatesPage } from '@/pages/TemplatesPage';
 import { TrainingExperiencePage } from '@/pages/TrainingExperiencePage';
 import { TrainingLibraryPage } from '@/pages/TrainingLibraryPage';
@@ -55,6 +59,8 @@ export function App() {
       <Route path="/qr/:lureType" element={<QrLureLandingPage />} />
       <Route path="/simulation/qr/:trackingUuid" element={<QrLureLandingPage />} />
       <Route path="/simulation/vishing/:trackingUuid" element={<VishingSimulationPage />} />
+      <Route path="/sms-lure/:trackingUuid" element={<SmsLureLandingPage />} />
+      <Route path="/whatsapp-lure/:trackingUuid" element={<WhatsAppLureLandingPage />} />
       <Route path="/simulation/ceo/:trackingUuid" element={<PretextingSimulationPage />} />
       <Route path="/simulation/pretexting/:trackingUuid" element={<PretextingSimulationPage />} />
       <Route path="/hacked/:trackingUuid" element={<HackedPage />} />
@@ -125,6 +131,14 @@ export function App() {
           </Shell>
         }
       />
+      <Route
+        path="/reports"
+        element={
+          <Shell>
+            <ReportsPage />
+          </Shell>
+        }
+      />
 
       <Route
         path="/incident-response-simulation"
@@ -164,6 +178,14 @@ export function App() {
         element={
           <Shell>
             <ReportInboxPage />
+          </Shell>
+        }
+      />
+      <Route
+        path="/change-password"
+        element={
+          <Shell>
+            <ChangePasswordPage />
           </Shell>
         }
       />

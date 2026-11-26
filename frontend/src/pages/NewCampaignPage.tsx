@@ -58,7 +58,7 @@ import { PageHeader } from '@/components/PageHeader';
 import { useAuth } from '@/hooks/useAuth';
 import { errorMessage } from '@/lib/errors';
 import { formatDateTime } from '@/lib/format';
-import type { Employee, QrLureType } from '@/types';
+import type { CooldownBlockedEmployee, Employee, QrLureType } from '@/types';
 
 const STEPS = ['التفاصيل', 'المستهدفون', 'المراجعة'];
 const QR_STEPS = ['التفاصيل وإعداد الملصق', 'المراجعة والإطلاق'];
@@ -116,17 +116,73 @@ export const USB_DROP_LOCATIONS = [
   'الممرات وقرب دورات المياه — Restrooms / Hallway',
 ];
 
-type WizardChannel = 'email' | 'sms' | 'whatsapp' | 'qr' | 'vishing' | 'pretexting' | 'usb';
+type WizardChannel =
+  | 'email'
+  | 'sms'
+  | 'whatsapp'
+  | 'qr'
+  | 'vishing'
+  | 'pretexting'
+  | 'usb'
+  | 'voice';
 
 const CHANNEL_LABELS: Record<WizardChannel, string> = {
   email: 'البريد الإلكتروني — Brevo',
-  sms: 'رسائل SMS — Vonage',
-  whatsapp: 'واتساب — Vonage',
+  sms: 'رسائل SMS — Smishing (TextBee)',
+  whatsapp: 'واتساب — Smishing (WA-AKG)',
   qr: 'رمز QR — Quishing (طباعة يدوية)',
   vishing: 'مكالمة صوتية — Vishing (رابط يدوي)',
   pretexting: 'محادثة CEO — Pretexting (رابط يدوي)',
   usb: 'فلاشة USB — HTML/PDF توعوي (توزيع يدوي)',
+  voice: 'مكالمة صوتية حقيقية — IllyVoIP',
 };
+
+const DEFAULT_VOICE_SCRIPT =
+  'Hello, this is the IT security desk. We detected a suspicious sign-in on your account. Please confirm the verification code you just received so we can secure it.';
+
+/** Delivered-length budget for one SMS segment. */
+const SMS_MAX_LENGTH = 170;
+/** Stand-in for `{{link}}` when counting, matching the real short URL shape. */
+const SMS_SAMPLE_LINK = 'https://hument.link/s/AbCdEf';
+
+const SMS_LANDING_PAGES = [
+  { value: 'auto', label: 'تلقائي — حسب القسم والكلمات المفتاحية' },
+  { value: 'cisco_vpn', label: 'Cisco AnyConnect — VPN' },
+  { value: 'supplier_portal', label: 'Supplier Portal — الفواتير' },
+  { value: 'hr_portal', label: 'HR Portal — السياسات' },
+  { value: 'teams_invite', label: 'Microsoft Teams — اجتماع' },
+  { value: 'microsoft_login', label: 'Microsoft 365 — تسجيل دخول' },
+  { value: 'general_login', label: 'بوابة عامة — General login' },
+];
+
+const SMS_DEPARTMENTS = [
+  { value: '', label: 'كل الأقسام — بدون تخصيص' },
+  { value: 'it', label: 'IT — تقنية المعلومات' },
+  { value: 'finance', label: 'Finance — المالية' },
+  { value: 'hr', label: 'HR — الموارد البشرية' },
+  { value: 'executive', label: 'Executive — الإدارة العليا' },
+];
+
+/** Mirrors the backend LandingPageResolver keyword rules for live feedback. */
+const SMS_KEYWORD_RULES: Array<[string, string[]]> = [
+  ['cisco_vpn', ['vpn', 'anyconnect', 'certificate', 'network', 'firewall', 'remote access']],
+  ['supplier_portal', ['invoice', 'payment', 'supplier', 'purchase order', 'remittance', 'wire']],
+  ['hr_portal', ['policy', 'hr', 'sign', 'handbook', 'acknowledg', 'benefits', 'payroll']],
+  ['teams_invite', ['meeting', 'teams', 'board', 'calendar', 'invite', 'conference']],
+  ['microsoft_login', ['password', 'login', 'log in', 'sign in', 'account', 'mfa', '2fa', 'otp']],
+];
+
+function detectSmsLandingPage(message: string): string | null {
+  const text = message.toLowerCase();
+  for (const [page, keywords] of SMS_KEYWORD_RULES) {
+    if (keywords.some((keyword) => text.includes(keyword))) return page;
+  }
+  return null;
+}
+
+function smsDeliveredLength(message: string): number {
+  return message.replaceAll('{{link}}', SMS_SAMPLE_LINK).trim().length;
+}
 
 const QR_TEMPLATE_LURES: Record<string, string> = {
   'قهوة مجانية': 'coffee',
@@ -199,14 +255,40 @@ export function NewCampaignPage() {
   const [usbScenario, setUsbScenario] = useState('salaries');
   const [usbDropLocation, setUsbDropLocation] = useState(USB_DROP_LOCATIONS[0]);
   const [usbVolumeLabel, setUsbVolumeLabel] = useState('HR_SALARIES');
+  const [usbDrive, setUsbDrive] = useState('');
+  const [usbDriveList, setUsbDriveList] = useState<
+    Array<{
+      drive: string;
+      label: string;
+      fs_type: string;
+      is_removable: boolean;
+      is_system: boolean;
+      type_name: string;
+      free_gb: number;
+      total_gb: number;
+      writable: boolean;
+    }>
+  >([]);
+  const [usbDrivesLoading, setUsbDrivesLoading] = useState(false);
+  const [voiceScript, setVoiceScript] = useState(DEFAULT_VOICE_SCRIPT);
+  const [voiceRingOnly, setVoiceRingOnly] = useState(false);
+  const [smsMode, setSmsMode] = useState<'template' | 'custom'>('template');
+  const [smsMessage, setSmsMessage] = useState(
+    'Your VPN session expires today. Please re-authenticate here: {{link}}',
+  );
+  const [smsDepartment, setSmsDepartment] = useState('');
+  const [smsLandingPage, setSmsLandingPage] = useState('auto');
   const [templateId, setTemplateId] = useState('');
   const [difficulty, setDifficulty] = useState(5);
   const [autoRetestFailed, setAutoRetestFailed] = useState(false);
+  const [mandatoryTraining, setMandatoryTraining] = useState(false);
   const [selected, setSelected] = useState<Map<string, Employee>>(new Map());
   const [search, setSearch] = useState('');
   const [department, setDepartment] = useState('');
   const [activeOnly, setActiveOnly] = useState(true);
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [cooldownOpen, setCooldownOpen] = useState(false);
+  const [cooldownBlocked, setCooldownBlocked] = useState<CooldownBlockedEmployee[]>([]);
   // A failed launch (e.g. Brevo temporarily blocking the server IP) leaves the
   // campaign as a draft. Reuse it on retry so the operator never accumulates
   // orphan drafts or sends twice.
@@ -236,7 +318,10 @@ export function NewCampaignPage() {
   const templateChannel =
     channel === 'qr'
       ? 'qr'
-      : channel === 'usb' || channel === 'vishing' || channel === 'pretexting'
+      : channel === 'usb' ||
+          channel === 'vishing' ||
+          channel === 'pretexting' ||
+          channel === 'voice'
         ? 'email'
         : channel;
 
@@ -323,15 +408,19 @@ export function NewCampaignPage() {
     setStep(2);
   }, [preselectId, name, templateId, preselectQuery.data]);
 
-  // Verify the outbound path before showing "Launch". Email uses Brevo; SMS
-  // and WhatsApp use Vonage. A missing key/sender is surfaced before an
+  // Verify the outbound path before showing "Launch". Email uses Brevo and
+  // SMS uses the TextBee gateway. A missing key/device is surfaced before an
   // operator can assume a real send happened.
+  const selectedIds = useMemo(() => Array.from(selected.keys()), [selected]);
+
   const preflightQuery = useQuery({
     queryKey: ['delivery-preflight', channel],
     queryFn: () =>
       channel === 'email'
         ? diagnosticsApi.verifyBrevo()
-        : diagnosticsApi.verifyVonage(channel as 'sms' | 'whatsapp'),
+        : channel === 'voice'
+          ? diagnosticsApi.verifyIllyVoIP()
+          : diagnosticsApi.verifySms(),
     enabled:
       step === 2 &&
       channel !== 'qr' &&
@@ -342,15 +431,80 @@ export function NewCampaignPage() {
     retry: false,
   });
 
+  // Module 3/4 preview: the backend returns the exact blocked payloads so the
+  // wizard can warn before a draft is created or a real send starts.
+  const cooldownQuery = useQuery({
+    queryKey: [
+      'campaign-cooldown',
+      organizationId,
+      selectedIds.join(','),
+      mandatoryTraining,
+    ],
+    queryFn: () =>
+      campaignsApi.cooldownCheck(organizationId as string, {
+        employee_ids: selectedIds,
+        is_mandatory_training: mandatoryTraining,
+      }),
+    enabled:
+      Boolean(organizationId) &&
+      step === 2 &&
+      selectedIds.length > 0 &&
+      channel !== 'qr' &&
+      channel !== 'usb',
+    staleTime: 10_000,
+    retry: false,
+  });
+
+  async function handleLaunchRequest(): Promise<void> {
+    if (
+      channel !== 'qr' &&
+      channel !== 'usb' &&
+      !mandatoryTraining &&
+      selectedIds.length > 0
+    ) {
+      try {
+        const result = await cooldownQuery.refetch();
+        const blocked = result.data?.blocked ?? [];
+        if (blocked.length > 0) {
+          setCooldownBlocked(blocked);
+          setCooldownOpen(true);
+          return;
+        }
+      } catch {
+        // The launcher still enforces the guardrail server-side; do not block
+        // the operator on a failed preview request.
+      }
+    }
+    setConfirmOpen(true);
+  }
+
   const launchMutation = useMutation({
     mutationFn: async () => {
       if (!organizationId) throw new Error('No organization');
       if (channel === 'qr' && !qrCompany.trim()) {
         throw new Error('اسم الشركة مطلوب لإنشاء ملصق QR.');
       }
+      if (channel === 'voice' && !voiceRingOnly && !voiceScript.trim()) {
+        throw new Error('نص المكالمة الصوتية مطلوب.');
+      }
+      if (isMessagingChannel && smsMode === 'custom') {
+        const trimmed = smsMessage.trim();
+        if (!trimmed) throw new Error('اكتب نص الرسالة المخصصة أولاً.');
+        if (smsDeliveredLength(trimmed) > SMS_MAX_LENGTH) {
+          throw new Error(`نص الرسالة يتجاوز ${SMS_MAX_LENGTH} حرفًا بعد إضافة الرابط.`);
+        }
+      }
       const targets = (channel === 'qr' || channel === 'usb') ? [] : Array.from(selected.keys());
-      const channelConfig =
-        channel === 'qr'
+      const channelConfig = isMessagingChannel
+          ? {
+              [channel]: {
+                custom_message: smsMode === 'custom' ? smsMessage.trim() : '',
+                target_department: smsDepartment,
+                selected_landing_page:
+                  smsLandingPage === 'auto' ? undefined : smsLandingPage,
+              },
+            }
+          : channel === 'qr'
           ? {
               qr: {
                 lure_type: qrPretext as QrLureType,
@@ -384,10 +538,26 @@ export function NewCampaignPage() {
                       scenario: usbScenario,
                       drop_location: usbDropLocation,
                       volume_label: usbVolumeLabel,
-                      document_name: 'إشعار_الأمن_السيبراني_المعتمد.txt',
+                      // The document names are derived server-side from the
+                      // selected template, so a drop never claims to be a
+                      // salary statement when the campaign tells another story.
+                      drive: usbDrive,
                     },
                   }
-                : undefined;
+                : channel === 'voice'
+                  ? {
+                      voice: {
+                        ...(voiceRingOnly
+                          ? { ring_only: true }
+                          : {
+                              script: voiceScript.trim(),
+                              language: 'en-US',
+                              voice: 'illyvoip-emma',
+                              answer_timeout_seconds: 45,
+                            }),
+                      },
+                    }
+                  : undefined;
       let campaignId = draftIdRef.current;
       if (!campaignId) {
         const campaign = await campaignsApi.create(organizationId, {
@@ -397,6 +567,7 @@ export function NewCampaignPage() {
           channel_config: channelConfig,
           difficulty_level: difficulty,
           auto_retest_failed: autoRetestFailed,
+          is_mandatory_training: mandatoryTraining,
           target_employee_ids: targets,
         });
         campaignId = campaign.id;
@@ -409,14 +580,29 @@ export function NewCampaignPage() {
           channel,
           channel_config: channelConfig,
           auto_retest_failed: autoRetestFailed,
+          is_mandatory_training: mandatoryTraining,
           target_employee_ids: targets,
         });
       }
-      return campaignsApi.launch(organizationId, campaignId);
+      return campaignsApi.launch(organizationId, campaignId, channel === 'voice');
     },
     onSuccess: (result) => {
       setConfirmOpen(false);
       setLaunchError(null);
+      if (result.queued) {
+        toast.success(
+          result.message ??
+            'تم إرسال حملة المكالمات الحقيقية إلى قائمة الانتظار. سيتولى Celery تنفيذها.',
+        );
+        navigate(`/campaigns/${result.campaign_id}`);
+        return;
+      }
+      if (result.blocked_count > 0) {
+        toast(
+          `تم تخطي ${result.blocked_count} موظفاً بسبب فترة التهدئة أو قائمة الفشل المتكرر.`,
+          { icon: '⚠️' },
+        );
+      }
       if (
         channel === 'qr' ||
         channel === 'usb' ||
@@ -432,9 +618,26 @@ export function NewCampaignPage() {
         if (result.failed > 0) {
           toast.error(`تم تجهيز ${result.sent} من ${result.total} ${unit}؛ فشل ${result.failed}.`);
         } else if (channel === 'usb') {
-          toast.success(
-            `تم تجهيز ${result.total} مستند USB. حمّل ملف HTML أو PDF من صفحة الحملة.`,
-          );
+          // Copy the generated documents onto the chosen stick automatically:
+          // the operator never runs a script or downloads files by hand.
+          if (usbDrive) {
+            void campaignsApi
+              .deployUsbArtifacts(result.campaign_id, usbDrive)
+              .then((copy) => {
+                toast.success(
+                  `تم نسخ ${copy.files.length} ملف إلى ${copy.drive} — الفلاشة جاهزة للاختبار الميداني.`,
+                );
+              })
+              .catch((error: unknown) => {
+                toast.error(
+                  `تم إنشاء الحملة، لكن فشل النسخ إلى ${usbDrive}: ${errorMessage(error)}`,
+                );
+              });
+          } else {
+            toast.success(
+              `تم تجهيز ${result.total} مستند USB. اختر فلاشة في الخطوة السابقة لنسخها تلقائيًا.`,
+            );
+          }
         } else if (channel === 'qr') {
           setLaunchedQrId(result.campaign_id);
           toast.success('تم إطلاق حملة QR بنجاح! جاهزة لتحميل الملصق.');
@@ -471,13 +674,46 @@ export function NewCampaignPage() {
   const isUsbChannel = channel === 'usb';
   const isVishingChannel = channel === 'vishing';
   const isPretextingChannel = channel === 'pretexting';
+  const isVoiceChannel = channel === 'voice';
   const isManualChannel =
     isQrChannel || isUsbChannel || isVishingChannel || isPretextingChannel;
-  const isPhoneChannel = channel === 'sms' || channel === 'whatsapp';
+  const isPhoneChannel =
+    channel === 'sms' || channel === 'whatsapp' || channel === 'voice';
+  // SMS and WhatsApp share the same composer: a template body or a custom
+  // message with a {{link}} placeholder, capped at one 170-character screen.
+  const isMessagingChannel = channel === 'sms' || channel === 'whatsapp';
 
   function isSelectable(employee: Employee): boolean {
     return !isPhoneChannel || hasValidPhone(employee.phone);
   }
+
+  // USB drives are read straight from the machine running this console, so the
+  // operator picks the stick here and the files are copied automatically on
+  // launch — no companion agent, no manual script.
+  async function loadUsbDrives() {
+    setUsbDrivesLoading(true);
+    try {
+      const res = await campaignsApi.usbDrives();
+      const removable = (res.drives || []).filter((item) => item.is_removable && item.writable);
+      setUsbDriveList(removable);
+      setUsbDrive((current) =>
+        current && removable.some((item) => item.drive === current)
+          ? current
+          : removable[0]?.drive ?? '',
+      );
+    } catch {
+      setUsbDriveList([]);
+    } finally {
+      setUsbDrivesLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    if (!isUsbChannel) return;
+    void loadUsbDrives();
+    const timer = setInterval(() => void loadUsbDrives(), 5000);
+    return () => clearInterval(timer);
+  }, [isUsbChannel]);
 
   // Switching to a phone channel must immediately remove any target that has
   // no number instead of letting the review step hide an invalid recipient.
@@ -498,14 +734,26 @@ export function NewCampaignPage() {
     [visibleEmployees, isPhoneChannel],
   );
 
+  // Departments come from the backend so the filter lists every department in
+  // the organization, not just the ones on the current page.
+  const departmentsQuery = useQuery({
+    queryKey: ['departments', organizationId],
+    queryFn: () => employeesApi.departments(organizationId as string),
+    enabled: Boolean(organizationId),
+  });
+
   const departments = useMemo(() => {
+    const serverRows = departmentsQuery.data;
+    if (serverRows && serverRows.length > 0) {
+      return serverRows.map((row) => [row.department, row.count] as [string, number]);
+    }
     const counts = new Map<string, number>();
     visibleEmployees.forEach((employee) => {
       if (!employee.department) return;
       counts.set(employee.department, (counts.get(employee.department) ?? 0) + 1);
     });
     return Array.from(counts.entries()).sort(([a], [b]) => a.localeCompare(b));
-  }, [visibleEmployees]);
+  }, [departmentsQuery.data, visibleEmployees]);
 
   const selectedTemplate = templatesQuery.data?.find((template) => template.id === templateId);
   const allVisibleSelected =
@@ -542,7 +790,15 @@ export function NewCampaignPage() {
     });
   }
 
-  const canLeaveStepOne = name.trim().length > 0 && (channel === 'usb' || templateId.length > 0);
+  const smsCustomInvalid =
+    isMessagingChannel &&
+    smsMode === 'custom' &&
+    (smsMessage.trim().length === 0 || smsDeliveredLength(smsMessage) > SMS_MAX_LENGTH);
+  const canLeaveStepOne =
+    name.trim().length > 0 &&
+    (channel === 'usb' || templateId.length > 0) &&
+    (!isVoiceChannel || voiceScript.trim().length > 0) &&
+    !smsCustomInvalid;
   const selectedList = Array.from(selected.values());
   const selectedPhonesValid =
     !isPhoneChannel || selectedList.every((employee) => hasValidPhone(employee.phone));
@@ -558,20 +814,28 @@ export function NewCampaignPage() {
         ? 'مكالمة Vishing'
         : isPretextingChannel
           ? 'محادثة CEO'
-          : channel === 'email'
-            ? 'رسالة بريد إلكتروني'
-            : channel === 'sms'
-              ? 'رسالة SMS'
-              : 'رسالة واتساب';
+          : isVoiceChannel
+            ? 'مكالمة صوتية حقيقية'
+            : channel === 'email'
+              ? 'رسالة بريد إلكتروني'
+              : channel === 'sms'
+                ? 'رسالة SMS'
+                : 'رسالة واتساب';
   const providerName = isQrChannel
     ? 'الطباعة اليدوية'
     : isUsbChannel
       ? 'التوزيع اليدوي'
       : isVishingChannel || isPretextingChannel
         ? 'التسليم اليدوي للرابط'
-        : channel === 'email'
-          ? 'Brevo/SMTP'
-          : 'Vonage';
+        : isVoiceChannel
+          ? 'IllyVoIP Voice API'
+          : channel === 'email'
+            ? 'Brevo/SMTP'
+            : channel === 'sms'
+              ? 'TextBee SMS Gateway'
+              : channel === 'whatsapp'
+                ? 'WA-AKG WhatsApp Gateway'
+                : 'غير متاح';
   const preflightBlocked =
     !isManualChannel && Boolean(preflightQuery.data && !preflightQuery.data.valid);
 
@@ -647,16 +911,21 @@ export function NewCampaignPage() {
                       ? 'حملة USB الفيزيائية: اختر سيناريو الطُعم وموقع الإسقاط، ثم اضغط إطلاق الحملة لتجهيز وحرق الفلاشات مباشرة عبر محطة التجهيز الميدانية.'
                       : isVishingChannel || isPretextingChannel
                         ? 'هذه قناة محاكاة يدوية: لا تُرسل مكالمة أو رسالة حقيقية. بعد الإطلاق تنسخ رابط المحاكاة الفريد لكل موظف من صفحة الحملة. القالب يُستخدم كمرجع للسيناريو فقط.'
-                        : 'البريد الإلكتروني يُرسل عبر Brevo، وSMS وواتساب يُرسلان عبر Vonage. أرقام الهاتف يجب أن تكون بصيغة E.164 مثل +966500000000.'
+                        : isVoiceChannel
+                          ? 'مكالمة هاتفية حقيقية عبر IllyVoIP Voice API مع تحويل النص إلى كلام أصلي. تتطلب مفتاح API وSIP User ID وCaller ID صالحة، ويجب أن يكون الرقم بصيغة E.164. تُنفَّذ الحملة في Celery ولا تُجرى أي مكالمة أثناء الاختبارات.'
+                          : channel === 'whatsapp'
+                            ? 'الواتساب يُرسل عبر بوابة WA-AKG (جلسة WhatsApp Web مرتبطة بجوال مخصص). امسح رمز QR مرة واحدة من لوحة WA-AKG، ثم ضع المفتاح ورقم الجلسة في backend/.env. أرقام الهاتف بصيغة E.164 مثل +966500000000.'
+                            : 'البريد الإلكتروني يُرسل عبر Brevo، والـ SMS عبر بوابة TextBee (الجوال المسجّل). أرقام الهاتف يجب أن تكون بصيغة E.164 مثل +966500000000.'
                 }
               >
                 <MenuItem value="email">البريد الإلكتروني</MenuItem>
-                <MenuItem value="sms">SMS — Vonage</MenuItem>
-                <MenuItem value="whatsapp">واتساب — Vonage</MenuItem>
+                <MenuItem value="sms">SMS — Smishing (TextBee)</MenuItem>
+                <MenuItem value="whatsapp">WhatsApp — Smishing (WA-AKG)</MenuItem>
                 <MenuItem value="qr">رمز QR — Quishing</MenuItem>
-                <MenuItem value="vishing">مكالمة صوتية — Vishing</MenuItem>
+                <MenuItem value="vishing">مكالمة صوتية — Vishing (رابط يدوي)</MenuItem>
                 <MenuItem value="pretexting">محادثة CEO — Pretexting</MenuItem>
                 <MenuItem value="usb">فلاشة USB — HTML/PDF توعوي</MenuItem>
+                <MenuItem value="voice">مكالمة صوتية حقيقية — IllyVoIP</MenuItem>
               </TextField>
 
               {isVishingChannel || isPretextingChannel ? (
@@ -665,6 +934,47 @@ export function NewCampaignPage() {
                     ? 'ستُجهّز صفحة مكالمة واردة تحاكي الدعم الفني، مع تحويل النص إلى كلام في المتصفح. لا تُجرى أي مكالمة هاتفية حقيقية ولا يُطلب رمز حقيقي.'
                     : 'ستُجهّز محادثة واتساب/Teams تحاكي الرئيس التنفيذي وتُعرض رسالتا الطلب تلقائياً. لا تُرسل أي أموال أو رسائل حقيقية.'}
                 </Alert>
+              ) : null}
+              {isVoiceChannel ? (
+                <Stack spacing={1.5}>
+                  <Alert severity="warning">
+                    هذه القناة تُجري مكالمات هاتفية حقيقية عبر IllyVoIP. استخدمها فقط
+                    لموظفيك المصرّح لهم أو لأرقام اختبار مملوكة للمؤسسة. لا يوجد وضع
+                    محاكاة، وأي خطأ في النص أو الرقم يُستهلك من رصيد المكالمات.
+                  </Alert>
+                  <Alert severity="info">
+                    كتالوج TTS في Voice API يدعم حالياً <code>en-US</code> فقط. اكتب
+                    النص بالإنجليزية، بحد أقصى 2,000 حرف. النص العربي سيُرفض من المزوّد.
+                  </Alert>
+                  <FormControlLabel
+                    control={
+                      <Switch
+                        checked={voiceRingOnly}
+                        onChange={(event) => setVoiceRingOnly(event.target.checked)}
+                      />
+                    }
+                    label="رنة تحقق فقط — Ring only (no audio, no TTS credit)"
+                  />
+                  {voiceRingOnly ? (
+                    <Alert severity="info">
+                      سيُطلب الرقم ثم تُقطع المكالمة لحظة أول رنة. لا صوت ولا نص ولا استهلاك
+                      لرصيد TTS — تُستخدم لإثبات القناة ووصول الرقم فقط.
+                    </Alert>
+                  ) : (
+                    <TextField
+                      label="نص المكالمة — Native TTS script"
+                      required
+                      fullWidth
+                      multiline
+                      minRows={4}
+                      value={voiceScript}
+                      onChange={(event) => setVoiceScript(event.target.value)}
+                      inputProps={{ maxLength: 2000 }}
+                      helperText={`${voiceScript.length}/2000 حرف — يُقرأ بصوت IllyVoIP الأصلي.`}
+                      dir="ltr"
+                    />
+                  )}
+                </Stack>
               ) : null}
               {isQrChannel ? (
                 <Box
@@ -885,6 +1195,131 @@ export function NewCampaignPage() {
                       onChange={(e) => setUsbVolumeLabel(e.target.value)}
                       helperText="الاسم الذي سيظهر في مستكشف الملفات (Windows Explorer) عند إدخال الفلاشة في الكمبيوتر"
                     />
+
+                    <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5} alignItems="flex-start">
+                      <TextField
+                        select
+                        fullWidth
+                        size="small"
+                        label="الفلاشة التي ستُنقل إليها الملفات"
+                        value={usbDrive}
+                        onChange={(e) => setUsbDrive(e.target.value)}
+                        disabled={usbDrivesLoading || usbDriveList.length === 0}
+                        helperText={
+                          usbDriveList.length
+                            ? 'تُكتشف تلقائيًا من هذا الجهاز، وتُنسخ الملفات فور إطلاق الحملة'
+                            : usbDrivesLoading
+                              ? 'جاري فحص الأقراص المتصلة...'
+                              : 'لم يتم العثور على فلاشة. أدخل الفلاشة وستظهر هنا خلال ثوانٍ'
+                        }
+                      >
+                        {usbDriveList.map((item) => (
+                          <MenuItem key={item.drive} value={item.drive}>
+                            {`${item.drive}${item.label ? ` — ${item.label}` : ''} · ${item.free_gb} GB متاح`}
+                          </MenuItem>
+                        ))}
+                      </TextField>
+                      <Button
+                        variant="outlined"
+                        size="small"
+                        onClick={() => void loadUsbDrives()}
+                        disabled={usbDrivesLoading}
+                        sx={{ mt: 0.5, whiteSpace: 'nowrap' }}
+                      >
+                        تحديث الأقراص
+                      </Button>
+                    </Stack>
+                  </Stack>
+                </Box>
+              ) : null}
+
+              {isMessagingChannel ? (
+                <Box
+                  sx={{
+                    p: 2,
+                    borderRadius: 2,
+                    border: '1px solid',
+                    borderColor: smsMode === 'custom' && smsCustomInvalid ? 'error.main' : 'divider',
+                    bgcolor: 'action.hover',
+                  }}
+                >
+                  <Stack spacing={2}>
+                    <Stack direction="row" spacing={1} sx={{ flexWrap: 'wrap', gap: 1 }}>
+                      <Button
+                        variant={smsMode === 'template' ? 'contained' : 'outlined'}
+                        onClick={() => setSmsMode('template')}
+                      >
+                        استخدام قالب
+                      </Button>
+                      <Button
+                        variant={smsMode === 'custom' ? 'contained' : 'outlined'}
+                        onClick={() => setSmsMode('custom')}
+                      >
+                        كتابة رسالة مخصصة
+                      </Button>
+                    </Stack>
+
+                    {smsMode === 'custom' ? (
+                      <>
+                        <TextField
+                          label="نص الرسالة المخصصة"
+                          multiline
+                          minRows={4}
+                          fullWidth
+                          value={smsMessage}
+                          onChange={(event) => setSmsMessage(event.target.value)}
+                          error={smsCustomInvalid}
+                          dir="ltr"
+                          placeholder="Your VPN session expires today. Please re-authenticate here: {{link}}"
+                          helperText={`${smsDeliveredLength(smsMessage)}/${SMS_MAX_LENGTH} حرفًا — استخدم {{link}} لمكان الرابط القصير؛ يُحسب بطول 24 حرفًا.`}
+                        />
+                        <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5}>
+                          <TextField
+                            select
+                            fullWidth
+                            size="small"
+                            label="القسم المستهدف"
+                            value={smsDepartment}
+                            onChange={(event) => setSmsDepartment(event.target.value)}
+                            helperText="للعرض والصياغة؛ التوجيه النهائي يعتمد على قسم الموظف."
+                          >
+                            {SMS_DEPARTMENTS.map((option) => (
+                              <MenuItem key={option.value} value={option.value}>
+                                {option.label}
+                              </MenuItem>
+                            ))}
+                          </TextField>
+                          <TextField
+                            select
+                            fullWidth
+                            size="small"
+                            label="صفحة الهبوط"
+                            value={smsLandingPage}
+                            onChange={(event) => setSmsLandingPage(event.target.value)}
+                          >
+                            {SMS_LANDING_PAGES.map((option) => (
+                              <MenuItem key={option.value} value={option.value}>
+                                {option.label}
+                              </MenuItem>
+                            ))}
+                          </TextField>
+                        </Stack>
+                        <Alert severity={smsCustomInvalid ? 'error' : 'info'}>
+                          {smsLandingPage === 'auto'
+                            ? `التوجيه التلقائي: ${
+                                SMS_LANDING_PAGES.find(
+                                  (option) =>
+                                    option.value === (detectSmsLandingPage(smsMessage) ?? 'general_login'),
+                                )?.label ?? 'general_login'
+                              }`
+                            : 'اختيار يدوي لصفحة الهبوط — يتجاوزه قسم الموظف عند الإطلاق (IT→VPN، Finance→Supplier، HR→HR، Executive→Teams).'}
+                        </Alert>
+                      </>
+                    ) : (
+                      <Alert severity="info">
+                        سيُرسل نص القالب المختار أدناه مع رابط قصير مخصص لكل مستهدف، مع فاصل عشوائي 10–30 ثانية بين الرسائل لتقليل خطر الحظر.
+                      </Alert>
+                    )}
                   </Stack>
                 </Box>
               ) : null}
@@ -1015,6 +1450,37 @@ export function NewCampaignPage() {
                       </Typography>
                       <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block' }}>
                         تشغيل حملة تنقيط تلقائية بعد 72 ساعة من انتهاء الحملة تستهدف الموظفين الذين فشلوا (نقروا أو أدخلوا بياناتهم أو تجاهلوا الرسالة) بقالب أعلى صعوبة.
+                      </Typography>
+                    </Box>
+                  }
+                />
+              </Box>
+
+              <Box
+                sx={{
+                  p: 2,
+                  borderRadius: 2,
+                  border: '1px dashed',
+                  borderColor: 'error.light',
+                  bgcolor: 'rgba(220,38,38,.04)',
+                }}
+              >
+                <FormControlLabel
+                  control={
+                    <Switch
+                      checked={mandatoryTraining}
+                      onChange={(event) => setMandatoryTraining(event.target.checked)}
+                      color="error"
+                    />
+                  }
+                  label={
+                    <Box sx={{ ml: 1 }}>
+                      <Typography sx={{ fontWeight: 700, fontSize: '0.92rem' }}>
+                        حملة تدريب إلزامي (Mandatory Training)
+                      </Typography>
+                      <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block' }}>
+                        تتجاوز فترة التهدئة وقائمة الفشل المتكرر. استخدمها فقط لإجبار
+                        الموظفين عالي الخطورة على إعادة التدريب.
                       </Typography>
                     </Box>
                   }
@@ -1312,6 +1778,12 @@ export function NewCampaignPage() {
                     <strong>إعادة الاختبار التلقائي:</strong>{' '}
                     {autoRetestFailed ? 'مفعل (بعد 72 ساعة للموظفين غير المجتازين)' : 'معطل'}
                   </Typography>
+                  <Typography variant="body2">
+                    <strong>تدريب إلزامي:</strong>{' '}
+                    {mandatoryTraining
+                      ? 'مفعل (يتجاوز التهدئة والقائمة السوداء)'
+                      : 'معطل'}
+                  </Typography>
                 </Stack>
               </Box>
 
@@ -1388,21 +1860,41 @@ export function NewCampaignPage() {
                 </Box>
               )}
 
+              {cooldownQuery.data && cooldownQuery.data.blocked.length > 0 && !mandatoryTraining ? (
+                <Alert severity="warning">
+                  <Typography variant="body2" sx={{ fontWeight: 700, mb: 0.5 }}>
+                    تحذير: {cooldownQuery.data.blocked.length} موظفاً داخل فترة التهدئة أو
+                    قائمة الفشل المتكرر.
+                  </Typography>
+                  <Typography variant="body2">
+                    سيتم تخطيهم عند الإطلاق. راجع القائمة في نافذة التحذير قبل المتابعة.
+                  </Typography>
+                </Alert>
+              ) : null}
+
+              {isVoiceChannel ? (
+                <Alert severity="warning">
+                  سيتم إرسال حملة المكالمات الحقيقية إلى Celery. يتطلب التشغيل وجود
+                  Redis وCelery worker. لا تغلق الـworker أثناء الحملة، وتأكد من أن
+                  جميع الأرقام مصرّح بها. يمكنك متابعة حالة كل مكالمة من صفحة الحملة.
+                </Alert>
+              ) : null}
+
               {isQrChannel ? (
                 <Alert severity="info">
                   قناة QR لا تستخدم مزوّد إرسال. سيتم إنشاء صفحة طباعة A4 لكل مستهدف برمز
                   فريد يفتح صفحة دخول جوال تحاكي شبكة الشركة والتأمين الصحي. عند إرسال
                   النموذج يُسجّل الحدثان{' '}
                   <span dir="ltr" className="mc-mono">qr_scanned</span> و{' '}
-                  <span dir="ltr" className="mc-mono">credential_submitted</span> وتُخصم 25
-                  نقطة Elo مرة واحدة. كلمة المرور لا تُخزَّن أبداً.
+                  <span dir="ltr" className="mc-mono">credential_submitted</span> وتُحسب
+                  خصومة Elo وفق وزن قناة QR (200) ومضاعف صعوبة القالب مرة واحدة. كلمة المرور لا تُخزَّن أبداً.
                 </Alert>
 
               ) : isVishingChannel || isPretextingChannel ? (
                 <Alert severity="info">
                   {isVishingChannel
-                    ? 'قناة Vishing يدوية بالكامل: ستُجهّز رابط مكالمة واردة فريداً لكل مستهدف، مع تحويل النص إلى كلام داخل المتصفح. لا تُجرى مكالمة هاتفية حقيقية. اختيار إعطاء الرمز يخصم 30 نقطة Elo، والإبلاغ يضيف 20 نقطة.'
-                    : 'قناة Pretexting يدوية بالكامل: ستُجهّز رابط محادثة CEO فريداً لكل مستهدف، وتُعرض رسالتا طلب بطاقات جوجل بلاي تلقائياً. لا تُرسل أموال أو رسائل حقيقية. الشراء يخصم 30 نقطة Elo، والإبلاغ يضيف 20 نقطة.'}
+                    ? 'قناة Vishing يدوية بالكامل: ستُجهّز رابط مكالمة واردة فريداً لكل مستهدف، مع تحويل النص إلى كلام داخل المتصفح. لا تُجرى مكالمة هاتفية حقيقية. إعطاء الرمز يُحسب كإدخال فاشل والإبلاغ كمكافأة، وفق وزن القناة ومضاعف الصعوبة.'
+                    : 'قناة Pretexting يدوية بالكامل: ستُجهّز رابط محادثة CEO فريداً لكل مستهدف، وتُعرض رسالتا طلب بطاقات جوجل بلاي تلقائياً. لا تُرسل أموال أو رسائل حقيقية. الشراء يُحسب كإدخال فاشل والإبلاغ كمكافأة، وفق وزن القناة ومضاعف الصعوبة.'}
                 </Alert>
               ) : preflightQuery.isFetching ? (
                 <Alert severity="info">جارٍ التحقق من جاهزية الإرسال الحقيقي…</Alert>
@@ -1441,7 +1933,7 @@ export function NewCampaignPage() {
                       underline="hover"
                       sx={{ display: 'inline-block', mt: 0.5 }}
                     >
-                      {channel === 'email' ? 'فتح إعدادات مزوّد البريد' : 'فتح إعدادات Vonage'}
+                      {channel === 'email' ? 'فتح إعدادات مزوّد البريد' : 'فتح إعدادات TextBee'}
                     </Link>
                   ) : null}
                 </Alert>
@@ -1452,12 +1944,12 @@ export function NewCampaignPage() {
                     ? preflightQuery.data.detail?.transport === 'smtp'
                       ? 'SMTP'
                       : 'Brevo'
-                    : `Vonage (${channel === 'sms' ? 'SMS' : 'WhatsApp'})`}{' '}
-                  استلم إعدادات المرسل بنجاح
-                  {channel !== 'email' &&
-                  typeof preflightQuery.data.detail?.from === 'string' &&
-                  preflightQuery.data.detail.from.trim()
-                    ? ` — المرسل: ${preflightQuery.data.detail.from}`
+                    : 'TextBee (SMS)'}{' '}
+                  استلم إعدادات الإرسال بنجاح
+                  {channel === 'sms' &&
+                  'device_id' in preflightQuery.data &&
+                  preflightQuery.data.device_id
+                    ? ` — الجهاز: ${preflightQuery.data.device_id}`
                     : ''}
                   .
                 </Alert>
@@ -1488,7 +1980,7 @@ export function NewCampaignPage() {
                 <Alert severity="info">
                   سيتم إنشاء <strong>ملصق QR عام واحد (Generic Lure)</strong> بطُعم «
                   {QR_LURES.find((lure) => lure.value === qrPretext)?.label}» لصالح{' '}
-                  <strong>{qrCompany || 'الشركة'}</strong>. لا يتطلب تحديد موظفين مسبقاً. الملصق يحمل رمزاً ثابتاً يربط برادار الحملة؛ المسح يسجل في الرادار فوراً، وأول إدخال للبيانات يطابق الموظف ويخصم 25 نقطة Elo. كلمة المرور لا تُخزَّن أبداً.
+                  <strong>{qrCompany || 'الشركة'}</strong>. لا يتطلب تحديد موظفين مسبقاً. الملصق يحمل رمزاً ثابتاً يربط برادار الحملة؛ المسح يسجل في الرادار فوراً، وأول إدخال للبيانات يطابق الموظف ويخصم نقاط Elo وفق وزن القناة والصعوبة. كلمة المرور لا تُخزَّن أبداً.
                 </Alert>
 
               ) : (
@@ -1525,7 +2017,7 @@ export function NewCampaignPage() {
                         (!isQrChannel && !isUsbChannel && selected.size === 0) ||
                         preflightBlocked
                       }
-                      onClick={() => setConfirmOpen(true)}
+                      onClick={() => void handleLaunchRequest()}
                     >
                       {isQrChannel ? 'إطلاق الحملة وتجهيز الملصق' : isUsbChannel ? 'إطلاق الحملة والذهاب لمحطة التجهيز' : 'إطلاق الحملة'}
                     </Button>
@@ -1578,6 +2070,106 @@ export function NewCampaignPage() {
         onConfirm={() => launchMutation.mutate()}
         onClose={() => setConfirmOpen(false)}
       />
+
+      <Dialog
+        open={cooldownOpen}
+        onClose={() => setCooldownOpen(false)}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle sx={{ fontWeight: 800 }}>
+          تحذير: موظفون خضعوا لاختبار حديث
+        </DialogTitle>
+        <DialogContent>
+          <Alert severity="warning" sx={{ mb: 2 }}>
+            بعض المستهدفين داخل فترة التهدئة ({cooldownQuery.data?.cooldown_days ?? 14} يوماً)
+            أو في قائمة الفشل المتكرر. لن تُرسل لهم هذه الحملة، ويمكنك عرض نتيجة الاختبار
+            السابق لكل موظف.
+          </Alert>
+          <Stack spacing={1.5}>
+            {cooldownBlocked.map((blocked) => (
+              <Box
+                key={blocked.employee_id}
+                sx={{
+                  p: 1.5,
+                  borderRadius: 2,
+                  border: '1px solid',
+                  borderColor:
+                    blocked.reason === 'blacklisted_repeated_failure'
+                      ? 'error.main'
+                      : 'warning.main',
+                  bgcolor: 'action.hover',
+                }}
+              >
+                <Stack
+                  direction="row"
+                  spacing={1}
+                  alignItems="center"
+                  sx={{ flexWrap: 'wrap', gap: 0.5, mb: 0.5 }}
+                >
+                  <Typography sx={{ fontWeight: 700 }}>
+                    {blocked.name || blocked.email}
+                  </Typography>
+                  {blocked.reason === 'blacklisted_repeated_failure' ? (
+                    <Chip
+                      size="small"
+                      color="error"
+                      label="BLACKLISTED: Repeated Failure"
+                      sx={{ fontWeight: 800 }}
+                    />
+                  ) : (
+                    <Chip
+                      size="small"
+                      color="warning"
+                      label={
+                        blocked.days_remaining != null
+                          ? `${blocked.days_remaining} يوم متبقٍ`
+                          : 'فترة تهدئة'
+                      }
+                    />
+                  )}
+                </Stack>
+                <Typography variant="body2" color="text.secondary" sx={{ mb: 0.75 }}>
+                  Employee {blocked.name || blocked.email} was tested recently. Cannot
+                  send a new campaign.
+                </Typography>
+                {blocked.last_campaign_name ? (
+                  <Typography variant="caption" color="text.secondary" display="block">
+                    آخر حملة: {blocked.last_campaign_name}
+                  </Typography>
+                ) : null}
+                <Button
+                  size="small"
+                  sx={{ mt: 0.5 }}
+                  onClick={() =>
+                    navigate(
+                      blocked.last_campaign_id
+                        ? `/campaigns/${blocked.last_campaign_id}`
+                        : `/employees/${blocked.employee_id}`,
+                    )
+                  }
+                >
+                  عرض النتيجة السابقة (View Previous Result)
+                </Button>
+              </Box>
+            ))}
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setCooldownOpen(false)}>إلغاء</Button>
+          <Button
+            variant="contained"
+            color="warning"
+            disabled={cooldownBlocked.length >= selected.size}
+            onClick={() => {
+              setCooldownOpen(false);
+              setConfirmOpen(true);
+            }}
+          >
+            إرسال للباقي ({Math.max(0, selected.size - cooldownBlocked.length)})
+          </Button>
+        </DialogActions>
+      </Dialog>
 
       <Dialog open={Boolean(launchedQrId)} maxWidth="sm" fullWidth>
         <DialogTitle sx={{ fontWeight: 800 }}>تم إطلاق حملة QR بنجاح!</DialogTitle>

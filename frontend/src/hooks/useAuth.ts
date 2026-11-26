@@ -73,8 +73,20 @@ export function useAuth() {
     navigate('/login', { replace: true });
   }, [dispatch, navigate, queryClient]);
 
+  /**
+   * Permission gate for UI affordances. The backend enforces the same keys, so
+   * this only hides what the API would reject anyway.
+   */
+  const can = useCallback(
+    (permission: string) =>
+      Boolean(user?.effective_permissions?.includes(permission)),
+    [user?.effective_permissions],
+  );
+
   return {
     user,
+    permissions: user?.effective_permissions ?? [],
+    can,
     isAuthenticated: Boolean(user && accessToken),
     initialised,
     organizationId: user?.organization_id ?? null,

@@ -140,7 +140,7 @@ async def test_click_redirects_to_qr_mobile_form(
 async def test_vishing_failure_and_report_are_idempotent(
     client, db, organization, employee, custom_template
 ) -> None:
-    """Vishing applies -30 once, then refuses to add a second outcome."""
+    """Vishing applies the medium submission delta once, then refuses repeats."""
     employee.elo_score = 1000
     await db.commit()
     tracking = await _seed_tracking(
@@ -155,7 +155,7 @@ async def test_vishing_failure_and_report_are_idempotent(
     assert first.json()["success"] is True
     assert first.json()["already_recorded"] is False
     await db.refresh(employee)
-    assert employee.elo_score == 970
+    assert employee.elo_score == 910
 
     second = await client.post(
         f"/api/v1/track/vishing/{tracking.tracking_uuid}",
@@ -164,7 +164,7 @@ async def test_vishing_failure_and_report_are_idempotent(
     assert second.status_code == 200
     assert second.json()["already_recorded"] is True
     await db.refresh(employee)
-    assert employee.elo_score == 970
+    assert employee.elo_score == 910
 
     events = (
         await db.execute(
@@ -175,13 +175,13 @@ async def test_vishing_failure_and_report_are_idempotent(
         )
     ).scalars().all()
     assert len(events) == 1
-    assert events[0].details["elo_delta"] == -30
+    assert events[0].details["elo_delta"] == -90
 
 
 async def test_pretexting_report_rewards_and_ceo_alias(
     client, db, organization, employee, custom_template
 ) -> None:
-    """The CEO alias records a pretexting report and adds +20 once."""
+    """The CEO alias records a pretexting report and rewards it once."""
     employee.elo_score = 1000
     await db.commit()
     tracking = await _seed_tracking(
@@ -196,7 +196,7 @@ async def test_pretexting_report_rewards_and_ceo_alias(
     assert first.json()["success"] is True
     assert first.json()["already_recorded"] is False
     await db.refresh(employee)
-    assert employee.elo_score == 1020
+    assert employee.elo_score == 1075
 
     second = await client.post(
         f"/api/v1/track/pretexting/{tracking.tracking_uuid}",
@@ -205,7 +205,7 @@ async def test_pretexting_report_rewards_and_ceo_alias(
     assert second.status_code == 200
     assert second.json()["already_recorded"] is True
     await db.refresh(employee)
-    assert employee.elo_score == 1020
+    assert employee.elo_score == 1075
 
     reports = (
         await db.execute(

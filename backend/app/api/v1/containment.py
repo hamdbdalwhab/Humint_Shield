@@ -21,6 +21,39 @@ from app.services.enterprise_identity_service import (
 
 logger = get_logger(__name__)
 
+
+def _org_id_of(user: User) -> uuid.UUID | None:
+    """Return the caller's organization id (``None`` for a global operator)."""
+    return user.organization_id
+
+
+async def _scoped_tracking_row(
+    db: AsyncSession, tracking_uuid: uuid.UUID, user: User
+) -> EmailTracking | None:
+    """Load a tracking row only when its campaign belongs to the caller.
+
+    Args:
+        db: Active session.
+        tracking_uuid: Recipient tracking UUID from the request.
+        user: Authenticated operator.
+
+    Returns:
+        The tracking row, or ``None`` when it is unknown or foreign.
+    """
+    org_id = _org_id_of(user)
+    if org_id is None:
+        return None
+    row = await db.scalar(
+        select(EmailTracking).where(EmailTracking.tracking_uuid == tracking_uuid)
+    )
+    if row is None:
+        return None
+    campaign = await db.get(EmailCampaign, row.campaign_id)
+    if campaign is None or campaign.organization_id != org_id:
+        return None
+    return row
+
+
 router = APIRouter(
     prefix="/containment",
     tags=["enterprise-containment"],
@@ -89,9 +122,15 @@ async def get_remediation_policy(
 @router.post("/policy")
 async def update_remediation_policy(
     payload: RemediationPolicySchema,
-    current_user: User = Depends(require_roles("admin", "operator")),
+    current_user: User = Depends(require_roles("admin")),
 ) -> dict[str, Any]:
-    """Update admin remediation rules and password complexity requirements."""
+    """Update admin remediation rules and password complexity requirements.
+
+    Containment targets a deployment-wide directory (AD domain / Entra tenant)
+    and a single SOAR webhook, so this policy is deployment-wide as well and is
+    therefore restricted to the ``admin`` role rather than to any tenant
+    operator.
+    """
     data = payload.model_dump(exclude_unset=True)
     updated = enterprise_identity_service.update_policy(data)
     return updated
@@ -100,7 +139,7 @@ async def update_remediation_policy(
 @router.post("/trigger")
 async def trigger_containment_action(
     payload: TriggerContainmentRequest,
-    current_user: User = Depends(require_roles("admin", "operator")),
+    current_user: User = Depends(require_roles("admin")),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
     """Execute enterprise automated containment on a target account based on admin policy."""
@@ -113,7 +152,39 @@ async def trigger_containment_action(
 
     # If policy override provided, apply it
     if payload.policy_override:
-        enterprise_identity_service.update_policy(payload.policy_override.model_dump(exclude_unset=True))
+        enterprise_identity_service.update_policy(
+            payload.policy_override.model_dump(exclude_unset=True)
+        )
+
+    # A tracking row / campaign may only be referenced when it belongs to the
+    # caller's organization; otherwise the identifier is treated as unknown so
+    # the endpoint cannot be used to probe another tenant's data.
+    tracking_row = None
+    if payload.tracking_uuid:
+        try:
+            uid = uuid.UUID(payload.tracking_uuid)
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid tracking UUID"
+            ) from None
+        tracking_row = await _scoped_tracking_row(db, uid, current_user)
+        if tracking_row is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Tracking link not found"
+            )
+        payload.campaign_id = str(tracking_row.campaign_id)
+    if payload.campaign_id:
+        try:
+            cid = uuid.UUID(str(payload.campaign_id))
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid campaign ID"
+            ) from None
+        campaign = await db.get(EmailCampaign, cid)
+        if campaign is None or campaign.organization_id != current_user.organization_id:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Campaign not found"
+            )
 
     # Validate actions if provided
     valid_actions = {a.value for a in ContainmentAction}
@@ -138,20 +209,15 @@ async def trigger_containment_action(
     )
 
     # If associated with a tracking record, store the action in its client_context
-    if payload.tracking_uuid:
+    if tracking_row is not None:
         try:
-            uid = uuid.UUID(payload.tracking_uuid)
-            tracking_row = await db.scalar(
-                select(EmailTracking).where(EmailTracking.tracking_uuid == uid)
-            )
-            if tracking_row:
-                ctx = dict(tracking_row.client_context or {})
-                history = list(ctx.get("containment_history") or [])
-                history.append(report.to_dict())
-                ctx["containment_history"] = history
-                ctx["last_containment"] = report.to_dict()
-                tracking_row.client_context = ctx
-                await db.commit()
+            ctx = dict(tracking_row.client_context or {})
+            history = list(ctx.get("containment_history") or [])
+            history.append(report.to_dict())
+            ctx["containment_history"] = history
+            ctx["last_containment"] = report.to_dict()
+            tracking_row.client_context = ctx
+            await db.commit()
         except Exception as exc:
             logger.warning("failed_to_attach_containment_to_tracking", error=str(exc))
 
@@ -171,6 +237,13 @@ async def get_campaign_containment_logs(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid campaign ID")
 
     stmt = select(EmailTracking).where(EmailTracking.campaign_id == cid)
+    campaign = await db.get(EmailCampaign, cid)
+    if (
+        campaign is None
+        or current_user.organization_id is None
+        or campaign.organization_id != current_user.organization_id
+    ):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Campaign not found")
     result = await db.scalars(stmt)
     records = result.all()
 

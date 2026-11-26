@@ -6,10 +6,13 @@ cache-busting so that email clients and proxies never cache a tracking hit.
 """
 from __future__ import annotations
 
+import json
 import uuid
+from datetime import datetime, timezone
+from urllib.parse import parse_qs, quote
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, Response, status
-from fastapi.responses import RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -40,11 +43,15 @@ from app.schemas import (
     TrainingSubmission,
 )
 from app.services.attack_chain import build_compromised_assets
+from app.services.device_detector import detect_device_model
 from app.services.email_design import branding_from_organization
 from app.services.elo_engine import threat_level_for_elo
+from app.services.geoip_service import lookup_ip_geolocation
+from app.services.evidence_service import build_evidence
+from app.services.landing_page_resolver import LandingPageResolver
 from app.services.quishing_service import normalize_lure_type, resolve_poster_copy
 from app.services.template_service import TRANSPARENT_GIF
-from app.services.tracking_service import TrackingService
+from app.services.tracking_service import TrackingService, sanitize_telemetry
 
 logger = get_logger(__name__)
 router = APIRouter(
@@ -221,12 +228,42 @@ async def track_context(
         "email": employee.email if employee else (tracking.submitted_email or ""),
         "company_name": organization.name,
         "template_name": template_name,
+        # Department-aware SMS skin: the template's audience drives the page.
+        "template_category": (
+            (template.target_department or "").strip()
+            if template is not None
+            else ""
+        )
+        or None,
         "subject": (template.subject if template is not None else "Security notification"),
         "sender_name": sender_name,
         "campaign_name": campaign.name,
         "campaign_id": str(campaign.id),
         "channel": channel,
         "channel_config": config,
+        # Resolved mobile-message landing page (department > manual choice >
+        # keywords); the React page also accepts an explicit ``?page=`` override.
+        "landing_page": (
+            LandingPageResolver().resolve_for_config(
+                (
+                    config.get("whatsapp")
+                    if isinstance(config.get("whatsapp"), dict)
+                    else config.get("sms")
+                )
+                if isinstance(config, dict)
+                else None,
+                message=(
+                    ((config.get("whatsapp") or config.get("sms")) or {}).get(
+                        "custom_message"
+                    )
+                    if isinstance(config, dict)
+                    else None
+                ),
+                department=getattr(employee, "department", None) if employee else None,
+            )
+            if channel in {"sms", "whatsapp"}
+            else None
+        ),
         "skin": skin,
         "credential_provider": skin,
         "brand_primary_color": branding.primary_color,
@@ -241,6 +278,23 @@ async def track_context(
         "otp_submitted": bool(tracking.otp_submitted),
         "compromised_assets": build_compromised_assets(tracking, template, campaign),
     }
+
+
+@router.get(
+    "/evidence/{tracking_uuid}",
+    summary="Forensic evidence report for the recipient's own interaction",
+)
+async def track_evidence(
+    tracking_uuid: str,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, object]:
+    """Return what the simulation captured, measured and cost.
+
+    The tracking UUID is the bearer secret of the recipient's own link, so this
+    exposes only that recipient's masked data: never a password, never another
+    employee's values.  It powers the training page's evidence panel.
+    """
+    return await build_evidence(db, tracking_uuid)
 
 
 @router.post(
@@ -376,9 +430,10 @@ async def track_click(
         except Exception as exc:  # noqa: BLE001 - redirect regardless
             await db.rollback()
             logger.error("track_click_failed", tracking_uuid=tracking_uuid, error=str(exc))
-    host = request.headers.get("x-forwarded-host") or request.headers.get("host")
-    proto = request.headers.get("x-forwarded-proto") or request.url.scheme
-    base_url = f"{proto}://{host}" if host else settings.base_url.rstrip("/")
+    # Always redirect to the configured public origin.  A Host / X-Forwarded-Host
+    # header is attacker-controlled and would otherwise turn these tracking
+    # links into an open redirect to any domain.
+    base_url = settings.base_url.rstrip("/")
     if channel == "email":
         target = f"{base_url}/phish/{tracking_uuid}"
     elif channel == "qr":
@@ -397,6 +452,228 @@ async def track_click(
         target=target,
     )
     return RedirectResponse(url=target, status_code=status.HTTP_302_FOUND, headers=NO_CACHE_HEADERS)
+
+
+@router.get(
+    "/sms/{tracking_uuid}",
+    summary="SMS link tracker (302 to the SMS landing page)",
+)
+async def track_sms_click(
+    tracking_uuid: str,
+    request: Request,
+    page: str | None = Query(
+        default=None,
+        max_length=40,
+        description="Landing-page slug resolved by the campaign launcher",
+    ),
+    db: AsyncSession = Depends(get_db),
+) -> RedirectResponse:
+    """Record an SMS link click and send the recipient to the lure page.
+
+    Following the link is score-neutral; the smishing penalty is applied once
+    the landing-page form is submitted.
+
+    Args:
+        tracking_uuid: Per-recipient tracking UUID from the SMS body.
+        request: Incoming request (for IP/User-Agent).
+        page: Optional landing-page slug forwarded to the React page.
+        db: Active session.
+
+    Returns:
+        A 302 redirect to ``{base_url}/sms-lure/{tracking_uuid}``, preserving
+        ``?page=`` when the launcher supplied a landing page.
+    """
+    settings = get_settings()
+    if _valid_uuid(tracking_uuid):
+        try:
+            await TrackingService().log_sms_click(
+                tracking_uuid,
+                _client_ip(request),
+                request.headers.get("user-agent"),
+                db,
+            )
+            await db.commit()
+        except Exception as exc:  # noqa: BLE001 - redirect regardless
+            await db.rollback()
+            logger.error(
+                "track_sms_click_failed", tracking_uuid=tracking_uuid, error=str(exc)
+            )
+    # Always redirect to the configured public origin.  A Host / X-Forwarded-Host
+    # header is attacker-controlled and would otherwise turn these tracking
+    # links into an open redirect to any domain.
+    base_url = settings.base_url.rstrip("/")
+    target = f"{base_url}/sms-lure/{tracking_uuid}"
+    if page:
+        target = f"{target}?page={quote(page, safe='')}"
+    logger.info("sms_click_redirect", tracking_uuid=tracking_uuid, target=target)
+    return RedirectResponse(
+        url=target, status_code=status.HTTP_302_FOUND, headers=NO_CACHE_HEADERS
+    )
+
+
+@router.get(
+    "/whatsapp/{tracking_uuid}",
+    summary="WhatsApp link tracker (302 to the WhatsApp lure page)",
+)
+async def track_whatsapp_click(
+    tracking_uuid: str,
+    request: Request,
+    page: str | None = Query(
+        default=None,
+        max_length=40,
+        description="Landing-page slug override; resolved server-side when empty",
+    ),
+    db: AsyncSession = Depends(get_db),
+) -> RedirectResponse:
+    """Record a WhatsApp link click and redirect to the lure page.
+
+    The landing page uses exactly the same resolution order as SMS: employee
+    department, then the operator's manual choice, then keyword detection.
+    Following the link is score-neutral.
+
+    Returns:
+        A 302 to ``{base_url}/whatsapp-lure/{uuid}?page=…``.
+    """
+    settings = get_settings()
+    resolved_page = page
+    if _valid_uuid(tracking_uuid):
+        try:
+            row = await TrackingService().log_whatsapp_click(
+                tracking_uuid,
+                _client_ip(request),
+                request.headers.get("user-agent"),
+                db,
+            )
+            if row is not None and not resolved_page:
+                resolved_page = await _resolved_whatsapp_page(db, row)
+            await db.commit()
+        except Exception as exc:  # noqa: BLE001 - redirect regardless
+            await db.rollback()
+            logger.error(
+                "track_whatsapp_click_failed",
+                tracking_uuid=tracking_uuid,
+                error=str(exc),
+            )
+    # Always redirect to the configured public origin.  A Host / X-Forwarded-Host
+    # header is attacker-controlled and would otherwise turn these tracking
+    # links into an open redirect to any domain.
+    base_url = settings.base_url.rstrip("/")
+    target = f"{base_url}/whatsapp-lure/{tracking_uuid}"
+    if resolved_page:
+        target = f"{target}?page={quote(resolved_page, safe='')}"
+    logger.info(
+        "whatsapp_click_redirect",
+        tracking_uuid=tracking_uuid,
+        landing_page=resolved_page,
+        target=target,
+    )
+    return RedirectResponse(
+        url=target, status_code=status.HTTP_302_FOUND, headers=NO_CACHE_HEADERS
+    )
+
+
+async def _resolved_whatsapp_page(
+    db: AsyncSession, tracking: EmailTracking
+) -> str | None:
+    """Resolve the lure skin for one WhatsApp tracking row."""
+    campaign = await db.get(EmailCampaign, tracking.campaign_id)
+    raw_config = campaign.channel_config if campaign is not None else None
+    config = raw_config if isinstance(raw_config, dict) else {}
+    block = config.get("whatsapp")
+    if not isinstance(block, dict):
+        block = config.get("sms") if isinstance(config.get("sms"), dict) else {}
+    template = (
+        await db.get(EmailTemplate, tracking.template_id)
+        if tracking.template_id
+        else None
+    )
+    employee = (
+        await db.get(HumanAsset, tracking.employee_id)
+        if tracking.employee_id
+        else None
+    )
+    message = str(block.get("custom_message") or "")
+    if not message and template is not None:
+        message = str(template.subject or "") + " " + str(template.body_html or "")
+    return LandingPageResolver().resolve(
+        message=message,
+        department=getattr(employee, "department", None) if employee else None,
+        manual=block.get("selected_landing_page"),
+    )
+
+
+@router.post(
+    "/sms/submit",
+    summary="SMS landing submission (-40 Elo, applied once)",
+)
+async def track_sms_submit(
+    request: Request,
+    payload: dict | None = Body(default=None),
+    tracking_uuid: str | None = Query(default=None),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, object]:
+    """Record a credential submission on the SMS landing page.
+
+    The ``tracking_uuid`` may be sent in the JSON body (``{"tracking_uuid":
+    "…"}``) or as a query parameter.  Submission is idempotent: the first one
+    applies ``-40`` Elo and later ones only return the current state.
+
+    Returns:
+        The outcome, the refreshed Elo score and the training-page redirect.
+    """
+    settings = get_settings()
+    body_uid = None
+    if isinstance(payload, dict):
+        body_uid = payload.get("tracking_uuid")
+    uid = str(body_uid or tracking_uuid or "").strip()
+    if not _valid_uuid(uid):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="tracking_uuid is required",
+        )
+
+    # The landing form posts the identifier it collected plus the password, which
+    # is reduced to its length here and never persisted.
+    body_identifier = ""
+    body_password = ""
+    if isinstance(payload, dict):
+        for key in ("identifier", "email", "username"):
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                body_identifier = value.strip()
+                break
+        password_value = payload.get("password")
+        if isinstance(password_value, str):
+            body_password = password_value
+    result = await TrackingService().log_sms_submission(
+        uid,
+        _client_ip(request),
+        request.headers.get("user-agent"),
+        db,
+        identifier=body_identifier or None,
+        password_length=len(body_password) or None,
+    )
+    if result is None:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Tracking link not found"
+        )
+    row, already_recorded = result
+    employee = await db.get(HumanAsset, row.employee_id)
+    await db.commit()
+
+    # Always redirect to the configured public origin.  A Host / X-Forwarded-Host
+    # header is attacker-controlled and would otherwise turn these tracking
+    # links into an open redirect to any domain.
+    base_url = settings.base_url.rstrip("/")
+    return {
+        "success": True,
+        "tracking_uuid": uid,
+        "already_recorded": already_recorded,
+        "elo_score": employee.elo_score if employee is not None else None,
+        "elo_delta": 0 if already_recorded else -40,
+        "redirect_url": f"{base_url}/training/{uid}?channel=sms",
+    }
 
 
 @router.post(
@@ -688,6 +965,7 @@ async def track_visit(
 @router.post(
     "/qr/probe",
     response_model=QRProbeResponse,
+    dependencies=[Depends(rate_limit(limit=60, window=60, scope="qr_probe"))],
     summary="Record immediate background hardware & network telemetry from landing page",
 )
 async def track_qr_probe(
@@ -717,6 +995,7 @@ async def track_qr_probe(
 @router.post(
     "/qr/submit",
     response_model=QRSubmissionResponse,
+    dependencies=[Depends(rate_limit(limit=10, window=60, scope="qr_submit"))],
     summary="Record a QR/quishing credential submission and resolve identity",
 )
 async def track_qr_submit(
@@ -790,8 +1069,12 @@ async def track_qr_submit(
             else "تم التحقق من بياناتك بنجاح."
         ),
         identity_resolution=result.identity_resolution,
-        resolved_employee_id=employee.id if employee is not None else None,
-        resolved_employee_name=employee.full_name if employee is not None else None,
+        # Public endpoint: never echo the matched employee's identity back.
+        # The campaign UUID is printed on a poster, so returning the name would
+        # turn this route into a staff-address enumeration oracle.  The redirect
+        # carries the per-recipient tracking UUID instead.
+        resolved_employee_id=None,
+        resolved_employee_name=None,
         tracking_uuid=tracking_uuid,
         elo_delta=result.elo_delta,
         elo_score=(
@@ -854,9 +1137,7 @@ async def qr_campaign_context(
     if organization is None:  # pragma: no cover - FK guarantees existence
         return {"found": False}
     config = campaign.channel_config or {}
-    host = request.headers.get("x-forwarded-host") or request.headers.get("host")
-    proto = request.headers.get("x-forwarded-proto") or request.url.scheme
-    effective_base_url = f"{proto}://{host}" if host else get_settings().base_url
+    effective_base_url = get_settings().base_url.rstrip("/")
     branding = branding_from_organization(organization, effective_base_url)
     return {
         "found": True,
@@ -886,9 +1167,10 @@ async def track_qr_scan(
     redirects the visitor to the generic lure landing page.
     """
     settings = get_settings()
-    host = request.headers.get("x-forwarded-host") or request.headers.get("host")
-    proto = request.headers.get("x-forwarded-proto") or request.url.scheme
-    base_url = f"{proto}://{host}" if host else settings.base_url.rstrip("/")
+    # Always redirect to the configured public origin.  A Host / X-Forwarded-Host
+    # header is attacker-controlled and would otherwise turn these tracking
+    # links into an open redirect to any domain.
+    base_url = settings.base_url.rstrip("/")
     target_suffix = f"/qr/hr/{campaign_id}"
     tracking_uuid = campaign_id
 
@@ -990,6 +1272,226 @@ async def track_usb_open(
             logger.error("track_usb_failed", tracking_uuid=tracking_uuid, error=str(exc))
     target = f"{settings.base_url.rstrip('/')}/training/{tracking_uuid}?channel={channel}"
     return RedirectResponse(url=target, status_code=status.HTTP_302_FOUND, headers=NO_CACHE_HEADERS)
+
+
+#: A USB document runs from ``file://``, whose Origin is the literal string
+#: ``null``.  The beacon response therefore allows any origin and never asks for
+#: credentials — the tracking UUID in the path is the only secret.
+USB_BEACON_HEADERS = {
+    **NO_CACHE_HEADERS,
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+    "Access-Control-Allow-Headers": "*",
+    "Access-Control-Max-Age": "86400",
+}
+
+#: No document needs to send more than this; anything larger is truncated.
+MAX_USB_TELEMETRY_BYTES = 32_768
+
+
+def _usb_beacon_payload(**fields: object) -> JSONResponse:
+    """Return the small JSON body the document reads back, CORS-safe."""
+    return JSONResponse(content=fields, headers=USB_BEACON_HEADERS)
+
+
+def _decode_telemetry(raw: bytes) -> dict[str, object]:
+    """Best-effort decode of a beacon body.
+
+    The document posts a JSON string with ``Content-Type: text/plain`` so the
+    request stays *simple* (no CORS preflight from ``file://``).  Form-encoded
+    submissions are also accepted for older copies of the document that send
+    ``payload=<json>``.
+    """
+    if not raw:
+        return {}
+    body = raw[:MAX_USB_TELEMETRY_BYTES]
+    try:
+        decoded = json.loads(body.decode("utf-8", "ignore"))
+    except (ValueError, UnicodeDecodeError):
+        decoded = None
+    if isinstance(decoded, dict):
+        return decoded
+    try:
+        form = parse_qs(body.decode("utf-8", "ignore"))
+    except (ValueError, UnicodeDecodeError):
+        return {}
+    for key in ("payload", "telemetry", "data"):
+        candidate = (form.get(key) or [""])[0]
+        if not candidate:
+            continue
+        try:
+            parsed = json.loads(candidate)
+        except ValueError:
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+    return {}
+
+
+@router.options("/usb/{tracking_uuid}", include_in_schema=False)
+async def track_usb_preflight(tracking_uuid: str) -> Response:
+    """Answer the CORS preflight a browser may still send for the beacon."""
+    return Response(status_code=status.HTTP_204_NO_CONTENT, headers=USB_BEACON_HEADERS)
+
+
+@router.post(
+    "/usb/{tracking_uuid}",
+    summary="USB document forensic telemetry beacon",
+)
+async def track_usb_telemetry(
+    tracking_uuid: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> JSONResponse:
+    """Record a USB-document open together with the full device profile.
+
+    The document is opened from a USB stick, so this endpoint must work from
+    ``file://`` with no cookies and no preflight.  It accepts the forensic packet
+    the document collects (device, screen, GPU, network, timezone, the full
+    ``file:///`` source path, optional GPS), enriches it with the server-observed
+    address, GeoIP and a parsed device model, and writes one ``usb_opened``
+    ledger row — even when the campaign has no employee attached, which is the
+    normal case for a physical drop.
+
+    Returns:
+        ``{"ok": bool, "recorded": bool, ...}``; the document only reads ``ok``
+        to decide whether it must queue the packet for a later retry.
+    """
+    telemetry = sanitize_telemetry(_decode_telemetry(await request.body()))
+    if not _valid_uuid(tracking_uuid):
+        return _usb_beacon_payload(ok=False, recorded=False, reason="invalid_tracking_id")
+
+    ip_address = _client_ip(request)
+    user_agent = request.headers.get("user-agent")
+    device = telemetry.get("device")
+    device = device if isinstance(device, dict) else {}
+
+    try:
+        geo = await lookup_ip_geolocation(ip_address)
+    except Exception as exc:  # noqa: BLE001 - geo lookup must never block the open
+        logger.warning("usb_geo_lookup_failed", error=str(exc))
+        geo = None
+
+    telemetry["server"] = {
+        "ip": ip_address,
+        "country": getattr(geo, "country", None),
+        "city": getattr(geo, "city", None),
+        "isp": getattr(geo, "isp", None),
+        "latitude": getattr(geo, "latitude", None),
+        "longitude": getattr(geo, "longitude", None),
+        "device_model": detect_device_model(
+            user_agent,
+            fingerprint_data=telemetry,
+        ),
+        "received_at": datetime.now(timezone.utc).isoformat(),
+    }
+    telemetry["server"] = {
+        key: value for key, value in telemetry["server"].items() if value not in (None, "")
+    }
+
+    recorded = False
+    try:
+        row = await TrackingService().log_usb_open(
+            tracking_uuid,
+            ip_address,
+            user_agent,
+            db,
+            hostname=device.get("hostname"),
+            username=device.get("username"),
+            domain=device.get("domain"),
+            arch=device.get("ua_architecture"),
+            scenario=device.get("os") or device.get("platform"),
+            attack_type="baiting",
+            telemetry=telemetry,
+        )
+        await db.commit()
+        recorded = row is not None
+    except Exception as exc:  # noqa: BLE001 - the warning page must never break
+        await db.rollback()
+        logger.error(
+            "track_usb_telemetry_failed",
+            tracking_uuid=tracking_uuid,
+            error=str(exc),
+        )
+        return _usb_beacon_payload(ok=False, recorded=False, reason="storage_error")
+
+    logger.info(
+        "usb_telemetry_received",
+        tracking_uuid=tracking_uuid,
+        recorded=recorded,
+        ip_address=ip_address,
+        platform=device.get("ua_platform"),
+        city=getattr(geo, "city", None),
+        source_path=(telemetry.get("source") or {}).get("path"),
+    )
+    settings = get_settings()
+    return _usb_beacon_payload(
+        ok=recorded,
+        recorded=recorded,
+        tracking_uuid=tracking_uuid,
+        training_url=f"{settings.base_url.rstrip('/')}/training/{tracking_uuid}?channel=usb",
+        server_time=datetime.now(timezone.utc).isoformat(),
+    )
+
+
+@router.options("/usb/{tracking_uuid}/device", include_in_schema=False)
+async def track_usb_device_preflight(tracking_uuid: str) -> Response:
+    """Answer the preflight for the local identity tool's POST."""
+    return Response(status_code=status.HTTP_204_NO_CONTENT, headers=USB_BEACON_HEADERS)
+
+
+@router.post(
+    "/usb/{tracking_uuid}/device",
+    summary="Local identity tool report (Windows account and machine name)",
+)
+async def track_usb_device_probe(
+    tracking_uuid: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> JSONResponse:
+    """Attach the Windows account and real machine name to a USB open.
+
+    A ``file://`` page is denied both values by the browser.  The optional
+    collector the operator copies to the stick reads them and posts them here.
+    The endpoint is public exactly like the beacon (the tracking UUID is the
+    only secret), so the stored shape is a fixed whitelist and the call never
+    raises: the script's offline queue depends on a truthful ``ok``.
+    """
+    payload = _decode_telemetry(await request.body())
+    if not _valid_uuid(tracking_uuid):
+        return _usb_beacon_payload(ok=False, recorded=False, reason="invalid_tracking_id")
+
+    try:
+        row, recorded = await TrackingService().log_usb_device_probe(
+            tracking_uuid,
+            payload,
+            _client_ip(request),
+            request.headers.get("user-agent"),
+            db,
+        )
+        await db.commit()
+    except Exception as exc:  # noqa: BLE001 - the collector must never see a 500
+        await db.rollback()
+        logger.error(
+            "track_usb_device_probe_failed",
+            tracking_uuid=tracking_uuid,
+            error=str(exc),
+        )
+        return _usb_beacon_payload(ok=False, recorded=False, reason="storage_error")
+
+    logger.info(
+        "usb_device_probe_received",
+        tracking_uuid=tracking_uuid,
+        recorded=recorded,
+        identity_source="local_tool" if recorded else None,
+    )
+    return _usb_beacon_payload(
+        ok=recorded,
+        recorded=recorded,
+        duplicate=row is not None and not recorded,
+        tracking_uuid=tracking_uuid,
+        server_time=datetime.now(timezone.utc).isoformat(),
+    )
 
 
 async def _record_simulation_choice(

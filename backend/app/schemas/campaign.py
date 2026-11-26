@@ -7,7 +7,43 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
 
+from app.schemas.email_template import SMS_BODY_MAX_LENGTH
 from app.schemas.employee import EmployeePublic
+from app.schemas.sanitization import sanitize_plain_text
+from app.services.landing_page_resolver import normalize_landing_page
+
+#: Stand-in for ``{{link}}`` when sizing a custom SMS before a short code
+#: exists; the delivered short URL is the same shape (origin + ``/s/`` + code).
+_SAMPLE_SHORT_LINK = "https://hument.link/s/AbCdEf"
+
+
+def sms_custom_message_length(message: str | None) -> int:
+    """Return the delivered character count of a custom SMS body.
+
+    ``{{link}}`` is counted as the short URL that replaces it, so the limit
+    matches what the carrier actually transmits.
+    """
+    return len((message or "").replace("{{link}}", _SAMPLE_SHORT_LINK).strip())
+
+
+def _validate_sms_channel_config(config: dict[str, Any] | None) -> None:
+    """Validate the ``channel_config.sms`` block of a campaign payload."""
+    if not isinstance(config, dict):
+        return
+    sms = config.get("sms")
+    if not isinstance(sms, dict):
+        return
+    message = str(sms.get("custom_message") or "")
+    if message.strip():
+        length = sms_custom_message_length(message)
+        if length > SMS_BODY_MAX_LENGTH:
+            raise ValueError(
+                f"custom SMS message is {length} characters; the limit is "
+                f"{SMS_BODY_MAX_LENGTH} including {{{{link}}}}"
+            )
+    manual = sms.get("selected_landing_page")
+    if manual and normalize_landing_page(manual) is None:
+        raise ValueError(f"unsupported landing page: {manual!r}")
 
 
 class CampaignBase(BaseModel):
@@ -16,11 +52,30 @@ class CampaignBase(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     template_id: uuid.UUID
     channel: str = Field(
-        default="email", pattern="^(email|sms|whatsapp|qr|vishing|pretexting|usb)$"
+        default="email", pattern="^(email|sms|whatsapp|qr|vishing|pretexting|usb|voice)$"
     )
     difficulty_level: int = Field(default=5, ge=1, le=10)
     auto_retest_failed: bool = False
+    #: Mandatory-training campaigns bypass cooldown and blacklist guardrails.
+    is_mandatory_training: bool = False
     channel_config: dict[str, Any] | None = None
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def _sanitize_name(cls, value: object) -> object:
+        """Strip markup and reject script payloads in the campaign name."""
+        if value is None:
+            return value
+        cleaned = sanitize_plain_text(str(value), "name")
+        if not cleaned:
+            raise ValueError("name must not be empty")
+        return cleaned
+
+    @model_validator(mode="after")
+    def _check_sms_config(self) -> "CampaignBase":
+        """Reject over-long custom SMS bodies and unknown landing pages."""
+        _validate_sms_channel_config(self.channel_config)
+        return self
 
 
 class CampaignCreate(CampaignBase):
@@ -35,12 +90,30 @@ class CampaignUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=255)
     template_id: uuid.UUID | None = None
     channel: str | None = Field(
-        default=None, pattern="^(email|sms|whatsapp|qr|vishing|pretexting|usb)$"
+        default=None, pattern="^(email|sms|whatsapp|qr|vishing|pretexting|usb|voice)$"
     )
     difficulty_level: int | None = Field(default=None, ge=1, le=10)
     auto_retest_failed: bool | None = None
+    is_mandatory_training: bool | None = None
     channel_config: dict[str, Any] | None = None
     target_employee_ids: list[uuid.UUID] | None = None
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def _sanitize_name(cls, value: object) -> object:
+        """Strip markup and reject script payloads in the campaign name."""
+        if value is None:
+            return value
+        cleaned = sanitize_plain_text(str(value), "name")
+        if not cleaned:
+            raise ValueError("name must not be empty")
+        return cleaned
+
+    @model_validator(mode="after")
+    def _check_sms_config(self) -> "CampaignUpdate":
+        """Reject over-long custom SMS bodies and unknown landing pages."""
+        _validate_sms_channel_config(self.channel_config)
+        return self
 
 
 class CampaignPublic(BaseModel):
@@ -56,6 +129,7 @@ class CampaignPublic(BaseModel):
     channel_config: dict[str, Any] | None = None
     status: str
     auto_retest_failed: bool = False
+    is_mandatory_training: bool = False
     target_employee_ids: list[str]
     total_targets: int
     sent_count: int
@@ -86,6 +160,20 @@ class LaunchFailure(BaseModel):
     error: str
 
 
+class LaunchBlock(BaseModel):
+    """An employee skipped by the cooldown or blacklist guardrail."""
+
+    employee_id: uuid.UUID
+    email: str
+    name: str = ""
+    status: str = "blocked"
+    reason: str
+    last_campaign_id: uuid.UUID | None = None
+    last_campaign_name: str | None = None
+    last_campaign_at: datetime | None = None
+    days_remaining: int | None = None
+
+
 class LaunchResult(BaseModel):
     """Response from ``POST /email-campaigns/{id}/launch``."""
 
@@ -94,6 +182,38 @@ class LaunchResult(BaseModel):
     sent: int
     failed: int
     failures: list[LaunchFailure] = Field(default_factory=list)
+    blocked: list[LaunchBlock] = Field(default_factory=list)
+    blocked_count: int = 0
+    #: True when the campaign was accepted by the Celery queue instead of
+    #: being executed inline (used for real voice campaigns).
+    queued: bool = False
+    message: str | None = None
+
+
+class CooldownCheckRequest(BaseModel):
+    """Ask whether a set of employees is currently inside a cooldown."""
+
+    employee_ids: list[uuid.UUID] = Field(default_factory=list)
+    is_mandatory_training: bool = False
+
+
+class CooldownCheckResponse(BaseModel):
+    """Guardrail preview returned to the campaign wizard."""
+
+    cooldown_days: int
+    blocked: list[LaunchBlock] = Field(default_factory=list)
+
+
+class GuardrailSettings(BaseModel):
+    """Organization campaign guardrail settings."""
+
+    campaign_cooldown_days: int = Field(default=14, ge=0, le=365)
+
+
+class GuardrailUpdate(BaseModel):
+    """Partial guardrail update payload."""
+
+    campaign_cooldown_days: int = Field(ge=0, le=365)
 
 
 class CampaignStats(BaseModel):

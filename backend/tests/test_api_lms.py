@@ -28,7 +28,7 @@ async def test_dashboard_with_data(
     body = response.json()
     assert body["total_employees"] == 5
     assert body["active_employees"] == 4
-    assert body["total_templates"] == 18
+    assert body["total_templates"] == 31
 
 
 async def test_training_library_list(client, auth_headers, organization, training_modules) -> None:

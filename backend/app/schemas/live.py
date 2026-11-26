@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel
 
@@ -103,12 +104,44 @@ class LiveRecipient(BaseModel):
     password_length: int | None = None
     submitted_identifier: str | None = None
 
+    # --- Endpoint profile (USB documents) -------------------------------- #
+    #: Readable one-line profile: OS, browser, screen, CPU/RAM, GPU.
+    device_summary: str | None = None
+    device_platform: str | None = None
+    device_browser: str | None = None
+    device_model: str | None = None
+    device_screen: str | None = None
+    device_gpu: str | None = None
+    device_cpu_cores: int | None = None
+    device_memory_gb: float | None = None
+    device_timezone: str | None = None
+    device_language: str | None = None
+    device_battery: dict[str, Any] | None = None
+    device_network: dict[str, Any] | None = None
+    device_local_ips: list[str] | None = None
+    device_fingerprint: str | None = None
+    device_hostname: str | None = None
+    device_username: str | None = None
+    geo_label: str | None = None
+    geo_city: str | None = None
+    geo_country: str | None = None
+    geo_isp: str | None = None
+    geo_latitude: float | None = None
+    geo_longitude: float | None = None
+    #: ``file:///H:/…`` path of the opened document, captured by the document.
+    source_path: str | None = None
+    opened_from: str | None = None
+    #: Whether the forensic packet arrived (False until an offline open syncs).
+    telemetry_received: bool = False
+
 
 class LiveEvent(BaseModel):
     """Newest ledger entries, used by the activity ticker."""
 
     id: uuid.UUID
-    employee_id: uuid.UUID
+    #: ``None`` for an endpoint event that has no employee yet — a generic
+    #: physical USB drop is opened by an unidentified machine.
+    employee_id: uuid.UUID | None = None
     employee_name: str
     event_type: str
     label: str
@@ -116,6 +149,8 @@ class LiveEvent(BaseModel):
     seconds_ago: float
     ip_address: str | None = None
     user_agent: str | None = None
+    #: Captured device profile for endpoint (USB) events.
+    device: dict[str, Any] | None = None
 
 
 class LiveBoard(BaseModel):

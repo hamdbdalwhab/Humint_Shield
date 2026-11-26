@@ -4,10 +4,17 @@ The engine is deliberately small and deterministic so that the risk score is
 auditable and easy to explain to administrators:
 
 * every employee starts at **1000**;
-* the first click on a simulated link costs **32** points;
-* the first report of a simulated message earns **32** points;
+* each channel owns a weight (Email 300, QR 200, Smishing/Vishing 200,
+  USB/Physical 150);
+* each outcome moves a fixed fraction of that weight (reported +25%, opened
+  -5%, clicked -15%, submitted -30%, ignored 0%);
+* the template difficulty multiplies the movement (easy 1x, medium 1.5x,
+  hard 2x);
 * the score is clamped to ``0..2000`` so a long-running account cannot overflow
   an integer column or become impossible to recover.
+
+The legacy fixed ``CLICK_ELO_DELTA`` / ``REPORT_ELO_DELTA`` constants remain for
+backwards-compatible callers; campaign events use :func:`smart_elo_delta`.
 
 Difficulty bands and threat labels are monotonic.  The Elo bands are the
 contract used by the campaign launcher; the threat labels are the human-facing
@@ -23,13 +30,52 @@ Elo           Template band      Difficulty    Threat level
 """
 from __future__ import annotations
 
+import math
 from typing import Literal
 
 INITIAL_ELO = 1000
 MIN_ELO = 0
 MAX_ELO = 2000
+
+#: Legacy fixed deltas.  Kept for callers that score an event without a
+#: campaign template (and for backwards-compatible imports); the smart engine
+#: below is the authoritative model for new campaign events.
 CLICK_ELO_DELTA = -32
 REPORT_ELO_DELTA = 32
+
+#: Channel weight allocation.  The five primary channels sum to the 1000-point
+#: starting score, so each channel owns a proportional share of the rating.
+CHANNEL_WEIGHTS: dict[str, int] = {
+    "email": 300,
+    "qr": 200,
+    "vishing": 200,
+    "smishing": 200,
+    "sms": 200,
+    "whatsapp": 200,
+    "pretexting": 200,
+    "usb": 150,
+    "physical": 150,
+}
+DEFAULT_CHANNEL_WEIGHT = 300
+
+#: Fraction of the channel weight moved by each outcome.  ``reported`` is the
+#: only positive behaviour; ``ignored`` is deliberately neutral.
+ACTION_IMPACT_RATIOS: dict[str, float] = {
+    "reported": 0.25,
+    "ignored": 0.0,
+    "opened": 0.05,
+    "clicked": 0.15,
+    "submitted": 0.30,
+}
+
+#: Campaign difficulty multipliers: 1-3 easy, 4-7 medium, 8-10 hard.
+DIFFICULTY_MULTIPLIERS: dict[str, float] = {
+    "easy": 1.0,
+    "medium": 1.5,
+    "hard": 2.0,
+}
+
+ACTION_NAMES = tuple(ACTION_IMPACT_RATIOS)
 
 #: Channel-specific outcomes for the advanced simulation channels.
 #:
@@ -41,6 +87,10 @@ QR_CREDENTIAL_ELO_DELTA = -25
 QR_REPEAT_EVASION_ELO_DELTA = -15
 OTP_SUBMISSION_ELO_DELTA = -15
 USB_OPEN_ELO_DELTA = -30
+#: Smishing: opening the lure link is score-neutral; submitting the form on
+#: the SMS landing page is the failure outcome.
+SMS_CREDENTIAL_ELO_DELTA = -40
+SMS_REPORT_ELO_DELTA = 20
 VISHING_CREDENTIAL_ELO_DELTA = -30
 VISHING_REPORT_ELO_DELTA = 20
 PRETEXTING_FRAUD_ELO_DELTA = -30
@@ -113,6 +163,105 @@ def apply_report(current: int | float | None) -> int:
     return apply_elo_delta(current, REPORT_ELO_DELTA)
 
 
+def normalize_channel(channel: str | None) -> str:
+    """Return the canonical channel key used by the weight table."""
+    value = (channel or "email").strip().lower()
+    if value in {"sms", "whatsapp"}:
+        # Both mobile-message channels are treated as smishing for scoring.
+        return "smishing"
+    if value in {"pretexting"}:
+        return "vishing"
+    return value if value in CHANNEL_WEIGHTS else "email"
+
+
+def channel_weight(channel: str | None) -> int:
+    """Return the point pool allocated to a channel (defaults to email)."""
+    return CHANNEL_WEIGHTS.get(normalize_channel(channel), DEFAULT_CHANNEL_WEIGHT)
+
+
+def difficulty_multiplier(difficulty: int | float | None) -> float:
+    """Return the multiplier for a template difficulty of ``1..10``.
+
+    Difficulty is clamped into the 1-10 contract.  Unknown values fall back to
+    the medium band so legacy rows remain deterministic.
+    """
+    try:
+        value = int(round(float(difficulty))) if difficulty is not None else 5
+    except (TypeError, ValueError):
+        value = 5
+    value = max(1, min(10, value))
+    if value <= 3:
+        return DIFFICULTY_MULTIPLIERS["easy"]
+    if value <= 7:
+        return DIFFICULTY_MULTIPLIERS["medium"]
+    return DIFFICULTY_MULTIPLIERS["hard"]
+
+
+def smart_elo_delta(
+    channel: str | None,
+    action: str,
+    difficulty: int | float | None = None,
+) -> int:
+    """Calculate the signed Elo change for one channel outcome.
+
+    Args:
+        channel: Campaign channel (``email``, ``qr``, ``vishing``, ``usb``...).
+        action: One of ``reported``, ``ignored``, ``opened``, ``clicked`` or
+            ``submitted``.
+        difficulty: Template difficulty (1-10); ``None`` uses the medium band.
+
+    Returns:
+        A signed integer delta.  Positive actions are positive; failures are
+        negative.  A non-zero outcome always moves at least one point.
+    """
+    key = (action or "ignored").strip().lower()
+    ratio = ACTION_IMPACT_RATIOS.get(key)
+    if ratio is None:
+        raise ValueError(f"unsupported Elo action: {action!r}")
+    if ratio == 0:
+        return 0
+    raw = channel_weight(channel) * ratio * difficulty_multiplier(difficulty)
+    # Standard half-up rounding (Python's round() uses banker's rounding, which
+    # would turn 22.5 into 22 and make the score table surprising).
+    magnitude = max(1, int(math.floor(raw + 0.5)))
+    return magnitude if key == "reported" else -magnitude
+
+
+def apply_smart_action(
+    current: int | float | None,
+    channel: str | None,
+    action: str,
+    difficulty: int | float | None = None,
+) -> int:
+    """Apply a smart channel/action delta to an Elo score."""
+    return apply_elo_delta(current, smart_elo_delta(channel, action, difficulty))
+
+
+def awareness_level_for_elo(elo: int | float | None) -> str:
+    """Return a certificate-friendly awareness level for a final Elo score."""
+    score = clamp_elo(elo)
+    if score >= 1101:
+        return "Advanced"
+    if score >= 900:
+        return "Aware"
+    if score >= 700:
+        return "Developing"
+    return "At Risk"
+
+
+AWARENESS_LEVELS_AR: dict[str, str] = {
+    "Advanced": "متقدم",
+    "Aware": "واعٍ",
+    "Developing": "نامٍ",
+    "At Risk": "معرّض للخطر",
+}
+
+
+def awareness_level_ar(elo: int | float | None) -> str:
+    """Return the Arabic certificate awareness label."""
+    return AWARENESS_LEVELS_AR[awareness_level_for_elo(elo)]
+
+
 def difficulty_band(elo: int | float | None) -> DifficultyBand:
     """Map an Elo score to the launcher's difficulty band.
 
@@ -163,7 +312,13 @@ def threat_label(elo: int | float | None, *, arabic: bool = False) -> str:
 
 
 __all__ = [
+    "ACTION_IMPACT_RATIOS",
+    "ACTION_NAMES",
+    "AWARENESS_LEVELS_AR",
+    "CHANNEL_WEIGHTS",
     "CLICK_ELO_DELTA",
+    "DEFAULT_CHANNEL_WEIGHT",
+    "DIFFICULTY_MULTIPLIERS",
     "DIFFICULTY_RANGES",
     "DifficultyBand",
     "INITIAL_ELO",
@@ -182,9 +337,16 @@ __all__ = [
     "apply_click",
     "apply_elo_delta",
     "apply_report",
+    "apply_smart_action",
+    "awareness_level_ar",
+    "awareness_level_for_elo",
+    "channel_weight",
     "clamp_elo",
     "difficulty_band",
+    "difficulty_multiplier",
     "difficulty_range",
+    "normalize_channel",
+    "smart_elo_delta",
     "threat_label",
     "threat_level_for_elo",
 ]

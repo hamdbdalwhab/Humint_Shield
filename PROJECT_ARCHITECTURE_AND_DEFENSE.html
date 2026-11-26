@@ -1,0 +1,1002 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>HUMINT Shield — هندسة المشروع ودليل الدفاع الأكاديمي</title>
+<meta name="description" content="تقرير هندسي منظم لمشروع HUMINT Shield: الملخص التنفيذي، المعمارية، الامتدادات، هيكل المجلدات، تدفق البيانات، حزمة المناقشة، وقائمة التسليم.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cairo:wght@300;400;600;700;800;900&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#050912; --bg2:#08111f; --panel:#0c1728; --panel2:#101f35;
+  --line:#1e3350; --line2:#2a4a70; --text:#e9f2ff; --muted:#93a9c4;
+  --cyan:#22d3ee; --cyan2:#67e8f9; --green:#34d399; --amber:#fbbf24;
+  --red:#fb7185; --violet:#a78bfa; --blue:#60a5fa; --white:#fff;
+  --radius:18px; --shadow:0 18px 50px rgba(0,0,0,.35);
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{
+  margin:0; color:var(--text); font-family:"Cairo","Tajawal","Segoe UI",Tahoma,Arial,sans-serif;
+  line-height:1.9; font-size:15.5px; background:
+    radial-gradient(1100px 650px at 92% -8%, rgba(34,211,238,.13), transparent 58%),
+    radial-gradient(900px 600px at -10% 18%, rgba(167,139,250,.11), transparent 58%),
+    linear-gradient(180deg,#04070d 0%,#07101d 55%,#04070d 100%);
+}
+body::before{
+  content:""; position:fixed; inset:0; pointer-events:none; z-index:-1;
+  background-image:linear-gradient(rgba(255,255,255,.022) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.022) 1px,transparent 1px);
+  background-size:42px 42px; mask-image:linear-gradient(180deg,rgba(0,0,0,.55),transparent 85%);
+}
+a{color:var(--cyan2);text-decoration:none}
+a:hover{text-decoration:underline}
+code,kbd,pre,.mono{font-family:"Cascadia Mono","Consolas","Courier New",monospace;direction:ltr;unicode-bidi:embed}
+code{background:rgba(96,165,250,.10);border:1px solid rgba(96,165,250,.18);color:#b9e8ff;padding:.08em .35em;border-radius:6px;font-size:.86em}
+pre{background:#050b14;border:1px solid var(--line);border-radius:14px;padding:15px 17px;overflow:auto;line-height:1.65;color:#cfe9ff;font-size:12.5px;box-shadow:inset 0 0 0 1px rgba(255,255,255,.02)}
+pre code{background:none;border:0;padding:0;color:inherit}
+h1,h2,h3,h4{line-height:1.45;letter-spacing:-.01em}
+h1{font-size:clamp(2rem,4vw,3.3rem);margin:0 0 .4rem}
+h2{font-size:clamp(1.55rem,2.5vw,2.1rem);margin:0 0 1rem;color:#f3f8ff}
+h3{font-size:1.22rem;margin:1.7rem 0 .65rem;color:#dff6ff}
+h4{font-size:1.02rem;margin:1.2rem 0 .45rem;color:#c8e9ff}
+p{margin:.55rem 0 .9rem}
+ul,ol{padding-inline-start:1.4rem}
+li{margin:.32rem 0}
+small,.small{font-size:.86rem;color:var(--muted)}
+.muted{color:var(--muted)}
+.en{direction:ltr;unicode-bidi:embed}
+.wrap{max-width:1240px;margin:0 auto;padding:0 24px}
+.cover{padding:52px 0 28px;position:relative}
+.cover-grid{display:grid;grid-template-columns:1.35fr .65fr;gap:24px;align-items:stretch}
+.cover-main{background:linear-gradient(150deg,rgba(14,26,44,.97),rgba(6,12,22,.97));border:1px solid var(--line);border-radius:26px;padding:32px;box-shadow:var(--shadow);position:relative;overflow:hidden}
+.cover-main::after{content:"";position:absolute;inset:auto -18% -55% auto;width:420px;height:420px;background:radial-gradient(circle,rgba(34,211,238,.18),transparent 65%);pointer-events:none}
+.eyebrow{display:inline-flex;align-items:center;gap:8px;color:var(--cyan2);font-weight:800;font-size:.76rem;letter-spacing:.12em;text-transform:uppercase;border:1px solid rgba(34,211,238,.28);background:rgba(34,211,238,.07);padding:7px 12px;border-radius:999px}
+.cover h1{background:linear-gradient(90deg,#fff,#9beeff 55%,#c4b5fd);-webkit-background-clip:text;background-clip:text;color:transparent;margin-top:16px}
+.cover .subtitle{font-size:1.04rem;color:#c5d8ee;max-width:72ch}
+.badge-row{display:flex;flex-wrap:wrap;gap:8px;margin-top:16px}
+.badge{display:inline-flex;align-items:center;gap:5px;border-radius:999px;padding:3px 10px;font-size:.75rem;font-weight:800;border:1px solid transparent;white-space:nowrap}
+.badge.good{color:#9ff5d0;background:rgba(52,211,153,.10);border-color:rgba(52,211,153,.35)}
+.badge.warn{color:#ffe3a3;background:rgba(251,191,36,.10);border-color:rgba(251,191,36,.35)}
+.badge.info{color:#b9e8ff;background:rgba(96,165,250,.10);border-color:rgba(96,165,250,.30)}
+.badge.violet{color:#ddd0ff;background:rgba(167,139,250,.10);border-color:rgba(167,139,250,.32)}
+.doc-meta{display:flex;flex-wrap:wrap;gap:8px 20px;margin-top:18px;color:#b9cbe0;font-size:.82rem}
+.doc-meta b{color:#fff}
+.cover-side{display:flex;flex-direction:column;gap:11px}
+.stat-card{background:rgba(13,23,39,.92);border:1px solid var(--line);border-radius:16px;padding:13px 15px;display:flex;justify-content:space-between;gap:12px;align-items:center}
+.stat-card b{font-size:1.35rem;color:#fff;line-height:1.2}
+.stat-card span{color:var(--muted);font-size:.8rem;text-align:left}
+.toc-section{padding:18px 0 8px;page-break-after:always}
+.toc{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px;margin:12px 0}
+.toc a{display:flex;gap:10px;align-items:flex-start;background:rgba(13,23,39,.74);border:1px solid var(--line);border-radius:12px;padding:9px 11px;color:#d9e9fb}
+.toc a:hover{border-color:var(--cyan);text-decoration:none;background:rgba(34,211,238,.06)}
+.toc .n{color:var(--cyan2);font-weight:900;min-width:2.4rem;direction:ltr;text-align:left}
+.section{padding:34px 0 6px;border-top:1px solid rgba(255,255,255,.055);margin-top:26px}
+.section.level-1{page-break-before:always}
+.section-head{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;margin-bottom:14px}
+.section-head h2{margin:.2rem 0 0}
+.secnum{display:inline-block;color:var(--cyan2);font-family:"Cascadia Mono",Consolas,monospace;font-size:.78em;border:1px solid rgba(34,211,238,.3);background:rgba(34,211,238,.07);border-radius:8px;padding:1px 7px;margin-inline-end:7px;vertical-align:middle;direction:ltr}
+.kicker{color:var(--cyan2);font-size:.76rem;font-weight:800;letter-spacing:.13em;text-transform:uppercase}
+.card{background:linear-gradient(160deg,rgba(16,29,48,.94),rgba(10,18,32,.94));border:1px solid var(--line);border-radius:var(--radius);padding:17px 18px 15px;box-shadow:0 10px 30px rgba(0,0,0,.18)}
+.card h3,.card h4{margin-top:0}
+.grid{display:grid;gap:14px}
+.grid-2{grid-template-columns:repeat(2,minmax(0,1fr))}
+.grid-3{grid-template-columns:repeat(3,minmax(0,1fr))}
+.grid-4{grid-template-columns:repeat(4,minmax(0,1fr))}
+.kpi-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:14px 0}
+.kpi{background:rgba(13,23,39,.9);border:1px solid var(--line);border-top:2px solid rgba(34,211,238,.6);border-radius:14px;padding:12px 13px}
+.kpi.green{border-top-color:rgba(52,211,153,.7)}
+.kpi.amber{border-top-color:rgba(251,191,36,.7)}
+.kpi.violet{border-top-color:rgba(167,139,250,.7)}
+.kpi b{display:block;font-size:1.5rem;color:#fff;line-height:1.2}
+.kpi span{display:block;color:var(--muted);font-size:.8rem;margin-top:2px}
+.layer{border-top:3px solid rgba(34,211,238,.55)}
+.layer.logic{border-top-color:rgba(52,211,153,.65)}
+.layer.ai{border-top-color:rgba(167,139,250,.7)}
+.layer.data{border-top-color:rgba(251,191,36,.7)}
+.layer .tagline{color:var(--cyan2);font-size:.78rem;font-weight:800}
+.layer.logic .tagline{color:#9ff5d0}.layer.ai .tagline{color:#ddd0ff}.layer.data .tagline{color:#ffe3a3}
+.layer ul{padding-inline-start:1.15rem;margin:.45rem 0}
+.layer li{margin:.25rem 0;color:#d7e6f7}
+.note{border-inline-start:3px solid var(--cyan);padding:9px 13px;background:rgba(34,211,238,.05);border-radius:0 10px 10px 0;margin:12px 0;color:#cfe9ff}
+.note.warn{border-inline-start-color:var(--amber);background:rgba(251,191,36,.055)}
+.note.ok{border-inline-start-color:var(--green);background:rgba(52,211,153,.055)}
+.note.danger{border-inline-start-color:var(--red);background:rgba(251,113,133,.06)}
+.table-wrap{overflow:auto;border:1px solid var(--line);border-radius:14px;margin:12px 0 20px;background:rgba(8,15,26,.72)}
+table{width:100%;border-collapse:collapse;font-size:.87rem;min-width:640px}
+thead th{position:sticky;top:0;background:#0d1a2c;color:#dff6ff;text-align:right;font-weight:800;padding:10px 11px;border-bottom:1px solid var(--line2);z-index:1}
+tbody td{padding:9px 11px;border-bottom:1px solid rgba(32,51,77,.65);vertical-align:top}
+tbody tr:nth-child(even){background:rgba(255,255,255,.016)}
+tbody tr:hover{background:rgba(34,211,238,.045)}
+td code{white-space:nowrap}
+.table-compact table{font-size:.81rem}.table-compact tbody td{padding:7px 9px}
+.diagram-card{background:linear-gradient(160deg,#0a1524,#070d17);border:1px solid var(--line);border-radius:18px;padding:16px;margin:14px 0 8px;box-shadow:var(--shadow)}
+.diagram-title{font-weight:800;color:#dff6ff;margin:0 0 8px;display:flex;align-items:center;gap:8px}
+.diagram-title::before{content:"";width:9px;height:9px;border-radius:50%;background:var(--cyan);box-shadow:0 0 12px var(--cyan)}
+.mermaid{overflow:auto;text-align:center;background:#08111f;border:1px solid rgba(42,74,112,.55);border-radius:12px;padding:14px}
+.mermaid svg{max-width:100%;height:auto}
+.caption{color:var(--muted);font-size:.82rem;margin:7px 2px 0;text-align:center}
+.tree{background:#050b14;border:1px solid var(--line);border-radius:14px;padding:16px 18px;overflow:auto;line-height:1.55;color:#cfe9ff;font-size:12.2px;white-space:pre}
+.tree .c{color:#7f97b1}
+.tree .d{color:#67e8f9}
+.tree .x{color:#fb7185}
+.q-card{border-inline-start:3px solid var(--violet);background:linear-gradient(135deg,rgba(167,139,250,.07),rgba(10,18,32,.9))}
+.q-card h4{color:#e6ddff}
+.checklist{list-style:none;padding:0;margin:8px 0}
+.checklist li{padding-inline-start:1.7rem;position:relative;margin:.45rem 0}
+.checklist li::before{content:"✓";position:absolute;inset-inline-start:0;top:0;color:var(--green);font-weight:900}
+.checklist.cross li::before{content:"×";color:var(--red)}
+.small-table table{min-width:520px}
+.footer{padding:38px 0 55px;color:var(--muted);text-align:center;font-size:.82rem}
+.footer .line{height:1px;background:linear-gradient(90deg,transparent,var(--line2),transparent);margin:18px 0}
+.toplink{position:fixed;inset-inline-end:18px;bottom:18px;background:rgba(13,23,39,.94);border:1px solid var(--line2);color:#dff6ff;border-radius:999px;padding:8px 13px;font-size:.8rem;z-index:9;box-shadow:var(--shadow);text-decoration:none}
+.toplink:hover{border-color:var(--cyan);text-decoration:none}
+@media (max-width:980px){.cover-grid,.grid-2,.grid-3,.grid-4,.kpi-grid,.toc{grid-template-columns:1fr}.cover{padding-top:28px}.cover-main{padding:22px}}
+@media print{
+  @page{size:A4;margin:12mm}
+  html,body{background:#050912!important;color:#e9f2ff!important;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  body{font-size:9.6pt;line-height:1.55}
+  body::before,.toplink,.no-print{display:none!important}
+  .wrap{max-width:none;padding:0}
+  .cover{padding:0 0 10px;page-break-after:always}
+  .cover-main,.card,.stat-card,.note,.diagram-card,.table-wrap,.kpi,.q-card,.toc a{background:#0c1728!important;border-color:#2a4a70!important;box-shadow:none!important}
+  .cover h1{color:#dff6ff!important;background:none!important;-webkit-text-fill-color:#dff6ff}
+  h1,h2,h3,h4{color:#e9f2ff!important}
+  p,li,td,th,.muted,.small{color:#d7e6f7!important}
+  a{color:#67e8f9!important}
+  code{background:#101f35!important;color:#b9e8ff!important;border-color:#2a4a70!important}
+  pre{background:#050b14!important;color:#cfe9ff!important;border-color:#2a4a70!important}
+  thead th{background:#101f35!important;color:#dff6ff!important;border-color:#2a4a70!important;display:table-header-group}
+  tbody td{border-color:#1e3350!important}
+  tbody tr:nth-child(even){background:#0a1524!important}
+  .section{padding-top:0;margin-top:0;border-top:0}
+  .section.level-1{page-break-before:always}
+  .section.level-1:first-of-type{page-break-before:auto}
+  h2,h3,h4{page-break-after:avoid}
+  table,.diagram-card,.card,.note,.q-card,.kpi{page-break-inside:avoid}
+  tr{page-break-inside:avoid}
+  .table-wrap,.mermaid,.tree{overflow:visible!important}
+  table{min-width:0!important}
+  .mermaid{background:#08111f!important;border-color:#2a4a70!important}
+  .toc-section{page-break-after:always}
+}
+</style>
+</head>
+<body>
+<a class="toplink no-print" href="#top">↑ أعلى</a>
+<div class="wrap">
+
+<!-- ===================== COVER ===================== -->
+<header class="cover" id="top">
+  <div class="cover-grid">
+    <div class="cover-main">
+      <span class="eyebrow">HUMINT SHIELD • ACADEMIC DEFENSE REPORT</span>
+      <h1>هندسة المشروع<br>ودليل الدفاع الأكاديمي</h1>
+      <p class="subtitle">
+        وثيقة واحدة مُنظّمة تشرح المشروع من الصورة الكبيرة إلى أصغر ملف:
+        المشكلة، الحل، المعمارية، الامتدادات، هيكل المجلدات، تدفق البيانات،
+        حزمة المناقشة، وقائمة التسليم النهائية.
+      </p>
+      <div class="badge-row">
+        <span class="badge good">جاهز للمناقشة</span>
+        <span class="badge info">RTL / عربي</span>
+        <span class="badge violet">8 قنوات</span>
+        <span class="badge warn">لا أسرار داخل الملف</span>
+      </div>
+      <div class="doc-meta">
+        <span><b>المشروع:</b> HUMINT Shield</span>
+        <span><b>الإصدار:</b> 1.0.0</span>
+        <span><b>تاريخ الفحص:</b> 26 نوفمبر 2026</span>
+        <span><b>نوع الوثيقة:</b> Architecture &amp; Defense</span>
+      </div>
+    </div>
+    <aside class="cover-side" aria-label="مؤشرات المشروع">
+      <div class="stat-card"><b>124</b><span>معالج API<br>Handler</span></div>
+      <div class="stat-card"><b>19</b><span>ترحيل قاعدة<br>Alembic</span></div>
+      <div class="stat-card"><b>46</b><span>ملف اختبار<br>Backend</span></div>
+      <div class="stat-card"><b>577</b><span>حالة اختبار<br>مُجمَّعة حاليًا</span></div>
+      <div class="stat-card"><b>8</b><span>قنوات محاكاة<br>مسجّلة</span></div>
+      <div class="stat-card"><b>252</b><span>ملفًا في حزمة<br>المناقشة تقريبًا</span></div>
+    </aside>
+  </div>
+</header>
+
+<!-- ===================== TOC ===================== -->
+<nav class="toc-section" id="toc" aria-label="خريطة الوثيقة">
+  <div class="section-head">
+    <div>
+      <div class="kicker">DOCUMENT MAP</div>
+      <h2><span class="secnum">0.0</span> خريطة الوثيقة</h2>
+    </div>
+  </div>
+  <div class="toc">
+    <a href="#s1"><span class="n">1.0</span><span>الملخص التنفيذي — المشكلة، الحل، الأثر</span></a>
+    <a href="#s2"><span class="n">2.0</span><span>نظرة عامة على النظام — الصورة الكبيرة والطبقات</span></a>
+    <a href="#s3"><span class="n">3.0</span><span>قاموس امتدادات الملفات ودور كل امتداد</span></a>
+    <a href="#s4"><span class="n">4.0</span><span>هيكل المجلدات والتفصيل الكامل</span></a>
+    <a href="#s5"><span class="n">5.0</span><span>تدفق البيانات من النقرة إلى قاعدة البيانات</span></a>
+    <a href="#s6"><span class="n">6.0</span><span>حزمة المناقشة — أوامر، أدلة، أسئلة</span></a>
+    <a href="#s7"><span class="n">7.0</span><span>قائمة التسليم والضغط النهائي</span></a>
+    <a href="#s2-2"><span class="n">2.2</span><span>المخطط المعماري</span></a>
+    <a href="#s4-1"><span class="n">4.1</span><span>شجرة المجلدات</span></a>
+    <a href="#s5-1"><span class="n">5.1</span><span>مخطط التتابع الزمني</span></a>
+    <a href="#s6-2"><span class="n">6.2</span><span>أدلة الاختبار واللقطات</span></a>
+    <a href="#s7-3"><span class="n">7.3</span><span>أوامر ZIP النهائية</span></a>
+    <a href="#s8"><span class="n">8.0</span><span>ملحق إضافي — التصلّب الأمني للمؤسسات</span></a>
+  </div>
+  <div class="note">
+    <strong>كيف تقرأ الوثيقة؟</strong> ابدأ من 1.0 لفهم المشكلة والحل، ثم 2.0 للمعمارية،
+    ثم 3.0 و4.0 للتفاصيل، ثم 5.0 لتدفق البيانات، وأخيرًا 6.0 و7.0 للتحضير للمناقشة والتسليم.
+  </div>
+</nav>
+
+<main>
+
+<!-- ===================== 1.0 ===================== -->
+<section class="section level-1" id="s1">
+  <div class="section-head">
+    <div>
+      <div class="kicker">01 • EXECUTIVE SUMMARY</div>
+      <h2><span class="secnum">1.0</span> الملخص التنفيذي</h2>
+    </div>
+  </div>
+
+  <h3><span class="secnum">1.1</span> المشكلة</h3>
+  <p>
+    المؤسسات تستثمر في الجدران النارية وأنظمة كشف الاختراق، لكن أخطر قناة اختراق تبقى
+    <strong>السلوك البشري</strong>: بريد تصيّد، رسالة SMS، رمز QR ملصق على جدار، فلاشة USB
+    متروكة، أو مكالمة صوتية منتحلة. المشكلة ليست غياب الوعي فقط، بل غياب <strong>قياس
+    سلوكي قابل للتكرار</strong> يربط كل تفاعل بموظف محدد، وبقناة محددة، وبدرس تدريبي فوري.
+  </p>
+  <div class="grid grid-3">
+    <div class="card">
+      <h4>1.1.1 تشتّت القنوات</h4>
+      <p>أدوات البريد لا تقيس QR، وأدوات QR لا تقيس USB أو المكالمات، فلا توجد صورة موحدة للمخاطر.</p>
+    </div>
+    <div class="card">
+      <h4>1.1.2 غياب القياس العادل</h4>
+      <p>النتائج الثابتة لا تراعي صعوبة السيناريو ولا تكرار التعرض، فتصبح الدرجات غير قابلة للمقارنة.</p>
+    </div>
+    <div class="card">
+      <h4>1.1.3 ضعف الأدلة التدريبية</h4>
+      <p>بدون سجل زمني موحد يصعب إثبات ما حدث، ومتى، وعلى أي جهاز، وبأي نتيجة تعليمية.</p>
+    </div>
+  </div>
+
+  <h3><span class="secnum">1.2</span> الحل</h3>
+  <p>
+    HUMINT Shield منصة تدريب توعوي قائمة على الموافقة، تجمع محاكاة متعددة القنوات،
+    وتتبعًا زمنيًا دقيقًا، وتدريبًا فوريًا، ولوحة إدارة عربية RTL. الرسائل المحاكاة
+    لا تسرق كلمات المرور، وصفحات الهبوط تُفصح عن طبيعة الاختبار، وكل إرسال حقيقي
+    يظل مشروطًا بإعدادات المزود وتفويض صريح.
+  </p>
+  <div class="grid grid-2">
+    <div class="card">
+      <h4>1.2.1 محاكاة متعددة القنوات</h4>
+      <p>Email، SMS، QR/Quishing، USB، Vishing، CEO Pretexting، WhatsApp، وVoice — مع نموذج حملة موحّد وسجل تتبع موحّد.</p>
+    </div>
+    <div class="card">
+      <h4>1.2.2 قياس سلوكي تكيفي</h4>
+      <p>نظام Elo يبدأ من 1000، ويوزّع أوزانًا حسب القناة وصعوبة القالب، مع تصنيف سلوكي على نافذة 90 يومًا.</p>
+    </div>
+    <div class="card">
+      <h4>1.2.3 سلسلة أدلة قابلة للتدقيق</h4>
+      <p>كل فتح، نقرة، إرسال، تقرير، وإكمال تدريب يُضاف إلى سجل زمني دقيق، مع تشفير الحقول الحساسة.</p>
+    </div>
+    <div class="card">
+      <h4>1.2.4 واجهة عربية RTL</h4>
+      <p>React 18 وTypeScript وVite وMUI، مع خط Cairo، وتخطيط RTL كامل، ولوحات حية للمخاطر والنتائج.</p>
+    </div>
+  </div>
+
+  <div class="table-wrap table-compact">
+    <table>
+      <thead>
+        <tr><th>القناة</th><th>الحالة في المشروع</th><th>الدليل / الملاحظة</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><strong>Email</strong></td><td><span class="badge good">جاهزة ومجرّبة</span></td><td>Brevo / SMTP، قوالب، تتبع فتح ونقر، تقارير.</td></tr>
+        <tr><td><strong>SMS</strong></td><td><span class="badge good">جاهزة ومجرّبة</span></td><td>TextBee Gateway، روابط قصيرة، تتبع التسليم.</td></tr>
+        <tr><td><strong>QR / Quishing</strong></td><td><span class="badge good">جاهزة ومجرّبة</span></td><td>ملصق A4، مسح مجهول، حل الهوية عند الإرسال.</td></tr>
+        <tr><td><strong>USB</strong></td><td><span class="badge good">جاهزة ومجرّبة</span></td><td>وكيل محلي WebSocket، ملف HTML تحذيري، تتبع أول فتح.</td></tr>
+        <tr><td><strong>Vishing</strong></td><td><span class="badge warn">محاكاة + تكامل</span></td><td>صفحة محاكاة، خيارات سلوكية، وتكامل IllyVoIP للمكالمات المصرّح بها.</td></tr>
+        <tr><td><strong>Pretexting</strong></td><td><span class="badge good">جاهزة ومجرّبة</span></td><td>سيناريو CEO Fraud، خيار إبلاغ أو وقوع، Elo موثق.</td></tr>
+        <tr><td><strong>WhatsApp</strong></td><td><span class="badge warn">تكامل تقني</span></td><td>WA-AKG Gateway، Webhook للقراءة والردود؛ التوسع الإنتاجي مستقبلي.</td></tr>
+        <tr><td><strong>Voice</strong></td><td><span class="badge warn">تكامل تقني</span></td><td>IllyVoIP Voice API، Idempotency، TTS عربي؛ يحتاج تشغيلًا مصرّحًا.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3><span class="secnum">1.3</span> الأثر</h3>
+  <div class="kpi-grid">
+    <div class="kpi"><b>124</b><span>معالج API يغطي الإدارة، التتبع، الحملات، التقارير، والقنوات.</span></div>
+    <div class="kpi green"><b>577</b><span>حالة اختبار مجمعة حاليًا (557 دالة اختبار).</span></div>
+    <div class="kpi amber"><b>19</b><span>ترحيل Alembic من 0001 إلى 0019.</span></div>
+    <div class="kpi violet"><b>5</b><span>لقطات إثبات للقنوات الأربع: QR، Vishing، Pretexting، USB.</span></div>
+  </div>
+  <p>
+    الأثر العملي: تحويل الوعي الأمني من محاضرة إلى <strong>تجربة قابلة للقياس</strong>؛
+    كل موظف يمتلك درجة تكيفية، وكل حملة تنتج سلسلة أدلة، وكل قناة تُختبر ضمن
+    نفس الإطار. النتيجة ليست “نجح أو فشل” فقط، بل صورة واضحة عن المخاطر السلوكية
+    قبل أن تتحول إلى حادث حقيقي.
+  </p>
+  <div class="note ok">
+    <strong>رسالة الدفاع:</strong> المشروع ليس أداة هجوم؛ هو منصة محاكاة مصرّح بها،
+    لا تحتفظ بكلمات المرور، وتُظهر إفصاحًا واضحًا، وتستخدم بيانات تدريبية قابلة للتدقيق.
+  </div>
+</section>
+
+<!-- ===================== 2.0 ===================== -->
+<section class="section level-1" id="s2">
+  <div class="section-head">
+    <div>
+      <div class="kicker">02 • SYSTEM OVERVIEW</div>
+      <h2><span class="secnum">2.0</span> نظرة عامة على النظام</h2>
+    </div>
+  </div>
+
+  <h3><span class="secnum">2.1</span> الصورة الكبيرة</h3>
+  <p>
+    HUMINT Shield تطبيق ويب متكامل يفصل الواجهة العربية التفاعلية عن طبقة API مركزية،
+    ثم يربط المنطق الخلفي بقاعدة بيانات موحدة ومزودي القنوات الخارجيين. المستخدم النهائي
+    يتفاعل مع صفحة تدريب أو حملة محاكاة، بينما يدير المدير الحملات والنتائج من لوحة RTL.
+    كل تفاعل يمر عبر FastAPI، ويُسجَّل في قاعدة البيانات، ويُحدّث درجة الموظف وسلسلة الأدلة.
+  </p>
+
+  <h3 id="s2-2"><span class="secnum">2.2</span> المخطط المعماري</h3>
+  <div class="diagram-card">
+    <div class="diagram-title">2.2.1 المخطط العام للمكونات</div>
+    <pre class="mermaid">
+flowchart LR
+  U["المستخدم / الموظف"] -->|HTTPS| FE["React 18 + Vite - RTL UI"]
+  FE -->|REST /api/v1| API["FastAPI - 124 handlers"]
+  API --> AUTH["JWT + RBAC + Rate Limit"]
+  API --> SVC["Domain Services - Campaigns / Tracking / AI / Elo"]
+  SVC --> DB[("PostgreSQL 16 / SQLite")]
+  SVC --> REDIS[("Redis 7.2 / Celery")]
+  SVC --> EXT["Brevo / TextBee / IllyVoIP / WA-AKG"]
+  SVC --> ART["QR / PDF / USB artifacts"]
+  API --> OBS["Logs / Metrics / Health"]
+    </pre>
+    <p class="caption">الشكل 1 — تدفق الطلب من المستخدم إلى الواجهة، ثم FastAPI، ثم الخدمات وقاعدة البيانات والمزودين الخارجيين.</p>
+  </div>
+
+  <h3><span class="secnum">2.3</span> الطبقات الأربع</h3>
+  <p>كل طبقة لها مسؤولية واضحة، ولا تختلط مع غيرها؛ هذا هو أساس قابلية الاختبار والصيانة.</p>
+  <div class="grid grid-2">
+    <div class="card layer">
+      <h4><span class="secnum">2.3.1</span> طبقة الواجهة — UI</h4>
+      <div class="tagline">React 18 + TypeScript + Vite + MUI</div>
+      <ul>
+        <li>33 ملف <code>.tsx</code> في الصفحات (28 صفحة تشغيل + 5 اختبارات)، و23 ملفًا في المكونات (21 مكوّنًا + 2 اختبارات).</li>
+        <li>RTL كامل وخط Cairo، مع حماية مسارات عبر <code>ProtectedRoute</code>.</li>
+        <li>Axios client، Redux Toolkit، React Query، ورسوم Chart.js/Recharts.</li>
+      </ul>
+    </div>
+    <div class="card layer logic">
+      <h4><span class="secnum">2.3.2</span> طبقة المنطق — Logic</h4>
+      <div class="tagline">FastAPI + Domain Services</div>
+      <ul>
+        <li>124 معالج API موزّع على 22 ملفًا في <code>backend/app/api/v1</code>.</li>
+        <li>خدمات الحملات، التتبع، الإشعارات، المصادقة، والتقارير.</li>
+        <li>Rate limiting، CORS، correlation IDs، ومعالجة أخطاء موحدة.</li>
+      </ul>
+    </div>
+    <div class="card layer ai">
+      <h4><span class="secnum">2.3.3</span> طبقة الذكاء — AI</h4>
+      <div class="tagline">AI-assisted + Behavioral Intelligence</div>
+      <ul>
+        <li><code>ai_service.py</code> يدعم أي مزود متوافق مع OpenAI Chat Completions.</li>
+        <li>تنقية HTML وتوليد قوالب عربية آمنة، بدون fallback صامت.</li>
+        <li><code>classification_engine.py</code> و<code>elo_engine.py</code> للتصنيف والدرجات التكيفية.</li>
+      </ul>
+    </div>
+    <div class="card layer data">
+      <h4><span class="secnum">2.3.4</span> طبقة البيانات — Data</h4>
+      <div class="tagline">SQLAlchemy Async + Alembic + Redis</div>
+      <ul>
+        <li>PostgreSQL 16 في الإنتاج، وSQLite في التطوير والاختبار.</li>
+        <li>15 نموذج ORM في 11 ملفًا، و19 ترحيلًا، مع تشفير AES-256-GCM للحقول الحساسة.</li>
+        <li>Redis/Celery للمهام الخلفية، وقيود تتبع فريدة لكل حملة وموظف.</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="table-wrap table-compact">
+    <table>
+      <thead>
+        <tr><th>الطبقة</th><th>التقنية الأساسية</th><th>المدخلات</th><th>المخرجات</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>UI</td><td>React / TypeScript / Vite / MUI</td><td>نقرات، نماذج، مسارات عامة ومحمية</td><td>واجهات RTL، لوحات حية، صفحات تدريب</td></tr>
+        <tr><td>Logic</td><td>FastAPI / Pydantic / Services</td><td>طلبات REST، JWT، أحداث التتبع</td><td>JSON، redirects، قرارات أعمال</td></tr>
+        <tr><td>AI</td><td>OpenAI-compatible / Elo / Classification</td><td>وصف حملة، سلوك موظف، نتائج</td><td>قوالب، درجات، تصنيفات، تقارير</td></tr>
+        <tr><td>Data</td><td>SQLAlchemy / Alembic / Redis</td><td>معاملات، مهام، أحداث</td><td>صفوف موثقة، مهام خلفية، أدلة</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ===================== 3.0 ===================== -->
+<section class="section level-1" id="s3">
+  <div class="section-head">
+    <div>
+      <div class="kicker">03 • FILE EXTENSIONS</div>
+      <h2><span class="secnum">3.0</span> قاموس امتدادات الملفات</h2>
+    </div>
+  </div>
+
+  <h3><span class="secnum">3.1</span> جدول الامتدادات</h3>
+  <p>
+    الامتداد ليس مجرد شكل للملف؛ هو إشارة إلى اللغة أو الأداة أو دور الملف في دورة
+    التشغيل. الجدول التالي يشرح الامتدادات التي ستراها فعليًا في المشروع.
+  </p>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>الامتداد</th><th>المعنى</th><th>الدور في المشروع</th><th>مثال</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>.py</code></td><td>Python</td><td>كود Backend، الخدمات، النماذج، الاختبارات</td><td><code>backend/app/main.py</code></td></tr>
+        <tr><td><code>.ts</code></td><td>TypeScript</td><td>منطق الواجهة، API client، الأنواع</td><td><code>frontend/src/api/client.ts</code></td></tr>
+        <tr><td><code>.tsx</code></td><td>TypeScript + JSX</td><td>صفحات ومكونات React</td><td><code>frontend/src/pages/DashboardPage.tsx</code></td></tr>
+        <tr><td><code>.json</code></td><td>JSON</td><td>إعدادات الحزم، مانيفست، OpenAPI</td><td><code>frontend/package.json</code></td></tr>
+        <tr><td><code>.db</code></td><td>SQLite Database</td><td>قاعدة بيانات التطوير/العرض</td><td><code>backend/humint_shield.db</code></td></tr>
+        <tr><td><code>.env</code></td><td>Environment Variables</td><td>مفاتيح وأسرار التشغيل — لا يُسلَّم</td><td><code>backend/.env</code></td></tr>
+        <tr><td><code>.html</code></td><td>HTML</td><td>تقارير، قوالب بريد، صفحات USB</td><td><code>MASTER_DOSSIER.html</code></td></tr>
+        <tr><td><code>.css</code></td><td>Cascading Style Sheets</td><td>تنسيق الواجهة والطباعة</td><td><code>frontend/src/styles.css</code></td></tr>
+        <tr><td><code>.md</code></td><td>Markdown</td><td>توثيق، أدلة، ملاحظات تشغيل</td><td><code>docs/FOUR_CHANNEL_PROOF.md</code></td></tr>
+        <tr><td><code>.pdf</code></td><td>Portable Document Format</td><td>تقرير جاهز للطباعة والتسليم</td><td><code>MASTER_DOSSIER.pdf</code></td></tr>
+        <tr><td><code>.docx</code></td><td>Microsoft Word</td><td>الرسالة/التقرير الأكاديمي</td><td><code>HUMINT_Shield_Academic_Thesis_Arabic.docx</code></td></tr>
+        <tr><td><code>.png</code></td><td>Portable Network Graphics</td><td>لقطات إثبات ومخططات</td><td><code>docs/screenshots/13-qr-mobile-portal.png</code></td></tr>
+        <tr><td><code>.ttf</code></td><td>TrueType Font</td><td>خطوط عربية لتقارير PDF والبريد</td><td><code>backend/app/assets/fonts/Amiri-Regular.ttf</code></td></tr>
+        <tr><td><code>.ini</code></td><td>Initialization</td><td>إعداد Alembic</td><td><code>backend/alembic.ini</code></td></tr>
+        <tr><td><code>.toml</code></td><td>Tom's Obvious Minimal Language</td><td>إعداد المشروع وpytest/ruff</td><td><code>backend/pyproject.toml</code></td></tr>
+        <tr><td><code>.yml</code></td><td>YAML</td><td>Docker Compose وCI</td><td><code>docker-compose.yml</code></td></tr>
+        <tr><td><code>.ps1</code></td><td>PowerShell Script</td><td>تشغيل محلي، نفق، تجهيز الحزمة</td><td><code>scripts/start-dev.ps1</code></td></tr>
+        <tr><td><code>.bat</code></td><td>Windows Batch</td><td>تشغيل وكيل USB المحلي</td><td><code>start_usb_agent.bat</code></td></tr>
+        <tr><td><code>.sh</code></td><td>Shell Script</td><td>نقطة دخول حاوية Backend</td><td><code>backend/docker/entrypoint.sh</code></td></tr>
+        <tr><td><code>.mako</code></td><td>Mako Template</td><td>قالب توليد ترحيلات Alembic</td><td><code>backend/alembic/script.py.mako</code></td></tr>
+        <tr><td><code>.txt</code></td><td>Plain Text</td><td>متطلبات التشغيل والملاحظات</td><td><code>backend/requirements.txt</code></td></tr>
+        <tr><td><code>.js</code></td><td>JavaScript</td><td>عامل Cloudflare/ملفات مبنية</td><td><code>cloudflare/worker.js</code></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="note warn">
+    <strong>قاعدة التسليم:</strong> ملفات <code>.env</code> و<code>.db</code> القديمة و<code>.pyc</code>
+    و<code>.log</code> ليست محتوى أكاديميًا؛ تُستبعد من الحزمة، لكن تبقى في نسخة العمل الأصلية.
+  </div>
+</section>
+
+<!-- ===================== 4.0 ===================== -->
+<section class="section level-1" id="s4">
+  <div class="section-head">
+    <div>
+      <div class="kicker">04 • FOLDER STRUCTURE</div>
+      <h2><span class="secnum">4.0</span> هيكل المجلدات</h2>
+    </div>
+  </div>
+
+  <h3 id="s4-1"><span class="secnum">4.1</span> شجرة المجلدات المرئية</h3>
+  <div class="diagram-card">
+    <div class="diagram-title">4.1.1 الشجرة المنطقية للمشروع</div>
+    <pre class="tree" dir="ltr">HUMINT_Shield/
+├── backend/
+│   ├── app/
+│   │   ├── api/v1/            <span class="c"># 22 ملف API + webhooks</span>
+│   │   ├── models/            <span class="c"># 15 نموذج ORM / 11 ملفًا</span>
+│   │   ├── schemas/           <span class="c"># Pydantic contracts</span>
+│   │   ├── services/          <span class="c"># منطق الحملات، التتبع، AI، Elo</span>
+│   │   ├── worker/            <span class="c"># Celery app + tasks</span>
+│   │   ├── scripts/           <span class="c"># seed/bootstrap</span>
+│   │   └── assets/fonts/      <span class="c"># خطوط عربية</span>
+│   ├── alembic/versions/      <span class="c"># 19 ترحيلًا</span>
+│   ├── tests/                 <span class="c"># 46 ملف اختبار</span>
+│   ├── humint_shield.db       <span class="c"># قاعدة العرض النشطة</span>
+│   ├── requirements.txt
+│   └── Dockerfile
+├── frontend/
+│   ├── src/
+│   │   ├── pages/             <span class="c"># 33 ملف .tsx (28 + 5 اختبارات)</span>
+│   │   ├── components/        <span class="c"># 22 .tsx (20 + 2 اختبارات)</span>
+│   │   ├── api/               <span class="c"># Axios client + endpoints</span>
+│   │   ├── store/             <span class="c"># Redux Toolkit</span>
+│   │   ├── hooks/             <span class="c"># useAuth</span>
+│   │   ├── lib/               <span class="c"># تنسيقات وأدوات</span>
+│   │   ├── types/             <span class="c"># TypeScript types</span>
+│   │   └── test/              <span class="c"># إعداد الاختبارات</span>
+│   ├── package.json
+│   ├── vite.config.ts
+│   └── Dockerfile
+├── docs/
+│   ├── FOUR_CHANNEL_PROOF.md
+│   ├── screenshots/           <span class="c"># 5 لقطات إثبات مختارة</span>
+│   └── *.pdf / *.png          <span class="c"># أدلة إضافية</span>
+├── scripts/
+│   ├── start-dev.ps1
+│   └── public-link.ps1
+├── nginx/
+├── cloudflare/
+├── thesis_figures_ar/         <span class="c"># 4 مخططات عربية</span>
+├── deployment_agent.py        <span class="c"># وكيل USB المحلي</span>
+├── start_usb_agent.bat
+├── docker-compose.yml
+├── README.md
+├── MASTER_DOSSIER.pdf
+├── PROJECT_ARCHITECTURE_AND_DEFENSE.html
+├── backend/.venv/             <span class="x"># لا يُسلَّم — مكتبات</span>
+├── frontend/node_modules/     <span class="x"># لا يُسلَّم — مكتبات</span>
+├── .git/                      <span class="x"># لا يُسلَّم — تاريخ Git</span>
+└── .env                       <span class="x"># لا يُسلَّم — أسرار</span></pre>
+    <p class="caption">الشكل 2 — الشجرة المنطقية للمشروع، مع تمييز المجلدات التي لا تدخل في حزمة التسليم.</p>
+  </div>
+
+  <h3><span class="secnum">4.2</span> التفصيل الكامل للمجلدات</h3>
+
+  <h4><span class="secnum">4.2.1</span> مجلد <code>backend/</code></h4>
+  <p><strong>الغرض:</strong> قلب النظام: API، منطق الأعمال، قاعدة البيانات، الترحيلات، الاختبارات، والتكاملات الخارجية.</p>
+  <div class="table-wrap table-compact">
+    <table>
+      <thead><tr><th>المسار</th><th>المحتوى</th><th>ملفات مفتاحية</th></tr></thead>
+      <tbody>
+        <tr><td><code>app/api/v1/</code></td><td>22 ملف API يغطي 124 معالجًا</td><td><code>router.py</code>، <code>tracking.py</code>، <code>quishing.py</code>، <code>usb_drop.py</code></td></tr>
+        <tr><td><code>app/models/</code></td><td>15 نموذج ORM في 11 ملفًا</td><td><code>email_campaign.py</code>، <code>human_asset.py</code>، <code>user.py</code></td></tr>
+        <tr><td><code>app/services/</code></td><td>منطق الحملات، التتبع، AI، Elo، المزودين</td><td><code>campaign_launcher.py</code>، <code>tracking_service.py</code>، <code>elo_engine.py</code></td></tr>
+        <tr><td><code>alembic/versions/</code></td><td>19 ترحيلًا متسلسلًا</td><td><code>0001_initial_lms.py</code> … <code>0019_user_permissions.py</code></td></tr>
+        <tr><td><code>tests/</code></td><td>46 ملف اختبار، 557 دالة، 577 حالة</td><td><code>test_qr_tracking_pipeline.py</code>، <code>test_tracking_service.py</code></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="note">
+    <strong>ملف التشغيل الأول:</strong> <code>app/main.py</code> ينشئ FastAPI، يسجّل CORS
+    وmiddleware، ويشغّل seeding/bootstrap عند الإقلاع. <code>app/config.py</code> يحوّل
+    متغيرات البيئة إلى إعدادات Pydantic آمنة.
+  </div>
+
+  <h4><span class="secnum">4.2.2</span> مجلد <code>frontend/</code></h4>
+  <p><strong>الغرض:</strong> واجهة الإدارة وتجربة التدريب العامة: صفحات، مكونات، حالة، اتصال API، وRTL.</p>
+  <div class="table-wrap table-compact">
+    <table>
+      <thead><tr><th>المسار</th><th>المحتوى</th><th>ملفات مفتاحية</th></tr></thead>
+      <tbody>
+        <tr><td><code>src/pages/</code></td><td>33 ملف .tsx (28 صفحة + 5 اختبارات)</td><td><code>DashboardPage.tsx</code>، <code>LiveBoardPage.tsx</code>، <code>QrLureLandingPage.tsx</code></td></tr>
+        <tr><td><code>src/components/</code></td><td>23 ملف .tsx (21 مكوّنًا + 2 اختبارات)</td><td><code>Layout.tsx</code>، <code>ProtectedRoute.tsx</code>، <code>UsbDeploymentStation.tsx</code></td></tr>
+        <tr><td><code>src/api/</code></td><td>عميل Axios ونقاط النهاية</td><td><code>client.ts</code>، <code>endpoints.ts</code></td></tr>
+        <tr><td><code>src/store/</code></td><td>حالة التطبيق</td><td><code>index.ts</code></td></tr>
+        <tr><td><code>src/lib/</code></td><td>تنسيقات، أخطاء، محتوى محاكاة</td><td><code>format.ts</code>، <code>errors.ts</code>، <code>simulationContent.ts</code></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p><code>src/App.tsx</code> هو خريطة المسارات: مسارات عامة للتتبع والتدريب، ومسارات محمية داخل <code>Shell</code>.</p>
+
+  <h4><span class="secnum">4.2.3</span> مجلد <code>docs/</code></h4>
+  <p><strong>الغرض:</strong> الأدلة، اللقطات، تقارير الإثبات، والمواد الأكاديمية. لا يدخل في التشغيل، لكنه يدخل في التسليم.</p>
+  <div class="table-wrap table-compact">
+    <table>
+      <thead><tr><th>العنصر</th><th>الدور</th><th>ملاحظة</th></tr></thead>
+      <tbody>
+        <tr><td><code>FOUR_CHANNEL_PROOF.md</code></td><td>سجل تشغيل QR / Vishing / Pretexting / USB</td><td>يتضمن أحداثًا وحقولًا وأدلة Elo.</td></tr>
+        <tr><td><code>screenshots/13..17</code></td><td>لقطات إثبات القنوات</td><td>5 لقطات مختارة؛ البقية قد تحتوي بيانات واجهة.</td></tr>
+        <tr><td><code>qr-poster-proof.pdf</code></td><td>إثبات ملصق QR</td><td>صفحة A4 واحدة وQR عالي الدقة.</td></tr>
+        <tr><td><code>HUMINT_SHIELD_TECHNICAL_AUDIT.html</code></td><td>تقرير تقني سابق</td><td>يمكن استبعاده من الحزمة؛ التقرير الرئيسي هو Dossier.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h4><span class="secnum">4.2.4</span> مجلد <code>scripts/</code></h4>
+  <p><strong>الغرض:</strong> أوامر تشغيل محلية ونفق عام، وليست جزءًا من منطق التطبيق.</p>
+  <div class="table-wrap table-compact">
+    <table>
+      <thead><tr><th>الملف</th><th>الوظيفة</th><th>متى تستخدمه؟</th></tr></thead>
+      <tbody>
+        <tr><td><code>start-dev.ps1</code></td><td>يشغّل Backend على 8000 وVite على 5173</td><td>عرض محلي سريع.</td></tr>
+        <tr><td><code>public-link.ps1</code></td><td>يفتح نفق Cloudflare للوصول العام</td><td>عند الحاجة لرابط عام للهاتف/QR.</td></tr>
+        <tr><td><code>start_usb_agent.bat</code></td><td>يشغّل وكيل USB على ws://127.0.0.1:8089</td><td>عرض قناة USB.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h4><span class="secnum">4.2.5</span> المجلدات الأخرى</h4>
+  <div class="table-wrap table-compact">
+    <table>
+      <thead><tr><th>المجلد/الملف</th><th>الغرض</th><th>قرار التسليم</th></tr></thead>
+      <tbody>
+        <tr><td><code>nginx/</code></td><td>إعداد reverse proxy للـSPA والـAPI</td><td>يُضمَّن في حزمة المناقشة.</td></tr>
+        <tr><td><code>cloudflare/</code></td><td>Worker وملفات نشر</td><td>worker.js/manifest فقط؛ assets مبنية تُستبعد.</td></tr>
+        <tr><td><code>tools/redis/</code></td><td>Redis محلي اختياري على Windows</td><td>يُستبعد؛ Docker Compose يوفر Redis.</td></tr>
+        <tr><td><code>thesis_figures_ar/</code></td><td>4 مخططات عربية للرسالة</td><td>تُضمَّن.</td></tr>
+        <tr><td><code>deployment_agent.py</code></td><td>وكيل USB المحلي</td><td>يُضمَّن لقناة USB.</td></tr>
+        <tr><td><code>docker-compose.yml</code></td><td>Postgres + Redis + Backend + Worker + Beat + Frontend</td><td>يُضمَّن.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ===================== 5.0 ===================== -->
+<section class="section level-1" id="s5">
+  <div class="section-head">
+    <div>
+      <div class="kicker">05 • DATA FLOW</div>
+      <h2><span class="secnum">5.0</span> كيف تتحرك البيانات</h2>
+    </div>
+  </div>
+
+  <h3 id="s5-1"><span class="secnum">5.1</span> مخطط التتابع الزمني</h3>
+  <div class="diagram-card">
+    <div class="diagram-title">5.1.1 من النقرة إلى الاستجابة</div>
+    <pre class="mermaid">
+sequenceDiagram
+  autonumber
+  participant U as المستخدم
+  participant FE as React SPA
+  participant API as FastAPI
+  participant SVC as Service Layer
+  participant DB as Database
+  participant P as Provider
+
+  U->>FE: فتح صفحة / إرسال نموذج
+  FE->>API: POST /api/v1/track/... (JSON)
+  API->>API: CORS + Request ID + Rate Limit
+  API->>SVC: التحقق وتنفيذ المنطق
+  SVC->>DB: SELECT tracking / employee / campaign
+  DB-->>SVC: الصفوف المطلوبة
+  SVC->>DB: INSERT interaction + UPDATE Elo
+  DB-->>SVC: commit ناجح
+  SVC-->>API: نتيجة موحدة
+  API-->>FE: 200 JSON أو Redirect
+  FE-->>U: صفحة تدريب / نتيجة
+  opt حملة خارجية
+    SVC->>P: Brevo / TextBee / IllyVoIP / WA-AKG
+    P-->>SVC: message id / delivery status
+  end
+    </pre>
+    <p class="caption">الشكل 3 — تتابع الطلب من الواجهة إلى FastAPI، ثم الخدمات وقاعدة البيانات، مع مسار اختياري لمزودي القنوات.</p>
+  </div>
+
+  <h3><span class="secnum">5.2</span> شرح الخطوات</h3>
+  <div class="table-wrap table-compact">
+    <table>
+      <thead><tr><th>#</th><th>الخطوة</th><th>الطبقة</th><th>ما يحدث بالتفصيل</th><th>الملف المرجعي</th></tr></thead>
+      <tbody>
+        <tr><td>1</td><td>النقر/الفتح</td><td>UI</td><td>المستخدم يفتح رابط تتبع أو لوحة إدارة؛ React Router يحدد الصفحة العامة أو المحمية.</td><td><code>frontend/src/App.tsx</code></td></tr>
+        <tr><td>2</td><td>طلب API</td><td>UI</td><td>Axios يرسل JSON إلى <code>/api/v1</code> مع JWT عند الحاجة.</td><td><code>frontend/src/api/client.ts</code></td></tr>
+        <tr><td>3</td><td>Middlewares</td><td>Logic</td><td>CORS، correlation ID، قياس الزمن، وتسجيل الطلب.</td><td><code>backend/app/main.py</code></td></tr>
+        <tr><td>4</td><td>Rate Limit + RBAC</td><td>Logic</td><td>حدود المعدل، والتحقق من الدور والتنظيم قبل الوصول للبيانات.</td><td><code>backend/app/deps.py</code></td></tr>
+        <tr><td>5</td><td>حل الحملة/التتبع</td><td>Logic</td><td>البحث عن <code>tracking_uuid</code> أو <code>campaign_id</code>، والتحقق من الصلاحية والحالة.</td><td><code>backend/app/api/v1/tracking.py</code></td></tr>
+        <tr><td>6</td><td>معاملة قاعدة البيانات</td><td>Data</td><td>قراءة الصفوف، إضافة حدث إلى <code>training_interactions</code>، وتحديث العدادات وElo.</td><td><code>backend/app/services/tracking_service.py</code></td></tr>
+        <tr><td>7</td><td>الحماية الحساسة</td><td>Data</td><td>تشفير الحقول الحساسة بـAES-256-GCM، وعدم تخزين كلمة المرور في المسار المرئي.</td><td><code>backend/app/security.py</code></td></tr>
+        <tr><td>8</td><td>الاستجابة</td><td>Logic</td><td>JSON موحد أو Redirect إلى صفحة التدريب، مع headers منع التخزين المؤقت.</td><td><code>backend/app/api/v1/tracking.py</code></td></tr>
+        <tr><td>9</td><td>الإرسال الخارجي</td><td>Logic</td><td>عند إطلاق حملة: Brevo للبريد، TextBee للSMS، IllyVoIP للصوت، WA-AKG للواتساب.</td><td><code>backend/app/services/campaign_launcher.py</code></td></tr>
+        <tr><td>10</td><td>الدليل والتقرير</td><td>AI/Data</td><td>تجميع النتائج، حساب التصنيف، وتوليد تقرير PDF تنفيذي.</td><td><code>backend/app/services/executive_report.py</code></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="note ok">
+    <strong>ضمانات الاتساق:</strong> كل حدث يُكتب في معاملة واحدة، وكل <code>tracking_uuid</code>
+    فريد، وكل حملة/موظف لهما قيد واحد، وكل تغيير في Elo يمر عبر محرك مركزي قابل للاختبار.
+  </div>
+</section>
+
+<!-- ===================== 6.0 ===================== -->
+<section class="section level-1" id="s6">
+  <div class="section-head">
+    <div>
+      <div class="kicker">06 • DEFENSE PACKAGE</div>
+      <h2><span class="secnum">6.0</span> حزمة المناقشة</h2>
+    </div>
+  </div>
+
+  <h3><span class="secnum">6.1</span> أوامر العرض والتشغيل</h3>
+
+  <h4><span class="secnum">6.1.1</span> تشغيل محلي سريع</h4>
+  <pre><code># من جذر المشروع
+cd backend
+python -m venv .venv
+.\.venv\Scripts\pip install -r requirements.txt
+.\.venv\Scripts\uvicorn app.main:app --host 127.0.0.1 --port 8000</code></pre>
+  <pre><code># نافذة ثانية
+cd frontend
+npm ci
+npm run dev</code></pre>
+  <p>ثم افتح <code>http://127.0.0.1:5173</code> للواجهة، و<code>http://127.0.0.1:8000/docs</code> لوثائق API.</p>
+
+  <h4><span class="secnum">6.1.2</span> تشغيل الحزمة الكاملة عبر Docker</h4>
+  <pre><code>docker compose up -d --build
+# الواجهة: http://localhost:8080</code></pre>
+
+  <h4><span class="secnum">6.1.3</span> تشغيل وكيل USB</h4>
+  <pre><code># من جذر المشروع، في نافذة مستقلة
+start_usb_agent.bat
+# الوكيل يستمع على ws://127.0.0.1:8089</code></pre>
+
+  <h4><span class="secnum">6.1.4</span> أوامر التحقق قبل المناقشة</h4>
+  <pre><code>cd backend
+.\.venv\Scripts\python -m pytest -q --no-cov
+
+cd ..\frontend
+npm test
+npm run typecheck
+npm run lint
+npm run build</code></pre>
+  <div class="note warn">
+    <strong>أثناء المناقشة:</strong> لا تُرسل بريدًا أو SMS أو WhatsApp أو مكالمة حقيقية جديدة،
+    ولا تشغّل TTS جديدًا، دون تفويض. المكالمة الوحيدة المصرّح بها هي <strong>ring-only</strong>
+    إلى الرقم المتفق عليه مسبقًا، ولا تُجرى أي مكالمات أخرى. استخدم صفحات المحاكاة، بيانات
+    العرض، ولقطات الإثبات الموجودة. أي تشغيل حقيقي يحتاج <code>.env</code> محليًا ومزودًا
+    مفعّلًا وموافقة صريحة.
+  </div>
+
+  <h3 id="s6-2"><span class="secnum">6.2</span> أدلة الاختبار</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>الدليل</th><th>الرقم/الحالة</th><th>ماذا يثبت؟</th></tr></thead>
+      <tbody>
+        <tr><td>Backend test files</td><td><strong>46 ملفًا</strong></td><td>تغطية الوحدات، API، التتبع، القنوات، الأمان، والترحيلات.</td></tr>
+        <tr><td>Test functions</td><td><strong>557 دالة</strong></td><td>عدد حالات الاختبار المكتوبة في ملفات pytest.</td></tr>
+        <tr><td>Collected cases</td><td><strong>577 حالة</strong></td><td>إعادة جمع حالية، بما فيها 7 مجموعات parametrize.</td></tr>
+        <tr><td>العدد المرجعي السابق</td><td><strong>536 اختبارًا</strong></td><td>الرقم المذكور في تقرير الجاهزية السابق؛ المجموعة الحالية أكبر.</td></tr>
+        <tr><td>Coverage gate</td><td><strong>80%</strong></td><td>حد أدنى مفروض في <code>pyproject.toml</code>.</td></tr>
+        <tr><td>آخر تشغيل موثق</td><td><strong>405 passed / 89.64%</strong></td><td>دليل <code>FOUR_CHANNEL_PROOF.md</code> بتاريخ 2026-10-29.</td></tr>
+        <tr><td>Frontend suites</td><td><strong>9 suites / 30 tests</strong></td><td>دليل سابق للواجهة، مع Typecheck وLint وBuild ناجح.</td></tr>
+        <tr><td>Alembic head</td><td><strong>0019</strong></td><td>آخر ترحيل حالي: <code>0019_user_permissions.py</code>.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h4><span class="secnum">6.2.1</span> لقطات الإثبات الخمس</h4>
+  <div class="table-wrap table-compact">
+    <table>
+      <thead><tr><th>اللقطة</th><th>المسار</th><th>الدليل</th></tr></thead>
+      <tbody>
+        <tr><td>QR Mobile Portal</td><td><code>docs/screenshots/13-qr-mobile-portal.png</code></td><td>صفحة الهبوط بعد مسح QR.</td></tr>
+        <tr><td>Vishing Call</td><td><code>docs/screenshots/14-vishing-call.png</code></td><td>واجهة المحاكاة الصوتية وخيارات السلوك.</td></tr>
+        <tr><td>CEO Pretexting</td><td><code>docs/screenshots/15-ceo-pretexting.png</code></td><td>سيناريو انتحال الرئيس التنفيذي.</td></tr>
+        <tr><td>USB Warning</td><td><code>docs/screenshots/16-usb-html-warning.png</code></td><td>تحذير HTML بعد فتح الفلاشة.</td></tr>
+        <tr><td>QR Hacked Reveal</td><td><code>docs/screenshots/17-qr-hacked-reveal.png</code></td><td>كشف الاختبار بعد إدخال البيانات.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3><span class="secnum">6.3</span> العمل المستقبلي</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>المحور</th><th>الحالة الحالية</th><th>التطوير المستقبلي</th></tr></thead>
+      <tbody>
+        <tr><td><strong>WhatsApp</strong></td><td>خدمة WA-AKG وWebhook للقراءة والردود موجودة في <code>whatsapp_service.py</code>.</td><td>تشغيل بوابة إنتاج مستقرة، ضبط anti-ban، تقارير read/reply، وسياسات إرسال مؤسسية.</td></tr>
+        <tr><td><strong>Vishing</strong></td><td>صفحة محاكاة وتكامل IllyVoIP وTTS عربي موجودان.</td><td>توسيع السيناريوهات المصرّح بها، اختبار TTS عربي، تسجيل نتائج المكالمة، وخطة failover.</td></tr>
+        <tr><td><strong>التكامل المؤسسي</strong></td><td>JWT وRBAC وتنظيم متعدد.</td><td>SSO/MFA، مزامنة HR، وتقارير امتثال قابلة للتصدير.</td></tr>
+        <tr><td><strong>القياس</strong></td><td>Elo وتصنيف 90 يومًا.</td><td>نماذج تنبؤية للمخاطر، ولوحات اتجاهات طويلة المدى.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3><span class="secnum">6.4</span> أسئلة وأجوبة للمناقشة</h3>
+  <div class="grid grid-2">
+    <div class="card q-card">
+      <h4><span class="secnum">6.4.1</span> لماذا ثماني قنوات وليس البريد فقط؟</h4>
+      <p>لأن المهاجم لا يختار قناة واحدة. تغطية البريد وSMS وQR وUSB والصوت والواتساب تكشف نقاط الضعف الحقيقية، وتسمح بمقارنة سلوك الموظف عبر سياقات مختلفة.</p>
+    </div>
+    <div class="card q-card">
+      <h4><span class="secnum">6.4.2</span> كيف تمنعون استخدام المنصة كأداة هجوم؟</h4>
+      <p>المنصة قائمة على الموافقة، ولا تحتفظ بكلمات المرور، وتُظهر إفصاحًا، وتشترط إعدادات مزود وتفويضًا. كل حملة مرتبطة بتنظيم وموظفين معروفين، وكل حدث قابل للتدقيق.</p>
+    </div>
+    <div class="card q-card">
+      <h4><span class="secnum">6.4.3</span> كيف تعمل درجة Elo؟</h4>
+      <p>تبدأ من 1000، ولكل قناة وزن، ولكل نتيجة نسبة تأثير، وتضاعف صعوبة القالب الحركة. النتيجة تُقيَّد بين 0 و2000، وتُترجم إلى نطاق صعوبة ومستوى خطر.</p>
+    </div>
+    <div class="card q-card">
+      <h4><span class="secnum">6.4.4</span> أين البيانات الحساسة وكيف تُحمى؟</h4>
+      <p>كلمات المرور المُدخلة لا تُخزَّن كنص واضح، والحقول الحساسة تُشفَّر بـAES-256-GCM، والمصادقة JWT، وكلمات مرور المستخدمين bcrypt، والوصول محكوم بالأدوار والتنظيم.</p>
+    </div>
+    <div class="card q-card">
+      <h4><span class="secnum">6.4.5</span> ما الإضافة الأكاديمية؟</h4>
+      <p>الجمع بين محاكاة متعددة القنوات، وقياس سلوكي تكيفي، وسلسلة أدلة زمنية، وواجهة عربية RTL، ضمن منصة واحدة قابلة للتشغيل والتدقيق — وليس مجرد أداة إرسال بريد.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ===================== 7.0 ===================== -->
+<section class="section level-1" id="s7">
+  <div class="section-head">
+    <div>
+      <div class="kicker">07 • DELIVERY CHECKLIST</div>
+      <h2><span class="secnum">7.0</span> قائمة التسليم</h2>
+    </div>
+  </div>
+
+  <h3><span class="secnum">7.1</span> ما يجب أن يُضمَّن</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>العنصر</th><th>المسار</th><th>السبب</th></tr></thead>
+      <tbody>
+        <tr><td>تقرير الهندسة والدفاع</td><td><code>PROJECT_ARCHITECTURE_AND_DEFENSE.html</code></td><td>هذه الوثيقة، وتشرح المشروع من الصورة الكبيرة إلى التسليم.</td></tr>
+        <tr><td>التقرير الكامل</td><td><code>MASTER_DOSSIER.pdf</code></td><td>202 صفحة من الأدلة والتفاصيل الجاهزة للطباعة.</td></tr>
+        <tr><td>قاعدة العرض</td><td><code>backend/humint_shield.db</code></td><td>بيانات تجريبية لتشغيل المناقشة دون إعداد طويل.</td></tr>
+        <tr><td>كود Backend</td><td><code>backend/app/</code> + <code>alembic/</code> + <code>requirements.txt</code></td><td>كل منطق التشغيل والترحيلات.</td></tr>
+        <tr><td>كود Frontend</td><td><code>frontend/src/</code> + إعدادات Vite/TS</td><td>كل الواجهة العربية وRTL.</td></tr>
+        <tr><td>دليل القنوات</td><td><code>docs/FOUR_CHANNEL_PROOF.md</code> + 5 لقطات</td><td>إثبات QR / Vishing / Pretexting / USB.</td></tr>
+        <tr><td>الرسالة والمخططات</td><td><code>HUMINT_Shield_Academic_Thesis_Arabic.docx</code> + <code>thesis_figures_ar/</code></td><td>المادة الأكاديمية والمخططات.</td></tr>
+        <tr><td>النشر</td><td><code>docker-compose.yml</code> + <code>nginx/</code> + Dockerfiles</td><td>تشغيل الحزمة الكاملة عند الحاجة.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3><span class="secnum">7.2</span> ما يجب أن يُستبعد</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>الفئة</th><th>أمثلة</th><th>السبب</th></tr></thead>
+      <tbody>
+        <tr><td>مكتبات</td><td><code>frontend/node_modules/</code>، <code>backend/.venv/</code></td><td>حجم ضخم، خاصة بالمنصة، وتُعاد بالتنصيب.</td></tr>
+        <tr><td>تاريخ Git</td><td><code>.git/</code></td><td>ليس مصدرًا أكاديميًا، وقد يحتوي مسارات وبيانات محلية.</td></tr>
+        <tr><td>أسرار</td><td><code>.env</code>، <code>backend/.env</code></td><td>مفاتيح API وكلمات مرور — لا تُسلَّم أبدًا.</td></tr>
+        <tr><td>كاش ومخرجات</td><td><code>__pycache__</code>، <code>*.pyc</code>، <code>*.log</code>، <code>*.out</code></td><td>قابلة للتوليد وليست جزءًا من الكود.</td></tr>
+        <tr><td>بناء الواجهة</td><td><code>frontend/dist/</code>، <code>cloudflare/assets/</code></td><td>مخرجات بناء؛ يمكن إعادة توليدها.</td></tr>
+        <tr><td>قواعد قديمة</td><td><code>humint_dev.db</code>، <code>_migration_test.db</code></td><td>تبقى في الأصل؛ الحزمة تستخدم قاعدة العرض النشطة.</td></tr>
+        <tr><td>تقارير مكررة</td><td><code>_report_part*.html</code>، <code>email_channel_master_report.*</code></td><td>Dossier + هذا التقرير يغطيان الغرض.</td></tr>
+        <tr><td>أدوات محلية</td><td><code>tools/redis/*.exe</code>، <code>*.pdb</code></td><td>بيانات منصة؛ Docker Compose يوفر Redis.</td></tr>
+        <tr><td>الاختبارات</td><td><code>backend/tests/</code>، <code>frontend/e2e/</code>، <code>*.test.tsx</code></td><td>تبقى في المشروع الأصلي؛ الحزمة التشغيلية لا تتضمنها.</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="note danger">
+    <strong>مهم:</strong> هذا استبعاد من حزمة التسليم فقط. لا تحذف هذه الملفات من مشروعك الأصلي،
+    لأنك قد تحتاج الاختبارات والصور وقواعد البيانات القديمة في المناقشة أو التطوير.
+  </div>
+
+  <h3 id="s7-3"><span class="secnum">7.3</span> أمر PowerShell النهائي للضغط</h3>
+  <p>
+    شغّل الأمر من <strong>جذر المشروع</strong>. ينشئ نسخة staging نظيفة، يستبعد المكتبات
+    والأسرار والكاش، ثم يضغطها. هذا أمر <strong>ZIP للمشروع الكامل</strong> وليس حزمة
+    المناقشة المختصرة. القياس الفعلي على هذه النسخة: <strong>~35 MB</strong> — أقل من
+    تقدير 70 MB لأن <code>node_modules</code> و<code>.venv</code> و<code>.git</code>
+    مستبعدة، ولأن PDF/الصور/تنفيذيات Redis مضغوطة أصلًا. للحصول على حزمة المناقشة
+    المختصرة (~17–22 MB) استخدم قائمة الاستبعاد في 7.2.
+  </p>
+  <pre><code>$src   = (Get-Location).Path
+$stage = Join-Path $env:TEMP "HUMINT_Shield_DELIVERY"
+$zip   = Join-Path (Split-Path $src -Parent) "HUMINT_Shield_DELIVERY.zip"
+
+if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
+New-Item -ItemType Directory -Force $stage | Out-Null
+
+robocopy $src $stage /E `
+  /XD .git node_modules .venv __pycache__ .pytest_cache .ruff_cache .mypy_cache `
+       playwright-report test-results dist build `
+  /XF .env *.pyc *.pyo *.log *.out desktop.ini `
+  /NFL /NDL /NJH /NJS /NP
+
+if ($LASTEXITCODE -ge 8) { throw "robocopy failed with exit code $LASTEXITCODE" }
+
+Get-ChildItem -LiteralPath $stage -Force |
+  Compress-Archive -DestinationPath $zip -CompressionLevel Optimal -Force
+
+Remove-Item $stage -Recurse -Force
+
+Get-Item $zip |
+  Select-Object FullName, @{N='SizeMB';E={[math]::Round($_.Length/1MB,2)}}</code></pre>
+  <div class="note ok">
+    <strong>تحقق نهائي:</strong> افتح ZIP على جهاز آخر، شغّل <code>uvicorn</code> و<code>npm ci</code>،
+    ثم افتح <code>/healthz</code> و<code>/docs</code>. إذا لم يعمل، فالمشكلة غالبًا في <code>.env</code>
+    أو قاعدة البيانات أو المنافذ، وليست في الكود المستبعد.
+  </div>
+
+  <ul class="checklist">
+    <li>هذا الملف موجود في جذر المشروع.</li>
+    <li>قاعدة العرض النشطة <code>backend/humint_shield.db</code> موجودة.</li>
+    <li>ملفات <code>.env</code> غير موجودة داخل ZIP.</li>
+    <li>المجلدات <code>node_modules</code> و<code>.venv</code> و<code>.git</code> غير موجودة.</li>
+    <li>الـZIP يفتح على جهاز آخر ويشغّل <code>/healthz</code>.</li>
+  </ul>
+</section>
+
+<section class="section level-1" id="s8">
+  <h2><span class="secnum">8.0</span> ملحق إضافي — التصلّب الأمني للمؤسسات</h2>
+  <p>
+    أُضيفت في هذه المرحلة <strong>13 وحدة تصلّب أمني</strong> تنقل المنصة من
+    «نموذج أوّلي آمن» إلى «منصة جاهزة للدفاع المؤسسي». كل ضابط أدناه منفّذ في الكود
+    ومغطّى باختبار انحدار، مع ترحيلين متتاليين
+    (<code>0018_enterprise_security_hardening</code> و<code>0019_user_permissions</code>) يجمعان الجداول والأعمدة والصلاحيات الجديدة.
+  </p>
+
+  <h3><span class="secnum">8.1</span> جدول الضوابط المنفّذة</h3>
+  <table>
+    <thead>
+      <tr><th>الوحدة</th><th>الضابط</th><th>التنفيذ</th><th>الملف</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>1</td><td>إدارة كلمة المرور</td><td>واجهة تغيير كلمة المرور + تدوير الرموز وإبطال الجلسات</td><td><code>frontend/src/pages/ChangePasswordPage.tsx</code></td></tr>
+      <tr><td>2</td><td>سجل التدقيق</td><td><code>audit_logs</code> قبل/بعد لكل إنشاء وحذف موظف، تحديث/حذف حملة، تحديث الإعدادات، ودعوة مستخدم</td><td><code>app/services/audit_service.py</code></td></tr>
+      <tr><td>3</td><td>تشفير البيانات الساكنة</td><td>AES-256-GCM لأعمدة <code>email_encrypted</code> و<code>phone_encrypted</code> (BYTEA) مع تعبئة البيانات القائمة، وفك التشفير عبر مسار admin فقط</td><td><code>app/services/encryption_service.py</code></td></tr>
+      <tr><td>4</td><td>قفل الحساب وسياسة كلمة المرور</td><td>5 محاولات فاشلة ← قفل 15 دقيقة (HTTP 423)، وسياسة 8 أحرف + كبير + صغير + رقم + رمز</td><td><code>app/api/v1/auth.py</code></td></tr>
+      <tr><td>5</td><td>فرض HTTPS وترويسات الأمان</td><td>تحويل 301 إلى HTTPS، HSTS، CSP، X-Frame-Options، nosniff، Referrer-Policy</td><td><code>nginx/humint-shield.conf</code></td></tr>
+      <tr><td>6</td><td>حدود الشبكة</td><td>5 طلبات/دقيقة/IP لتسجيل الدخول و60 للـAPI، مع توثيق fail2ban</td><td><code>frontend/nginx.conf</code></td></tr>
+      <tr><td>7</td><td>تعقيم المدخلات</td><td>إزالة وسوم HTML ورفض <code>&lt;script&gt;</code> و<code>javascript:</code> و<code>onerror=</code> في الحقول النصية</td><td><code>app/schemas/sanitization.py</code></td></tr>
+      <tr><td>8</td><td>سجل إبطال الرموز</td><td><code>token_revocations</code> بمفتاح <code>jti</code> يُفحص مع كل طلب، ويُكتب عند الخروج/تغيير كلمة المرور</td><td><code>app/models/audit.py</code>، <code>app/deps.py</code></td></tr>
+      <tr><td>9</td><td>حماية المقاييس</td><td><code>METRICS_ENABLED=false</code> افتراضياً + حصر IP داخلي + Basic Auth</td><td><code>app/config.py</code>، <code>nginx/humint-shield.conf</code></td></tr>
+      <tr><td>10</td><td>فصل البيئات</td><td><code>APP_ENV</code> يحمّل <code>.env.development</code> أو <code>.env.production</code> فوق <code>.env</code></td><td><code>app/config.py</code></td></tr>
+      <tr><td>11</td><td>نسخ احتياطي آلي</td><td>pg_dump/SQLite مع تاريخ الملف وحذف ما يتجاوز 30 يوماً + توثيق cron</td><td><code>scripts/backup_db.sh</code></td></tr>
+      <tr><td>12</td><td>توثيق الأمن والامتثال</td><td>نموذج التهديد، الاستجابة للحوادث، وربط الضوابط بـ ISO 27001 و NIST 800-53</td><td><code>SECURITY.md</code>، <code>COMPLIANCE.md</code></td></tr>
+      <tr><td>13</td><td>صلاحيات دقيقة للمستخدمين</td><td>مصفوفة صلاحيات مشتقة من كتالوج واحد، منع تصعيد الصلاحيات، وحماية آخر مدير نشط</td><td><code>app/permissions.py</code>، <code>app/api/v1/users.py</code>، <code>frontend/src/components/settings/UsersPermissionsTab.tsx</code></td></tr>
+    </tbody>
+  </table>
+
+  <h3><span class="secnum">8.2</span> قبل وبعد</h3>
+  <table>
+    <thead><tr><th>المجال</th><th>قبل التصلّب</th><th>بعد التصلّب</th></tr></thead>
+    <tbody>
+      <tr><td>تغيير كلمة المرور</td><td>API فقط، بلا واجهة</td><td>صفحة كاملة + تدوير الرموز + إبطال الجلسات</td></tr>
+      <tr><td>تتبّع التغييرات</td><td>سجلات تطبيق نصية</td><td><code>audit_logs</code> ببيانات قبل/بعد وIP وUser-Agent</td></tr>
+      <tr><td>PII في القاعدة</td><td>البريد نصي، الهاتف مشفّر كنص</td><td>AES-256-GCM في أعمدة BYTEA + مسار فك تشفير إداري</td></tr>
+      <tr><td>محاولات الدخول</td><td>بلا حد</td><td>قفل 15 دقيقة بعد 5 محاولات + رسالة محددة</td></tr>
+      <tr><td>النقل</td><td>HTTP داخل الشبكة</td><td>HTTPS إلزامي + HSTS + CSP + حدود معدل</td></tr>
+      <tr><td>إبطال الجلسات</td><td>عدّاد إصدار فقط</td><td>عدّاد إصدار + سجل <code>jti</code> مُبطل لكل رمز</td></tr>
+      <tr><td>إدارة المستخدمين</td><td>دور فقط بلا صلاحيات دقيقة</td><td>دور + صلاحيات صريحة، منع تصعيد الصلاحيات، وحماية آخر مدير</td></tr>
+    </tbody>
+  </table>
+
+  <h3><span class="secnum">8.3</span> الترحيل والتشغيل</h3>
+  <pre><code>cd backend
+.venv/Scripts/python.exe -m alembic upgrade head
+.venv/Scripts/python.exe -m pytest -q
+cd ../frontend &amp;&amp; npx tsc -b &amp;&amp; npm run build</code></pre>
+  <div class="note ok">
+    <strong>نتيجة التحقق:</strong> الترحيل 0018 نُفِّذ على نسخة من قاعدة العرض، ثم طُبِّق 0019_user_permissions
+    (9/9 بريد مشفّر، 4 أرقام هاتف مُعبّأة). آخر تغطية موثقة لمجموعة الاختبارات قبل 0019 هي
+    <strong>81.01%</strong>، وإعادة الجمع الحالية تسجّل <strong>577 حالة</strong>.
+    تحقق الحزمة: <code>/healthz = 200</code>، و<code>tsc -b</code> و<code>npm run build</code> ينجحان.
+  </div>
+
+  <h3><span class="secnum">8.4</span> المخاطر المتبقية</h3>
+  <ul class="checklist">
+    <li>اختراق على مستوى الجذر في المضيف يظل خارج نطاق الضوابط التطبيقية.</li>
+    <li>يجب تفعيل <code>TRUST_PROXY_HEADERS</code> فقط خلف وكيل يكتب الترويسات.</li>
+    <li>مفاتيح <code>SECRET_KEY</code> و<code>ENCRYPTION_KEY</code> تُدار في مدير أسرار خارج القاعدة.</li>
+    <li>النسخ الاحتياطية تحتوي بيانات مشفّرة وسجلات تدقيق، فتُعامَل كبيانات سرّية وتُشفَّر قبل النقل خارج الموقع.</li>
+  </ul>
+</section>
+
+</main>
+
+<footer class="footer">
+  <div class="line"></div>
+  <p>
+    <strong>HUMINT Shield — Project Architecture &amp; Defense Report</strong><br>
+    تم إعداد هذه الوثيقة من فحص مباشر لبنية المشروع في 26 نوفمبر 2026.
+    لا تحتوي على مفاتيح API أو كلمات مرور أو أسرار تشغيل.
+  </p>
+  <p class="small">
+    المصادر الأساسية: <code>backend/app/</code>، <code>frontend/src/</code>،
+    <code>docker-compose.yml</code>، <code>README.md</code>، <code>docs/FOUR_CHANNEL_PROOF.md</code>.
+  </p>
+</footer>
+
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.min.js"></script>
+<script>
+  if (window.mermaid) {
+    mermaid.initialize({
+      startOnLoad: true,
+      theme: "dark",
+      securityLevel: "loose",
+      fontFamily: "Cairo, Tajawal, Segoe UI, Tahoma, Arial, sans-serif",
+      themeVariables: {
+        background: "#08111f",
+        primaryColor: "#0e2035",
+        primaryTextColor: "#e9f2ff",
+        primaryBorderColor: "#2a4a70",
+        lineColor: "#67e8f9",
+        secondaryColor: "#101f35",
+        tertiaryColor: "#0c1728",
+        fontFamily: "Cairo, Tajawal, Segoe UI, Tahoma, Arial, sans-serif"
+      },
+      flowchart: { curve: "basis", htmlLabels: true },
+      sequence: { mirrorActors: false, messageAlign: "center" }
+    });
+  }
+</script>
+</body>
+</html>

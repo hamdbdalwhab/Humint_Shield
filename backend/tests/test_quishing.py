@@ -323,7 +323,7 @@ async def test_qr_scan_redirects_without_penalty(
 async def test_qr_submission_penalises_once_and_never_stores_password(
     client, db: AsyncSession, organization, employee, custom_template
 ) -> None:
-    """The mobile form submission logs credential_submitted and -25 Elo once."""
+    """The mobile form submission logs one smart QR submission penalty."""
     employee.elo_score = 1000
     await db.commit()
     tracking = await _seed_qr_tracking(db, organization, employee, custom_template)
@@ -343,7 +343,7 @@ async def test_qr_submission_penalises_once_and_never_stores_password(
     assert first.json()["success"] is True
 
     await db.refresh(employee)
-    assert employee.elo_score == 975
+    assert employee.elo_score == 910
     await db.refresh(tracking)
     assert tracking.submitted_at is not None
     assert tracking.submitted_password_encrypted is None
@@ -359,7 +359,7 @@ async def test_qr_submission_penalises_once_and_never_stores_password(
         )
     ).scalars().all()
     assert len(interactions) == 1
-    assert interactions[0].details["elo_delta"] == -25
+    assert interactions[0].details["elo_delta"] == -90
     assert interactions[0].details["password_stored"] is False
 
     second = await client.post(
@@ -367,7 +367,7 @@ async def test_qr_submission_penalises_once_and_never_stores_password(
     )
     assert second.status_code == 200
     await db.refresh(employee)
-    assert employee.elo_score == 975
+    assert employee.elo_score == 910
 
 
 async def test_qr_scan_unknown_uuid_still_redirects(client) -> None:

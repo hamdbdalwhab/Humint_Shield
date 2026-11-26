@@ -9,10 +9,11 @@ from __future__ import annotations
 
 import functools
 import json
+import os
 import secrets
 from typing import Annotated, List
 
-from pydantic import Field, field_validator
+from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
@@ -93,102 +94,203 @@ class Settings(BaseSettings):
         """Return ``True`` when outbound mail should use SMTP, not Brevo."""
         return (self.email_transport or "").strip().lower() == "smtp"
 
-    # --- Vonage (SMS + WhatsApp) ------------------------------------------
-    #: Vonage API credentials.  Create an API key/secret in the Vonage
-    #: dashboard.  Missing values disable real SMS/WhatsApp delivery; the email
-    #: channel continues to work.
-    vonage_api_key: str = ""
-    vonage_api_secret: str = ""
-    #: Alphanumeric Sender ID (SMS) or WhatsApp Sandbox/business number.
-    vonage_sms_from: str = "Vonage APIs"
-    vonage_whatsapp_from: str = ""
-    #: Optional Vonage Application credentials for JWT-authenticated Messages
-    #: API calls.  The private key can be the PEM content itself or a path to
-    #: the downloaded ``.key`` file.  When both are set, WhatsApp uses JWT;
-    #: otherwise the SDK falls back to API key/secret authentication.
-    vonage_application_id: str = ""
-    vonage_private_key: str = ""
-    #: Optional Messages API host, for example the WhatsApp sandbox endpoint
-    #: ``https://messages-sandbox.nexmo.com``.  Empty uses Vonage production.
-    vonage_messages_base_url: str = ""
-    #: Per-request timeout for the synchronous Vonage SDK calls.
-    vonage_timeout_seconds: float = 15.0
-    #: Optional shared secret appended to the dashboard webhook URLs as
-    #: ``?token=...`` (or sent as ``X-Vonage-Webhook-Token``).  When set, the
-    #: webhook endpoints reject callbacks without it.
-    vonage_webhook_token: str = ""
+    # --- IllyVoIP (real outbound vishing / Voice API) ---------------------
+    #: Real outbound voice calls and native TTS.  Missing values disable the
+    #: real vishing channel; no call is ever simulated.
+    illyvoip_api_key: str = ""
+    #: Accept both the documented ``ILLYVOIP_API_URL`` spelling and the older
+    #: ``ILLYVOIP_API_BASE_URL`` name so existing deployments keep working.
+    illyvoip_api_base_url: str = Field(
+        default="https://api.illyvoip.com",
+        validation_alias=AliasChoices(
+            "ILLYVOIP_API_URL", "ILLYVOIP_API_BASE_URL"
+        ),
+    )
+    #: SIP identity that places the call.  Found in the IllyVoIP dashboard.
+    illyvoip_sip_user_id: str = ""
+    #: Verified/owned caller ID presented to the recipient.
+    illyvoip_caller_id: str = ""
+    illyvoip_timeout_seconds: float = 20.0
+    #: How long to wait for the recipient to answer before hanging up.
+    illyvoip_answer_timeout_seconds: float = 45.0
+    #: An answer faster than this after the destination started ringing is not
+    #: a person picking up: it is a voicemail, an IVR or a carrier announcement.
+    #: The call is still reported, but never as a verified human answer.
+    illyvoip_min_answer_delay_seconds: float = 1.0
+    illyvoip_poll_interval_seconds: float = 2.0
+    #: Default Voice API TTS language/voice.  The service passes these values
+    #: to IllyVoIP; it never falls back to browser TTS.  A script written in
+    #: Arabic is spoken with ``ILLYVOIP_TTS_ARABIC_LANGUAGE`` instead, because
+    #: an Arabic script read by an ``en-US`` voice is unintelligible.
+    illyvoip_tts_language: str = "en-US"
+    illyvoip_tts_voice: str = "illyvoip-emma"
+    #: Language used when the script itself is Arabic and the caller did not
+    #: choose a language explicitly.
+    illyvoip_tts_arabic_language: str = "ar-AR"
+    #: Used to keep the call open after /speak returns.  The provider's speak
+    #: endpoint does not expose a playback-completion flag.
+    illyvoip_tts_chars_per_second: float = 12.0
+    illyvoip_tts_padding_seconds: float = 2.0
+    #: How long to retry a voice_request_pending response with the same key.
+    illyvoip_tts_pending_timeout_seconds: float = 30.0
+    illyvoip_max_speech_wait_seconds: int = 180
+    illyvoip_wait_chunk_seconds: int = 15
+    illyvoip_record_calls: bool = False
+    #: Optional sandbox scenario header.  Leave blank for production.
+    illyvoip_sandbox_scenario: str = ""
 
     @property
-    def vonage_credentials_configured(self) -> bool:
-        """Return ``True`` when non-placeholder API credentials are present."""
-        key = (self.vonage_api_key or "").strip()
-        secret = (self.vonage_api_secret or "").strip()
-        placeholders = ("your", "change-me", "example")
-        if not key or not secret:
+    def illyvoip_api_key_configured(self) -> bool:
+        """Return ``True`` when a non-placeholder IllyVoIP API key is set."""
+        key = (self.illyvoip_api_key or "").strip()
+        if not key:
             return False
-        if key.lower().startswith(placeholders) or secret.lower().startswith(placeholders):
-            return False
-        return True
-
-    @property
-    def vonage_sms_configured(self) -> bool:
-        """Return ``True`` when SMS credentials and a sender are configured."""
-        sender = (self.vonage_sms_from or "").strip()
-        return bool(self.vonage_credentials_configured and sender)
-
-    @property
-    def vonage_whatsapp_configured(self) -> bool:
-        """Return ``True`` when WhatsApp credentials and a sender are configured."""
-        sender = (self.vonage_whatsapp_from or "").strip()
-        app_id = (self.vonage_application_id or "").strip()
-        private_key = (self.vonage_private_key or "").strip()
-        # Application credentials are optional, but a partial pair is almost
-        # always a misconfiguration.  Refuse it instead of silently falling
-        # back to API key/secret authentication.
-        if bool(app_id) != bool(private_key):
-            return False
-        return bool(self.vonage_credentials_configured and sender)
-
-    @property
-    def vonage_application_configured(self) -> bool:
-        """Return ``True`` when both application ID and private key are set."""
-        return bool(
-            (self.vonage_application_id or "").strip()
-            and (self.vonage_private_key or "").strip()
+        placeholders = (
+            "your",
+            "change-me",
+            "change_me",
+            "example",
+            "placeholder",
+            "todo",
+            "<",
         )
+        return not key.lower().startswith(placeholders)
 
-    @property
-    def vonage_configured(self) -> bool:
-        """Return ``True`` when the API credentials are configured.
+    def illyvoip_missing_settings(self) -> list[str]:
+        """Return the settings that physically block a real call.
 
-        Channel-specific readiness is exposed by :attr:`vonage_sms_configured`
-        and :attr:`vonage_whatsapp_configured`; this property is the common
-        credential check used by the diagnostics endpoint.
-        """
-        return self.vonage_credentials_configured
-
-    def vonage_missing_settings(self, channel: str) -> list[str]:
-        """Return the environment variable names required for ``channel``.
-
-        Args:
-            channel: ``sms`` or ``whatsapp``.
-
-        Returns:
-            A sorted list of missing/placeholder environment variable names.
+        Only the API key and base URL are required: IllyVoIP treats
+        ``sip_user_id`` and ``from`` as optional and falls back to the
+        account's main SIP identity and default caller ID.  Missing optional
+        identity values are reported by :meth:`illyvoip_identity_warnings`
+        instead of blocking the channel.
         """
         missing: list[str] = []
-        if not self.vonage_credentials_configured:
-            missing.extend(["VONAGE_API_KEY", "VONAGE_API_SECRET"])
-        if channel == "sms" and not (self.vonage_sms_from or "").strip():
-            missing.append("VONAGE_SMS_FROM")
-        if channel == "whatsapp":
-            if not (self.vonage_whatsapp_from or "").strip():
-                missing.append("VONAGE_WHATSAPP_FROM")
-            app_id = (self.vonage_application_id or "").strip()
-            private_key = (self.vonage_private_key or "").strip()
-            if bool(app_id) != bool(private_key):
-                missing.extend(["VONAGE_APPLICATION_ID", "VONAGE_PRIVATE_KEY"])
+        if not self.illyvoip_api_key_configured:
+            missing.append("ILLYVOIP_API_KEY")
+        if not (self.illyvoip_api_base_url or "").strip():
+            missing.append("ILLYVOIP_API_BASE_URL")
         return missing
+
+    def illyvoip_identity_warnings(self) -> list[str]:
+        """Return optional identity settings that are unset or placeholders.
+
+        The provider then uses the account defaults, which may not be the
+        caller ID an operator expects to present, so the UI surfaces it.
+        """
+        placeholders = (
+            "your",
+            "change-me",
+            "change_me",
+            "example",
+            "placeholder",
+            "todo",
+            "<",
+        )
+        warnings: list[str] = []
+        sip = (self.illyvoip_sip_user_id or "").strip()
+        if not sip or sip.lower().startswith(placeholders):
+            warnings.append("ILLYVOIP_SIP_USER_ID")
+        caller = (self.illyvoip_caller_id or "").strip()
+        if not caller or caller.lower().startswith(placeholders):
+            warnings.append("ILLYVOIP_CALLER_ID")
+        return warnings
+
+    @property
+    def illyvoip_configured(self) -> bool:
+        """Return ``True`` when the real vishing channel can place a call."""
+        return not self.illyvoip_missing_settings()
+
+    # --- SMS delivery (TextBee Android gateway) ---------------------------
+    #: SMS has exactly one transport: the TextBee Android gateway.  Leaving
+    #: ``TEXTBEE_API_KEY`` blank disables the SMS channel; nothing else is tried.
+    sms_provider: str = "textbee"
+    textbee_api_key: str = ""
+    #: Device id from ``GET /gateway/devices``.  When blank the account's
+    #: default device is resolved at send time.
+    textbee_device_id: str = ""
+    textbee_base_url: str = "https://api.textbee.dev/api/v1"
+    textbee_timeout_seconds: float = 20.0
+
+    @property
+    def textbee_api_key_configured(self) -> bool:
+        """Return ``True`` when a non-placeholder TextBee API key is set."""
+        key = (self.textbee_api_key or "").strip()
+        if not key:
+            return False
+        placeholders = ("your", "change-me", "change_me", "example", "placeholder", "todo", "<")
+        return not key.lower().startswith(placeholders)
+
+    def textbee_missing_settings(self) -> list[str]:
+        """Return the settings that block a real TextBee SMS.
+
+        The device id is optional: TextBee falls back to the account's default
+        phone, and the service resolves it explicitly when possible.
+        """
+        missing: list[str] = []
+        if not self.textbee_api_key_configured:
+            missing.append("TEXTBEE_API_KEY")
+        if not (self.textbee_base_url or "").strip():
+            missing.append("TEXTBEE_BASE_URL")
+        return missing
+
+    @property
+    def textbee_configured(self) -> bool:
+        """Return ``True`` when TextBee can queue an SMS."""
+        return not self.textbee_missing_settings()
+
+    @property
+    def sms_provider_effective(self) -> str:
+        """Return the provider that will send an SMS.
+
+        TextBee is the only SMS transport; ``"none"`` means the channel is
+        disabled because the gateway is not configured.
+        """
+        return "textbee" if self.textbee_configured else "none"
+
+    # --- WhatsApp delivery (WA-AKG gateway) -------------------------------
+    #: Self-hosted WA-AKG instance.  ``WA_AKG_API_URL`` is the API root that
+    #: already contains ``/api`` (for example ``http://localhost:3000/api``).
+    wa_akg_api_url: str = "http://localhost:3000/api"
+    wa_akg_api_key: str = ""
+    #: Session (device) id created in the WA-AKG dashboard after the QR scan.
+    wa_akg_session_id: str = ""
+    wa_akg_timeout_seconds: float = 25.0
+    #: Anti-ban pacing between two outbound WhatsApp messages.
+    wa_akg_min_delay_seconds: float = 10.0
+    wa_akg_max_delay_seconds: float = 30.0
+    #: Optional shared secret WA-AKG sends back on webhook deliveries.
+    wa_akg_webhook_secret: str = ""
+
+    @property
+    def wa_akg_api_key_configured(self) -> bool:
+        """Return ``True`` when a non-placeholder WA-AKG API key is set."""
+        key = (self.wa_akg_api_key or "").strip()
+        if not key:
+            return False
+        placeholders = ("your", "change-me", "change_me", "example", "placeholder", "todo", "<")
+        return not key.lower().startswith(placeholders)
+
+    def whatsapp_missing_settings(self) -> list[str]:
+        """Return the settings that block a real WhatsApp message."""
+        missing: list[str] = []
+        if not (self.wa_akg_api_url or "").strip():
+            missing.append("WA_AKG_API_URL")
+        if not self.wa_akg_api_key_configured:
+            missing.append("WA_AKG_API_KEY")
+        if not (self.wa_akg_session_id or "").strip():
+            missing.append("WA_AKG_SESSION_ID")
+        return missing
+
+    @property
+    def whatsapp_configured(self) -> bool:
+        """Return ``True`` when WA-AKG can send a WhatsApp message."""
+        return not self.whatsapp_missing_settings()
+
+    @property
+    def whatsapp_provider_effective(self) -> str:
+        """Return the provider that will send a WhatsApp message."""
+        return "wa-akg" if self.whatsapp_configured else "none"
 
     # --- AI template generation -------------------------------------------
     #: OpenAI-compatible chat-completions provider.  ``openai`` and ``groq``
@@ -278,6 +380,14 @@ class Settings(BaseSettings):
     # --- Application -------------------------------------------------------
     base_url: str = "http://localhost:8000"
     frontend_url: str = "http://localhost:5173"
+    #: Clean public origin written into SMS bodies, e.g. ``https://hument.link``.
+    #: It must serve this application (or redirect to it) for short links to
+    #: resolve; when empty, ``BASE_URL`` is used so local development still works.
+    short_link_base_url: str | None = None
+    #: When no custom short domain is configured, shorten ``BASE_URL/s/{code}``
+    #: with the keyless v.gd API so messages never expose the tunnel host.
+    #: Set to ``none`` to keep the local URL (offline development).
+    short_link_provider: str = "vgd"
     #: Serve the built React dashboard from this process.  When enabled, a single
     #: public URL exposes both the API and the UI (no second tunnel needed).
     serve_frontend: bool = True
@@ -295,9 +405,20 @@ class Settings(BaseSettings):
     rate_limit_window_seconds: int = 60
     rate_limit_auth_requests: int = 10
 
+    # --- Reverse proxy ------------------------------------------------------
+    #: Trust ``CF-Connecting-IP`` / ``X-Forwarded-For`` for the client address.
+    #: Only enable this when the app is reachable exclusively through a proxy
+    #: (nginx, Cloudflare) that overwrites those headers; otherwise a client can
+    #: choose its own rate-limit bucket.
+    trust_proxy_headers: bool = True
+
     # --- Observability -----------------------------------------------------
     log_level: str = "INFO"
     log_json: bool = True
+    #: Expose Prometheus metrics at ``/metrics``.  Off by default: the endpoint
+    #: is unauthenticated at the application layer and must be enabled only on
+    #: an internal listener (nginx additionally restricts it by IP + basic auth).
+    metrics_enabled: bool = False
 
     # --- Retention ---------------------------------------------------------
     data_retention_days: int = 365
@@ -343,6 +464,38 @@ class Settings(BaseSettings):
     @classmethod
     def _upper_level(cls, value: str) -> str:
         return value.upper()
+
+    @model_validator(mode="after")
+    def _enforce_production_secrets(self) -> "Settings":
+        """Refuse to start production with generated or default secrets.
+
+        ``secret_key`` and ``encryption_key`` fall back to a fresh random value
+        for local development.  In production that default silently invalidates
+        every issued token and every encrypted column on each restart, and it
+        differs between worker processes, so it is rejected instead.
+
+        Returns:
+            The validated settings instance.
+
+        Raises:
+            ValueError: When production is started without explicit keys or
+                with the shipped bootstrap admin password.
+        """
+        if not self.is_production:
+            return self
+        problems: list[str] = []
+        for field_name in ("secret_key", "encryption_key"):
+            if field_name not in self.model_fields_set:
+                problems.append(f"{field_name.upper()} must be set explicitly")
+            elif len(getattr(self, field_name).strip()) < 32:
+                problems.append(f"{field_name.upper()} must be at least 32 characters")
+        if self.bootstrap_admin_password.strip() == "ChangeMe123!":
+            problems.append("BOOTSTRAP_ADMIN_PASSWORD must be changed from the shipped default")
+        if problems:
+            raise ValueError(
+                "Unsafe production configuration: " + "; ".join(problems)
+            )
+        return self
 
     # ------------------------------------------------------------------ #
     # Helpers
@@ -436,7 +589,34 @@ class Settings(BaseSettings):
         return hashlib.sha256(raw.encode("utf-8")).digest()
 
 
+def env_files() -> tuple[str, ...]:
+    """Return the dotenv files to load, in increasing precedence.
+
+    ``APP_ENV`` (falling back to ``ENVIRONMENT``) selects an environment
+    overlay: ``APP_ENV=production`` reads ``.env`` and then ``.env.production``,
+    so the base file can hold shared defaults while the overlay carries the
+    environment-specific values.  Real process environment variables always
+    win over both files.
+
+    Returns:
+        A tuple of file names, later files overriding earlier ones.
+    """
+    overlay = (
+        os.environ.get("APP_ENV")
+        or os.environ.get("ENVIRONMENT")
+        or ""
+    ).strip().lower()
+    files: list[str] = [".env"]
+    if overlay:
+        files.append(f".env.{overlay}")
+    return tuple(files)
+
+
 @functools.lru_cache(maxsize=1)
 def get_settings() -> Settings:
     """Return the process-wide cached :class:`Settings` instance."""
-    return Settings()
+    return Settings(_env_file=env_files())
+
+
+# Re-exported for documentation and tests.
+__all__ = ["Settings", "env_files", "get_settings"]

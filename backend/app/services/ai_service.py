@@ -48,6 +48,15 @@ _JAVASCRIPT_URL_RE = re.compile(
 #: NUL and other control characters that break XML/PDF/email rendering.
 _CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
+#: Channels whose message is a single short segment rather than an email.
+SHORT_CHANNELS = frozenset({"sms", "whatsapp"})
+#: Maximum delivered length of an SMS/WhatsApp template (including the link).
+SHORT_MESSAGE_MAX_LENGTH = 170
+#: Stand-in used to size ``{{link}}`` before a short code exists.
+SAMPLE_SHORT_LINK = "https://hument.link/s/AbCdEf"
+#: Any absolute URL a model invents is replaced by the tracked placeholder.
+_URL_RE = re.compile(r"https?://[^\s<>\"']+")
+
 _JSON_FENCE_RE = re.compile(r"^\s*```(?:json)?\s*|\s*```\s*$", re.IGNORECASE)
 #: Some reasoning models wrap their answer in ``<think>...</think>``.  The
 #: reasoning is not part of the template and must never reach the parser.
@@ -137,6 +146,81 @@ def sanitize_generated_text(value: str) -> str:
     cleaned = re.sub(r"[ \t]+\n", "\n", cleaned)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
     return cleaned.strip()
+
+
+def short_message_length(body: str) -> int:
+    """Return the delivered character count of an SMS body.
+
+    ``{{link}}`` is counted as the short URL that replaces it, matching the
+    campaign launcher and the template editor.
+    """
+    return len((body or "").replace("{{link}}", SAMPLE_SHORT_LINK).strip())
+
+
+def _render_short_body(body_text: str) -> str:
+    """Normalise a model-written SMS body into a safe stored template body.
+
+    Any absolute URL is replaced by ``{{link}}`` (the launcher swaps it for the
+    per-recipient short link), a missing placeholder is appended, and the text
+    is escaped and wrapped in a single paragraph so the template editor shows
+    plain text.
+    """
+    text = _URL_RE.sub("{{link}}", body_text or "").strip()
+    if not text:
+        raise AIProviderError("LLM response did not include a usable message body")
+    if "{{link}}" not in text:
+        text = f"{text} {{{{link}}}}".strip()
+    return f"<p>{text}</p>"
+
+
+def _describe_http_error(status_code: int, detail: str) -> str:
+    """Return an actionable message for a provider HTTP failure."""
+    suffix = f" {detail}" if detail else ""
+    if status_code in (401, 403):
+        return (
+            f"LLM provider rejected the API key (HTTP {status_code}).{suffix} "
+            "Update LLM_API_KEY in the backend environment."
+        )
+    if status_code == 402:
+        return (
+            f"LLM provider quota is exhausted (HTTP 402).{suffix} "
+            "Top up the provider account or point LLM_BASE_URL/LLM_API_KEY at "
+            "a funded OpenAI-compatible endpoint."
+        )
+    if status_code == 404:
+        return (
+            f"LLM endpoint or model not found (HTTP 404).{suffix} "
+            "Check LLM_BASE_URL and LLM_MODEL."
+        )
+    if status_code == 429:
+        return (
+            f"LLM provider rate limit reached (HTTP 429).{suffix} "
+            "Retry in a moment or use the fallback model."
+        )
+    if status_code >= 500:
+        return f"LLM provider is unavailable (HTTP {status_code}).{suffix}"
+    return f"LLM provider returned HTTP {status_code}.{suffix}"
+
+
+def _describe_transport_error(exc: Exception) -> str:
+    """Return an actionable message for a network-level provider failure."""
+    raw = str(exc)
+    lowered = raw.lower()
+    if "getaddrinfo" in lowered or "name or service not known" in lowered or "nodename" in lowered:
+        return (
+            f"LLM endpoint host does not resolve ({raw}). LLM_BASE_URL points at "
+            "an unreachable host — temporary tunnels expire, so use the "
+            "provider's permanent base URL such as "
+            "https://inference.dahl.global/v1."
+        )
+    if "timed out" in lowered:
+        return f"LLM provider request timed out ({raw})."
+    if "refused" in lowered:
+        return (
+            f"LLM endpoint refused the connection ({raw}). Check that LLM_BASE_URL "
+            "is reachable from this machine."
+        )
+    return f"LLM provider request failed: {raw}"
 
 
 def _render_body_html(body_text: str) -> str:
@@ -344,7 +428,7 @@ class AIService:
                 f"LLM provider timed out after {timeout_seconds:g}s"
             ) from exc
         except httpx.HTTPError as exc:
-            raise AIProviderError(f"LLM provider request failed: {exc}") from exc
+            raise AIProviderError(_describe_transport_error(exc)) from exc
 
         if response.status_code >= 400:
             detail = (response.text or "").strip()[:400]
@@ -355,10 +439,7 @@ class AIService:
                 status_code=response.status_code,
                 detail=detail,
             )
-            raise AIProviderError(
-                f"LLM provider returned HTTP {response.status_code}"
-                + (f": {detail}" if detail else "")
-            )
+            raise AIProviderError(_describe_http_error(response.status_code, detail))
 
         try:
             data = response.json()
@@ -375,9 +456,25 @@ class AIService:
         if not subject:
             raise AIProviderError("LLM response did not include a subject")
 
+        short_channel = channel.strip().lower() in SHORT_CHANNELS
         body_html_value = parsed.get("body_html")
         body_text_value = parsed.get("body_text")
-        if isinstance(body_html_value, str) and body_html_value.strip():
+        if short_channel:
+            # SMS/WhatsApp: one short segment, no email shell.  A model that
+            # ignores the instructions and returns HTML is stripped to text.
+            candidate = body_text_value if isinstance(body_text_value, str) else ""
+            if not candidate.strip() and isinstance(body_html_value, str):
+                candidate = re.sub(r"<[^>]*>", " ", body_html_value)
+            plain = sanitize_generated_text(html.unescape(candidate))
+            body_html = _render_short_body(plain)
+            length = short_message_length(plain)
+            if length > SHORT_MESSAGE_MAX_LENGTH:
+                raise AIProviderError(
+                    f"generated {channel.upper()} body is {length} characters; "
+                    f"the limit is {SHORT_MESSAGE_MAX_LENGTH} including "
+                    "{{link}}. Shorten the scenario and generate again"
+                )
+        elif isinstance(body_html_value, str) and body_html_value.strip():
             body_html = sanitize_generated_html(body_html_value)
             if not body_html:
                 raise AIProviderError("LLM response did not include usable body_html")
@@ -422,8 +519,28 @@ class AIService:
 
         The backend owns the HTML shell so a model cannot introduce active
         content and so the response stays small enough for the provider and the
-        Cloudflare tunnel's request window.
+        Cloudflare tunnel's request window.  SMS/WhatsApp get a shorter,
+        segment-sized variant with ``{{link}}`` as the only URL.
         """
+        if channel.strip().lower() in SHORT_CHANNELS:
+            return f"""Create one authorized security-awareness simulation message.
+
+Industry: {industry}
+Target department: {department}
+Scenario: {scenario}
+Channel: {channel} (single SMS segment)
+
+Return only a JSON object with exactly these keys:
+- "subject": an internal label under 60 characters (never shown to the recipient).
+- "body_text": ONE or TWO short sentences, at most 130 characters INCLUDING the
+  literal placeholder {{{{link}}}}, in the scenario's language (Arabic when the
+  scenario is Arabic). End with a clear instruction to open the link. Write
+  {{{{link}}}} exactly once and do not write any other URL. Do not include HTML
+  and never mention that this is a simulation.
+- "difficulty_level": an integer from 1 to 10 (1-3 easy, 4-7 medium, 8-10 hard).
+
+Do not explain, reason, or use markdown. Output JSON only.
+"""
         return f"""Create one authorized security-awareness simulation template.
 
 Industry: {industry}

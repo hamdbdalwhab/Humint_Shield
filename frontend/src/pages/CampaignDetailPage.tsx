@@ -46,6 +46,8 @@ import ComputerIcon from '@mui/icons-material/Computer';
 import CheckCircleOutlineIcon from '@mui/icons-material/CheckCircleOutline';
 import DoneAllIcon from '@mui/icons-material/DoneAll';
 import ErrorOutlineIcon from '@mui/icons-material/ErrorOutline';
+import PhoneIcon from '@mui/icons-material/Phone';
+import PhoneMissedIcon from '@mui/icons-material/PhoneMissed';
 import ScheduleIcon from '@mui/icons-material/Schedule';
 import SensorsIcon from '@mui/icons-material/Sensors';
 import VisibilityIcon from '@mui/icons-material/Visibility';
@@ -148,16 +150,32 @@ const DELIVERY_LABELS: Record<DeliveryStatus, string> = {
   available: 'Available',
   failed: 'Failed',
   rejected: 'Rejected',
+  calling: 'Calling',
+  answered: 'Answered',
+  completed: 'Call completed',
+  no_answer: 'No answer',
+  ring_only: 'Ring only (verified)',
 };
+
+/** Compress the WhatsApp funnel into the provider's own vocabulary. */
+function whatsappStatusLabel(row: CampaignEmployeeResult): string {
+  if (row.submitted_at || row.clicked_at) return 'Clicked';
+  if (row.read_at) return 'Read';
+  if (row.delivered_at) return 'Delivered';
+  if (row.sent_at) return 'Sent';
+  if (row.failed_at || row.delivery_status === 'failed') return 'Failed';
+  return 'Pending';
+}
 
 const CHANNEL_CHIPS: Record<string, string> = {
   email: 'Email',
-  sms: 'SMS · Vonage',
-  whatsapp: 'WhatsApp · Vonage',
+  sms: 'SMS · TextBee',
+  whatsapp: 'WhatsApp · WA-AKG',
   qr: 'QR · Quishing',
-  vishing: 'Vishing · Call',
+  vishing: 'Vishing · Call (simulation)',
   pretexting: 'Pretexting · Chat',
   usb: 'USB · Drop',
+  voice: 'Voice · IllyVoIP (real call)',
 };
 
 function DeliveryStatusBadge({
@@ -196,14 +214,70 @@ function DeliveryStatusBadge({
       </Tooltip>
     );
   }
-  if (status === 'delivered') {
+  if (status === 'ring_only') {
     return (
-      <Tooltip title={error || 'Delivery confirmed by the provider webhook'}>
+      <Tooltip
+        title={
+          error ||
+          'Verification call: the phone rang and the call was cut before any audio played'
+        }
+      >
+        <Chip size="small" color="info" icon={<PhoneIcon />} label={DELIVERY_LABELS[status]} />
+      </Tooltip>
+    );
+  }
+  if (status === 'delivered' || status === 'completed') {
+    return (
+      <Tooltip
+        title={
+          error ||
+          (status === 'completed'
+            ? 'Real IllyVoIP call completed'
+            : 'Delivery confirmed by the provider webhook')
+        }
+      >
         <Chip
           size="small"
           color="success"
           variant="outlined"
           icon={<CheckCircleOutlineIcon />}
+          label={DELIVERY_LABELS[status]}
+        />
+      </Tooltip>
+    );
+  }
+  if (status === 'calling' || status === 'answered') {
+    return (
+      <Tooltip
+        title={
+          status === 'answered'
+            ? 'The recipient answered; the TTS prompt is playing'
+            : 'The provider is dialing the recipient'
+        }
+      >
+        <Chip
+          size="small"
+          color="info"
+          variant="outlined"
+          icon={<ScheduleIcon />}
+          label={DELIVERY_LABELS[status]}
+        />
+      </Tooltip>
+    );
+  }
+  if (status === 'no_answer') {
+    return (
+      <Tooltip
+        title={
+          error ||
+          'The recipient\'s phone rang but nobody answered before the carrier ended the call'
+        }
+      >
+        <Chip
+          size="small"
+          color="warning"
+          variant="outlined"
+          icon={<PhoneMissedIcon />}
           label={DELIVERY_LABELS[status]}
         />
       </Tooltip>
@@ -519,8 +593,13 @@ export function CampaignDetailPage() {
   const { campaign, stats } = resultsQuery.data;
   const allEmployees = resultsQuery.data.employees;
   const scans = scansQuery.data ?? resultsQuery.data.scans ?? [];
-  const isPhoneChannel = campaign.channel === 'sms' || campaign.channel === 'whatsapp';
+  const isPhoneChannel =
+    campaign.channel === 'sms' ||
+    campaign.channel === 'whatsapp' ||
+    campaign.channel === 'voice';
   const isQrChannel = campaign.channel === 'qr';
+  const isWhatsappChannel = campaign.channel === 'whatsapp';
+  const whatsappRows = allEmployees.filter((row) => row.channel === 'whatsapp');
   const isUsbChannel = campaign.channel === 'usb';
   const isVishingChannel = campaign.channel === 'vishing';
   const isPretextingChannel = campaign.channel === 'pretexting';
@@ -739,6 +818,7 @@ export function CampaignDetailPage() {
           <Tab label="Live activity" />
           {isQrChannel ? <Tab label={`الرادار المباشر — Live Scans (${radarScans.length || scans.length})`} /> : null}
           {isUsbChannel ? <Tab label={`رادار اختراقات الـ USB الميداني (${usbBreaches.length})`} /> : null}
+          {isWhatsappChannel ? <Tab label={`WhatsApp (${whatsappRows.length})`} /> : null}
         </Tabs>
 
         {tab === 0 ? (
@@ -949,6 +1029,102 @@ export function CampaignDetailPage() {
             ) : null}
           </CardContent>
         ) : null}
+        {tab === 2 && isWhatsappChannel ? (
+          <CardContent>
+            <Stack
+              direction={{ xs: 'column', sm: 'row' }}
+              justifyContent="space-between"
+              alignItems={{ xs: 'stretch', sm: 'center' }}
+              sx={{ mb: 2 }}
+            >
+              <Box>
+                <Typography variant="h3" sx={{ fontSize: '1.15rem', fontWeight: 800 }}>
+                  واتساب — WhatsApp Radar
+                </Typography>
+                <Typography variant="caption" color="text.secondary">
+                  الحالة تأتي من بوابة WA-AKG: Sent عند القبول، Delivered/Read عند وصول
+                  تقرير التسليم والقراءة، Replied عند الرد (يُقيَّم تلقائيًا).
+                </Typography>
+              </Box>
+              <Chip
+                variant="outlined"
+                label={`${whatsappRows.filter((row) => row.read_at).length} قرأوا الرسالة`}
+              />
+            </Stack>
+            {whatsappRows.length === 0 ? (
+              <Typography color="text.secondary" variant="body2">
+                لا توجد رسائل واتساب بعد. أطلق الحملة بعد ضبط WA-AKG.
+              </Typography>
+            ) : (
+              <TableContainer>
+                <Table size="small">
+                  <TableHead>
+                    <TableRow>
+                      <TableCell>Employee</TableCell>
+                      <TableCell>Phone</TableCell>
+                      <TableCell align="center">Status</TableCell>
+                      <TableCell align="center">Elo score</TableCell>
+                      <TableCell align="center">Threat</TableCell>
+                      <TableCell>Last activity</TableCell>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {whatsappRows.map((row) => (
+                      <TableRow
+                        key={row.employee_id}
+                        hover
+                        sx={{ cursor: 'pointer' }}
+                        onClick={() => setDetailFor(row)}
+                      >
+                        <TableCell>
+                          <Typography variant="body2" sx={{ fontWeight: 700 }}>
+                            {row.name}
+                          </Typography>
+                          <Typography variant="caption" color="text.secondary">
+                            {row.department || '—'}
+                          </Typography>
+                        </TableCell>
+                        <TableCell sx={{ fontFamily: 'monospace' }}>{row.phone || '—'}</TableCell>
+                        <TableCell align="center">
+                          <Chip
+                            size="small"
+                            label={whatsappStatusLabel(row)}
+                            color={
+                              row.read_at
+                                ? 'info'
+                                : row.delivered_at
+                                  ? 'primary'
+                                  : row.sent_at
+                                    ? 'default'
+                                    : 'warning'
+                            }
+                            variant={row.sent_at ? 'filled' : 'outlined'}
+                          />
+                        </TableCell>
+                        <TableCell align="center">
+                          {row.elo_score === null ? '—' : Math.round(row.elo_score)}
+                        </TableCell>
+                        <TableCell align="center">
+                          <ThreatBadge level={row.threat_level} />
+                        </TableCell>
+                        <TableCell>
+                          {formatDateTime(
+                            row.submitted_at ||
+                              row.clicked_at ||
+                              row.read_at ||
+                              row.delivered_at ||
+                              row.sent_at,
+                          )}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </TableContainer>
+            )}
+          </CardContent>
+        ) : null}
+
         {tab === 2 && isQrChannel ? (
           <CardContent>
             <Stack

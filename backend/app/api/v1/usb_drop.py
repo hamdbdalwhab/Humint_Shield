@@ -11,6 +11,7 @@ the micro-training page.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from typing import Any
 
 import io
 import uuid
@@ -24,7 +25,14 @@ from app.config import get_settings
 from app.database import get_db
 from app.deps import rate_limit, require_roles
 from app.logging_config import get_logger
-from app.models import EmailCampaign, EmailTracking, HumanAsset, Organization, User
+from app.models import (
+    EmailCampaign,
+    EmailTemplate,
+    EmailTracking,
+    HumanAsset,
+    Organization,
+    User,
+)
 from app.schemas import USBPDFRequest
 from app.services.usb_drop_service import (
     HTML_DOCUMENT_NAME,
@@ -61,6 +69,22 @@ def _merge_usb_overrides(
             usb_values["month_label"] = payload.month_label.strip()[:80]
     config["usb"] = usb_values
     return config
+
+
+async def _campaign_template_names(
+    campaign: EmailCampaign, db: AsyncSession
+) -> tuple[str | None, str | None]:
+    """Return ``(name, subject)`` of the campaign's template, when it has one.
+
+    The document file names follow the chosen template, so a drop matches the
+    story the campaign tells instead of always being a salary statement.
+    """
+    if campaign.template_id is None:
+        return None, None
+    template = await db.get(EmailTemplate, campaign.template_id)
+    if template is None:  # pragma: no cover - FK guarantees existence
+        return None, None
+    return template.name, template.subject
 
 
 async def _load_usb_recipients(
@@ -116,19 +140,24 @@ async def _load_usb_recipients(
                 campaign_id=campaign.id,
                 employee_id=None,
                 channel="usb",
+                provider="simulation",
                 tracking_uuid=uuid.uuid4(),
             )
             db.add(generic_row)
             await db.flush()
+        # The document exists and is ready to be copied to a drive: that is the
+        # state "available", exactly like the launcher records for a simulation.
+        generic_row.channel = "usb"
+        generic_row.provider = "simulation"
+        generic_row.delivery_status = "available"
 
         settings = get_settings()
         tracking_url = f"{settings.base_url.rstrip('/')}/api/v1/track/usb/{generic_row.tracking_uuid}"
         recipients = [
             USBDropRecipient(
-                employee_id=campaign.id,
-                full_name="طعم فيزيائي عام (Physical Drop Target)",
+                name="طعم فيزيائي عام (Physical Drop Target)",
                 email="",
-                tracking_uuid=generic_row.tracking_uuid,
+                tracking_uuid=str(generic_row.tracking_uuid),
                 tracking_url=tracking_url,
             )
         ]
@@ -185,6 +214,9 @@ async def _load_usb_recipients(
             tracking.channel = "usb"
             tracking.provider = "simulation"
             tracking.template_id = campaign.template_id or tracking.template_id
+        # Generating the document is what makes it available for the drop; an
+        # open later overwrites this with the real interaction timestamp.
+        tracking.delivery_status = tracking.delivery_status or "available"
         recipients.append(
             USBDropRecipient(
                 name=employee.full_name or employee.email,
@@ -306,6 +338,7 @@ async def generate_usb_pdf(
             tracking.channel = "usb"
             tracking.provider = "simulation"
             tracking.template_id = campaign.template_id or tracking.template_id
+        tracking.delivery_status = tracking.delivery_status or "available"
         recipients.append(
             USBDropRecipient(
                 name=employee.full_name or employee.email,
@@ -319,6 +352,12 @@ async def generate_usb_pdf(
     campaign.channel_config = _merge_usb_overrides(campaign.channel_config, payload)
     await db.commit()
 
+    template_name, template_subject = await _campaign_template_names(campaign, db)
+    copy = resolve_usb_copy(
+        campaign.channel_config,
+        template_name=template_name,
+        template_subject=template_subject,
+    )
     try:
         pdf_bytes = build_usb_drop_pack(
             organization=organization,
@@ -326,6 +365,7 @@ async def generate_usb_pdf(
             recipients=recipients,
             channel_config=campaign.channel_config,
             support_email=organization.brand_support_email,
+            copy=copy,
         )
     except ValueError as exc:
         raise HTTPException(
@@ -342,7 +382,6 @@ async def generate_usb_pdf(
             detail="Unable to generate the USB awareness document",
         ) from exc
 
-    copy = resolve_usb_copy(campaign.channel_config)
     logger.info(
         "usb_pdf_generated",
         campaign_id=str(campaign.id),
@@ -399,6 +438,12 @@ async def generate_usb_html(
     )
     base_url = get_settings().base_url.rstrip("/")
     support_email = organization.brand_support_email
+    template_name, template_subject = await _campaign_template_names(campaign, db)
+    copy = resolve_usb_copy(
+        campaign.channel_config,
+        template_name=template_name,
+        template_subject=template_subject,
+    )
 
     def render(recipient: USBDropRecipient) -> bytes:
         return build_usb_html(
@@ -408,6 +453,7 @@ async def generate_usb_html(
                 f"{base_url}/training/{recipient.tracking_uuid}?channel=usb"
             ),
             support_email=support_email,
+            document_name=copy.html_document_name,
         )
 
     await db.commit()
@@ -420,13 +466,15 @@ async def generate_usb_html(
                 campaign_id=str(campaign.id),
                 organization_id=str(campaign.organization_id),
                 recipients=1,
-                document_name=HTML_DOCUMENT_NAME,
+                document_name=copy.html_document_name,
             )
             return Response(
                 content=html_bytes,
                 media_type="text/html; charset=utf-8",
                 headers={
-                    "Content-Disposition": content_disposition_html(),
+                    "Content-Disposition": content_disposition_html(
+                        copy.html_document_name
+                    ),
                     "Cache-Control": "no-store",
                     "X-Content-Type-Options": "nosniff",
                     "X-Document-Count": "1",
@@ -444,7 +492,7 @@ async def generate_usb_html(
                 # Every employee keeps the exact required file name.  A
                 # per-recipient folder prevents collisions in the ZIP while
                 # preserving attribution on each copied USB drive.
-                entry_name = f"{folder}/{HTML_DOCUMENT_NAME}"
+                entry_name = f"{folder}/{copy.html_document_name}"
                 archive.writestr(entry_name, render(recipient))
         logger.info(
             "usb_html_pack_generated",
@@ -703,11 +751,166 @@ IconIndex=0
 
 
 @router.get(
+    "/usb-drives",
+    summary="List the removable drives attached to the application host",
+)
+async def usb_drives(
+    user: User = Depends(require_roles("admin", "manager")),
+) -> dict[str, Any]:
+    """Return every mounted volume on the host running this application.
+
+    The operator picks the USB stick from this list.  Detection is local, so no
+    companion agent or browser permission is involved: whatever is plugged into
+    the machine serving the console appears here.
+    """
+    from app.services.usb_drive_service import drives_payload
+
+    payload = drives_payload()
+    logger.info(
+        "usb_drives_listed",
+        count=len(payload["drives"]),
+        removable=sum(1 for item in payload["drives"] if item["is_removable"]),
+        user_id=str(user.id),
+    )
+    return payload
+
+
+@router.post(
+    "/{campaign_id}/deploy-usb",
+    summary="Write the campaign awareness documents to a real USB drive",
+)
+async def deploy_usb_documents(
+    campaign_id: uuid.UUID,
+    payload: dict[str, Any] = Body(...),
+    employee_id: uuid.UUID | None = Query(default=None),
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_roles("admin", "manager")),
+) -> dict[str, Any]:
+    """Generate the USB artefacts and copy them onto the selected stick.
+
+    Only removable volumes are accepted; the system volume, fixed disks and
+    network shares are refused by :mod:`app.services.usb_drive_service`.
+    """
+    from app.services.usb_drive_service import (
+        USBDriveError,
+        deploy_files,
+        resolve_drive,
+    )
+    from app.services.usb_drop_service import (
+        HTML_DOCUMENT_NAME,
+        build_usb_drop_pack,
+        build_usb_html,
+        build_usb_identity_tool,
+        resolve_usb_copy,
+    )
+
+    drive = str(payload.get("drive") or "").strip()
+    include_pdf = bool(payload.get("include_pdf", True))
+    include_identity_tool = bool(payload.get("include_identity_tool", False))
+    if not drive:
+        raise HTTPException(status_code=400, detail="A drive letter is required")
+
+    campaign, organization, recipients = await _load_usb_recipients(
+        campaign_id, employee_id, db, user
+    )
+    base_url = get_settings().base_url.rstrip("/")
+    recipient = recipients[0]
+    template_name, template_subject = await _campaign_template_names(campaign, db)
+    copy = resolve_usb_copy(
+        campaign.channel_config,
+        template_name=template_name,
+        template_subject=template_subject,
+    )
+
+    files: list[tuple[str, bytes]] = [
+        (
+            copy.html_document_name,
+            build_usb_html(
+                organization=organization,
+                recipient=recipient,
+                training_url=f"{base_url}/training/{recipient.tracking_uuid}?channel=usb",
+                support_email=organization.brand_support_email,
+                document_name=copy.html_document_name,
+            ),
+        )
+    ]
+    if include_pdf:
+        files.append(
+            (
+                copy.document_name,
+                build_usb_drop_pack(
+                    organization=organization,
+                    campaign=campaign,
+                    recipients=recipients,
+                    channel_config=campaign.channel_config,
+                    support_email=organization.brand_support_email,
+                    copy=copy,
+                ),
+            )
+        )
+    if include_identity_tool:
+        # Optional and never auto-run: the browser cannot name the Windows
+        # account, this small collector can, and it only reports identity.
+        files.extend(
+            build_usb_identity_tool(recipient=recipient, base_url=base_url)
+        )
+
+    await db.commit()
+    try:
+        info = resolve_drive(drive)
+        result = deploy_files(drive, files)
+    except USBDriveError as exc:
+        logger.warning(
+            "usb_deploy_refused",
+            campaign_id=str(campaign.id),
+            drive=drive,
+            error=str(exc),
+        )
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001 - never leave a partial silent failure
+        logger.error(
+            "usb_deploy_failed",
+            campaign_id=str(campaign.id),
+            drive=drive,
+            error=str(exc),
+        )
+        raise HTTPException(
+            status_code=500, detail=f"Unable to copy the documents: {exc}"
+        ) from exc
+
+    logger.info(
+        "usb_deployed",
+        campaign_id=str(campaign.id),
+        drive=result["drive"],
+        files=[item["name"] for item in result["files"]],
+        total_bytes=result["total_bytes"],
+    )
+    return {
+        "success": True,
+        "campaign_id": str(campaign.id),
+        "tracking_uuid": recipient.tracking_uuid,
+        "drive": result["drive"],
+        "label": info.label,
+        "files": result["files"],
+        "total_bytes": result["total_bytes"],
+        "tracking_url": recipient.tracking_url,
+        "identity_tool_included": include_identity_tool,
+    }
+
+
+@router.get(
     "/usb-agent/status",
     summary="Check local USB Companion Agent status and connected drives",
 )
-async def usb_agent_status() -> dict[str, Any]:
-    """Query the local companion agent via loopback websocket."""
+async def usb_agent_status(
+    user: User = Depends(require_roles("admin", "manager")),
+) -> dict[str, Any]:
+    """Query the local companion agent via loopback websocket.
+
+    Authenticated: the reply lists local drive letters, paths and free space,
+    which must not be reachable anonymously even though the agent itself only
+    listens on loopback.
+    """
     import asyncio
     import json
     import websockets

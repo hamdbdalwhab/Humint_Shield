@@ -3,7 +3,7 @@
 Verifies the 5 steps required by the critical system directive:
 Step 1: QR scan redirect and basic scan logging (/api/v1/track/qr/{campaign_id})
 Step 2: Fingerprinting and submit payload
-Step 3: Identity resolution, -25 Elo penalty, and unknown scan handling
+Step 3: Identity resolution, smart QR Elo penalty, and unknown scan handling
 Step 4: Training context and QR education verification
 Step 5: Admin dashboard Radar / live scans verification
 """
@@ -92,7 +92,7 @@ async def test_step1_qr_scan_logs_basic_event_and_redirects(client, db: AsyncSes
 
 
 async def test_step2_and_3_qr_submit_known_employee_penalizes_elo(client, db: AsyncSession, organization, employee, qr_campaign_factory):
-    """Step 2 & 3: POST /api/v1/track/qr/submit resolves employee, updates tracking_events, applies -25 Elo, recalculates category."""
+    """Step 2 & 3: QR submit resolves the employee and applies the smart penalty."""
     employee.elo_score = 1000
     await db.commit()
     await db.refresh(employee)
@@ -127,13 +127,16 @@ async def test_step2_and_3_qr_submit_known_employee_penalizes_elo(client, db: As
     assert data["redirect_url"] == f"/training/{data['tracking_uuid']}?channel=qr"
     assert data["success"] is True
     assert data["unknown"] is False
-    assert data["resolved_employee_id"] == str(employee.id)
-    assert data["elo_delta"] == -25
+    # The submission route is public: it must never echo the matched employee
+    # back, otherwise a printed campaign UUID becomes an enumeration oracle.
+    assert data["resolved_employee_id"] is None
+    assert data["resolved_employee_name"] is None
+    assert data["elo_delta"] == -90
     assert data["tracking_uuid"] is not None
 
-    # Verify employee Elo score dropped by 25
+    # QR medium submission uses the smart channel weight.
     await db.refresh(employee)
-    assert employee.elo_score == 975
+    assert employee.elo_score == 910
     assert employee.total_credential_submissions == 1
 
     # Verify tracking_events row was updated with employee_id and fields
@@ -159,7 +162,7 @@ async def test_step2_and_3_qr_submit_known_employee_penalizes_elo(client, db: As
         )
     ).scalars().all()
     assert len(interactions) == 1
-    assert interactions[0].details["elo_delta"] == -25
+    assert interactions[0].details["elo_delta"] == -90
 
     # Verify qr_scans record
     scans = (
@@ -174,8 +177,8 @@ async def test_step2_and_3_qr_submit_known_employee_penalizes_elo(client, db: As
     scan = scans[0]
     assert scan.event_type in ("qr_submitted", "qr_credential_submitted")
     assert scan.penalty_applied is True
-    assert scan.elo_delta == -25
-    assert scan.fingerprint_data["fingerprint_hash"] is not None
+    assert scan.elo_delta == -90
+    assert scan.fingerprint_data["hardware_fingerprint"] is not None
 
 
 async def test_step3_qr_submit_unknown_employee_saved_as_unknown_scan(client, db: AsyncSession, qr_campaign_factory):
@@ -218,7 +221,7 @@ async def test_step3_qr_submit_unknown_employee_saved_as_unknown_scan(client, db
     assert scan.employee_id is None
     assert scan.identity_resolution == "unknown"
     assert scan.penalty_applied is False
-    assert scan.fingerprint_data["fingerprint_hash"] is not None
+    assert scan.fingerprint_data["hardware_fingerprint"] is not None
 
 
 async def test_step4_track_context_returns_qr_education(client, db: AsyncSession, organization, employee, qr_campaign_factory):
@@ -299,7 +302,7 @@ async def test_step5_admin_dashboard_radar_verification(client, db: AsyncSession
     assert known["username"] == "ahmed.khalid"
     assert known["fingerprint_hash"] is not None
     assert known["ip_address"] == "10.0.1.55"
-    assert known["elo_delta"] == -25
+    assert known["elo_delta"] == -90
     assert known["penalty_applied"] is True
 
     # Check unknown scan

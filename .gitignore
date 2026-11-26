@@ -56,6 +56,11 @@ backend/server.out.log
 backend/server.err.log
 .script-run.log
 
+# --- Local helper binaries / shortcuts ----------------------------------------
+# Windows Redis binaries are machine-local and must not be published.
+tools/redis/
+docs/*.url
+
 # --- Sensitive documentation evidence ----------------------------------------
 # These screenshots contain real employee addresses and captured form values.
 docs/screenshots/
@@ -66,3 +71,51 @@ docs/screenshots/
 *.swp
 .DS_Store
 Thumbs.db
+
+# --- Local environment variants (may contain secrets) -------------------------
+.env.development
+.env.production
+backend/.env.development
+backend/.env.production
+
+# --- Generated build output / deploy bundles ---------------------------------
+cloudflare/
+
+# --- One-off report / document generators (kept locally, not published) ------
+build_complete_word_report.py
+generate_academic_thesis.py
+generate_academic_thesis_arabic.py
+backend/extract_metrics.py
+backend/generate_evidence.py
+backend/query_campaign_pairs.py
+backend/requirements_local.txt
+
+# --- Generated documents, figures and screenshots ----------------------------
+HUMINT_Shield_Academic_Thesis*.docx
+*.out
+_report*.html
+_report*.png
+_report*.pdf
+_report_desktop.png
+_report_lab*.png
+_report_tall.png
+HUMINT_Shield_Technical_Report.html
+MASTER_DOSSIER.html
+MASTER_DOSSIER.pdf
+email_channel_master_report.*
+thesis_figures/
+thesis_figures_ar/
+qr_campaign_poster.pdf
+qr_templates_screenshot.png
+usb-drive-picker.png
+test_font.png
+~$*
+
+# The defense/architecture report is part of the public project documentation.
+!PROJECT_ARCHITECTURE_AND_DEFENSE.html
+
+backend/_*.txt
+backend/_*.html
+backend/_ring_campaign.txt
+backend/_usb_*.txt
+backend/_usb_artifact.html

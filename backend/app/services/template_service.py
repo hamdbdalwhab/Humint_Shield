@@ -168,11 +168,15 @@ class TemplatePersonalizer:
             "manager_name": manager_name,
             "job_title": getattr(employee, "job_title", "") or "Employee",
             "tracking_url": tracking_url,
+            # ``{{link}}`` is the SMS/WhatsApp call-to-action alias; the launcher
+            # swaps it for the dedicated /track/sms/ endpoint.
+            "link": tracking_url,
             "short_url": tracking_url,
             "short_code": short_code or "",
             "tracking_uuid": uid,
             "base_url": base_url,
             "invoice_number": self._generate_invoice_number(),
+            "invoice_id": self._generate_invoice_number(),
             "meeting_time": self._generate_meeting_time(),
             "current_year": str(datetime.now(timezone.utc).year),
         }
@@ -293,7 +297,9 @@ class TemplatePersonalizer:
         base_url = (base_url or self.settings.base_url).rstrip("/")
         uid = str(tracking_uuid)
         click_url = f"{base_url}/api/v1/track/click/{uid}"
-        overrides = {"tracking_url": click_url}
+        # Both template aliases must point at the click tracker so an SMS has a
+        # single call-to-action; the launcher then swaps it for /track/sms/.
+        overrides = {"tracking_url": click_url, "link": click_url}
         if extra_vars:
             overrides.update({key: str(value) for key, value in extra_vars.items()})
         variables = self.build_variables(
@@ -313,6 +319,141 @@ class TemplatePersonalizer:
         if click_url not in text:
             text = f"{text}\n\n{click_url}".strip()
         return {"subject": subject, "text_content": text, "tracking_url": click_url}
+
+    def render_custom_message(
+        self,
+        message: str,
+        template: Any,
+        employee: Any,
+        organization: Any,
+        tracking_uuid: uuid.UUID | str,
+        base_url: str | None = None,
+        *,
+        short_code: str | None = None,
+    ) -> str:
+        """Render an operator-written SMS body for one recipient.
+
+        The custom text supports the same merge variables as a template
+        (``{{first_name}}``, ``{{company_name}}``, ``{{link}}``…).  The
+        call-to-action link is left as the template alias so the launcher can
+        swap it for the recipient's short link; when the author forgot to
+        include ``{{link}}`` the short URL is appended instead.
+
+        Args:
+            message: The text the administrator typed.
+            template: Template supplying the default variable values.
+            employee: Recipient employee.
+            organization: Owning organization.
+            tracking_uuid: Per-recipient tracking UUID.
+            base_url: Optional base URL override.
+            short_code: Per-recipient short code.
+
+        Returns:
+            The personalised plain-text message.
+        """
+        base_url = (base_url or self.settings.base_url).rstrip("/")
+        uid = str(tracking_uuid)
+        click_url = f"{base_url}/api/v1/track/click/{uid}"
+        variables = self.build_variables(
+            template,
+            employee,
+            organization,
+            tracking_uuid,
+            base_url,
+            {"tracking_url": click_url, "link": click_url},
+            short_code=short_code,
+        )
+        rendered = self._render_text(message or "", variables, escape=False).strip()
+        if not rendered:
+            return rendered
+        if click_url not in rendered and f"/s/{short_code}" not in rendered:
+            rendered = f"{rendered} {click_url}".strip()
+        return rendered
+
+    def personalize_voice(
+        self,
+        template: Any,
+        employee: Any,
+        organization: Any,
+        tracking_uuid: uuid.UUID | str | None = None,
+        base_url: str | None = None,
+        extra_vars: dict[str, str] | None = None,
+    ) -> str:
+        """Render a plain-text script suitable for native voice TTS.
+
+        Unlike :meth:`personalize_text`, this never appends a click-tracking
+        URL: the recipient hears the script, so a URL would be read aloud.
+        Tracking is attached to the call itself through the IllyVoIP
+        ``call_control_id`` and the existing ``tracking_events`` row.
+
+        Args:
+            template: The scenario template supplying the fallback body.
+            employee: Recipient employee.
+            organization: Owning organization.
+            tracking_uuid: Optional tracking UUID for merge variables.
+            base_url: Optional base URL override.
+            extra_vars: Optional variable overrides.
+
+        Returns:
+            Plain-text script, or an empty string when the template has no
+            usable text.
+        """
+        base_url = (base_url or self.settings.base_url).rstrip("/")
+        uid = str(tracking_uuid or uuid.uuid4())
+        variables = self.build_variables(
+            template, employee, organization, uid, base_url, extra_vars
+        )
+        subject = self._render_text(
+            getattr(template, "subject", "") or "", variables, escape=False
+        ).strip()
+        branding = branding_from_organization(organization, base_url)
+        body = self._base_html(template, organization, base_url)
+        body = apply_branding_placeholders(body, branding)
+        body = self._render_text(body, variables, escape=False)
+        text = html_to_text(body).strip()
+        return text or subject
+
+    def render_voice_script(
+        self,
+        script: str,
+        template: Any,
+        employee: Any,
+        organization: Any,
+        tracking_uuid: uuid.UUID | str,
+        base_url: str | None = None,
+        extra_vars: dict[str, str] | None = None,
+    ) -> str:
+        """Substitute merge tags inside an operator-written voice script.
+
+        An explicit script from ``campaigns.channel_config.voice`` is spoken
+        verbatim, so tags such as ``{{first_name}}`` and ``{{vishing_url}}``
+        must be resolved per recipient instead of being read aloud literally.
+
+        Args:
+            script: The operator's script containing optional ``{{tags}}``.
+            template: The scenario template supplying fallback variables.
+            employee: Recipient employee.
+            organization: Owning organization.
+            tracking_uuid: Per-recipient tracking UUID.
+            base_url: Optional base URL override.
+            extra_vars: Optional variable overrides.
+
+        Returns:
+            The rendered script, with unknown tags left untouched.
+        """
+        base_url = (base_url or self.settings.base_url).rstrip("/")
+        uid = str(tracking_uuid)
+        overrides = {
+            # The public simulation page the recipient is asked to open.
+            "vishing_url": f"{base_url}/simulation/vishing/{uid}",
+            "tracking_url": f"{base_url}/api/v1/track/visit/{uid}?channel=vishing",
+        }
+        if extra_vars:
+            overrides.update({key: str(value) for key, value in extra_vars.items()})
+        variables = self.build_variables(
+            template, employee, organization, tracking_uuid, base_url, overrides
+        )
+        return self._render_text(script, variables, escape=False).strip()
 
     def rewrite_links(
         self,
@@ -438,6 +579,10 @@ class TemplatePersonalizer:
         Returns:
             Full or fragment HTML before personalisation.
         """
+        # SMS bodies are plain text by contract: never wrap them in the email
+        # design (it adds a branded header and a disclosure footer).
+        if (getattr(template, "channel", "") or "").strip().lower() == "sms":
+            return getattr(template, "body_html", "") or ""
         raw_design = getattr(template, "design_json", None)
         if isinstance(raw_design, dict):
             try:

@@ -120,7 +120,9 @@ def _mount_frontend(app: FastAPI, dist: Path) -> None:
         candidate = (dist / full_path).resolve()
         if full_path and candidate.is_file() and candidate.is_relative_to(dist.resolve()):
             return FileResponse(candidate)
-        return FileResponse(index_file)
+        # The shell references hashed assets: never let a browser reuse a cached
+        # shell after a rebuild, or recipients get an old bundle.
+        return FileResponse(index_file, headers={"Cache-Control": "no-cache"})
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -149,21 +151,31 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
 
     cors_origins = list(settings.cors_origins) if settings.cors_origins else []
-    for origin in [
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-        "http://localhost:8000",
-        "http://127.0.0.1:8000",
-    ]:
-        if origin not in cors_origins:
-            cors_origins.append(origin)
+    # Development conveniences must never widen a production deployment: in
+    # production only the explicitly configured origins are accepted, and no
+    # wildcard localhost / ephemeral-tunnel origins are trusted.
+    allow_origin_regex: str | None = None
+    if not settings.is_production:
+        for origin in [
+            "http://localhost:5173",
+            "http://127.0.0.1:5173",
+            "http://localhost:3000",
+            "http://127.0.0.1:3000",
+            "http://localhost:8000",
+            "http://127.0.0.1:8000",
+        ]:
+            if origin not in cors_origins:
+                cors_origins.append(origin)
+        allow_origin_regex = (
+            r"^https?://.*\.trycloudflare\.com$"
+            r"|^https?://localhost(:[0-9]+)?$"
+            r"|^https?://127\.0\.0\.1(:[0-9]+)?$"
+        )
 
     app.add_middleware(
         CORSMiddleware,
         allow_origins=cors_origins,
-        allow_origin_regex=r"^https?://.*\.trycloudflare\.com$|^https?://localhost(:[0-9]+)?$|^https?://127\.0\.0\.1(:[0-9]+)?$",
+        allow_origin_regex=allow_origin_regex,
         allow_credentials=True,
         allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=["*"],
@@ -262,7 +274,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "health": "/healthz",
         }
 
-    Instrumentator().instrument(app).expose(app, endpoint="/metrics", include_in_schema=False)
+    if settings.metrics_enabled:
+        Instrumentator().instrument(app).expose(app, endpoint="/metrics", include_in_schema=False)
+    else:
+        logger.info("metrics_disabled")
 
     if frontend_dist is not None:
         _mount_frontend(app, frontend_dist)

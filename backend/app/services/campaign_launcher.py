@@ -4,17 +4,18 @@ Drives the full lifecycle of a simulation across email, SMS and WhatsApp:
 
 * validates the campaign is still a ``draft``,
 * materialises one :class:`~app.models.EmailTracking` row per target,
-* personalises the template per recipient and per channel,
-* dispatches through Brevo (email) or Vonage (SMS / WhatsApp), and
+* personalises the template (or the operator's custom SMS text) per recipient,
+* dispatches through Brevo (email) or TextBee (SMS), and
 * aggregates per-employee results for the reporting endpoints.
 
 Each recipient is committed independently so a single failure never rolls back
-the whole campaign.  For SMS/WhatsApp the provider acknowledgement is stored as
-``submitted``; ``delivered`` and ``read`` are only set by the real Vonage
-webhooks.
+the whole campaign.  For SMS the TextBee gateway acknowledgement is stored as
+``submitted``; delivery is confirmed by the Android device, not by this server.
 """
 from __future__ import annotations
 
+import asyncio
+import time
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -39,13 +40,20 @@ from app.services.elo_engine import (
     difficulty_range,
     threat_level_for_elo,
 )
+from app.services.employee_service import get_send_blockers
 from app.services.template_personalizer import TemplatePersonalizer
 from app.services.tracking_service import latest_submitted_values
-from app.services.vonage_service import VonageService, is_e164_phone
+from app.services.illyvoip_service import IllyVoIPService
+from app.services.landing_page_resolver import LandingPageResolver
+from app.services.short_link_service import ShortLinkService
+from app.services.textbee_service import TextBeeService, is_e164_phone
+from app.services.whatsapp_service import WhatsAppService
 
 logger = get_logger(__name__)
 
 PHONE_CHANNELS = frozenset({"sms", "whatsapp"})
+#: Real outbound voice calls through IllyVoIP (not the manual vishing page).
+VOICE_CHANNELS = frozenset({"voice"})
 
 
 def _now() -> datetime:
@@ -64,18 +72,40 @@ class CampaignLauncher:
         self,
         email_service: BrevoService | None = None,
         personalizer: TemplatePersonalizer | None = None,
-        vonage_service: VonageService | None = None,
+        illyvoip_service: IllyVoIPService | None = None,
+        textbee_service: TextBeeService | None = None,
+        whatsapp_service: WhatsAppService | None = None,
+        short_link_service: ShortLinkService | None = None,
+        landing_page_resolver: LandingPageResolver | None = None,
     ) -> None:
         """Initialise the launcher.
 
         Args:
             email_service: Email transport (injectable for tests).
             personalizer: Template renderer (injectable for tests).
-            vonage_service: SMS/WhatsApp transport (injectable for tests).
+            illyvoip_service: Real voice/TTS transport (injectable for tests).
+            textbee_service: TextBee SMS gateway (injectable for tests).
+            whatsapp_service: WA-AKG WhatsApp gateway (injectable for tests).
+            short_link_service: SMS short-link factory (injectable for tests).
+            landing_page_resolver: SMS landing-page router (injectable).
         """
         self.email_service = email_service or BrevoService()
         self.personalizer = personalizer or TemplatePersonalizer()
-        self.vonage_service = vonage_service or VonageService(settings=self.personalizer.settings)
+        self.landing_page_resolver = landing_page_resolver or LandingPageResolver()
+        self.illyvoip_service = illyvoip_service or IllyVoIPService(
+            settings=self.personalizer.settings
+        )
+        self.textbee_service = textbee_service or TextBeeService(
+            settings=self.personalizer.settings
+        )
+        self.whatsapp_service = whatsapp_service or WhatsAppService(
+            settings=self.personalizer.settings
+        )
+        #: Monotonic timestamp of the last WhatsApp send, for anti-ban pacing.
+        self._last_whatsapp_send_at: float | None = None
+        self.short_link_service = short_link_service or ShortLinkService(
+            settings=self.personalizer.settings
+        )
 
     # ------------------------------------------------------------------ #
     # Launch
@@ -113,19 +143,36 @@ class CampaignLauncher:
         campaign.channel = channel
 
         # Background workers and direct callers bypass the API preflight, so the
-        # launcher itself must refuse a phone campaign with missing credentials.
-        if channel in PHONE_CHANNELS:
-            configuration_status = getattr(
-                self.vonage_service, "configuration_status", None
-            )
-            if callable(configuration_status):
-                readiness = configuration_status(channel)
-                if not readiness.get("valid"):
-                    missing = ", ".join(readiness.get("missing") or [])
-                    raise CampaignLaunchError(
-                        f"{channel.upper()} delivery is not configured"
-                        + (f"; set {missing}" if missing else "")
-                    )
+        # launcher itself must refuse a phone/voice campaign with missing
+        # credentials.  Voice readiness comes from IllyVoIP.
+        if channel in VOICE_CHANNELS:
+            readiness = self.illyvoip_service.configuration_status()
+            if not readiness.get("valid"):
+                missing = ", ".join(readiness.get("missing") or [])
+                raise CampaignLaunchError(
+                    "VOICE delivery is not configured"
+                    + (f"; set {missing}" if missing else "")
+                )
+        elif channel == "whatsapp":
+            # WhatsApp is delivered by the self-hosted WA-AKG gateway.
+            readiness = self.whatsapp_service.configuration_status()
+            if not readiness.get("valid"):
+                missing = ", ".join(readiness.get("missing") or [])
+                raise CampaignLaunchError(
+                    "WhatsApp delivery is not configured; set "
+                    + (missing or "WA_AKG_API_KEY")
+                    + " in backend/.env"
+                )
+        elif channel in PHONE_CHANNELS:
+            # SMS is delivered exclusively by the TextBee Android gateway.
+            readiness = self.textbee_service.configuration_status()
+            if not readiness.get("valid"):
+                missing = ", ".join(readiness.get("missing") or [])
+                raise CampaignLaunchError(
+                    "SMS delivery is not configured; set "
+                    + (missing or "TEXTBEE_API_KEY")
+                    + " in backend/.env"
+                )
 
         target_ids = [self._coerce_uuid(t) for t in (campaign.target_employee_ids or [])]
         target_ids = [t for t in target_ids if t is not None]
@@ -165,12 +212,29 @@ class CampaignLauncher:
                     "sent": 1,
                     "failed": 0,
                     "failures": [],
+                    "blocked": [],
+                    "blocked_count": 0,
                 }
             raise CampaignLaunchError("campaign has no target employees")
 
         template = await self._load_template(db, campaign)
         adaptive_templates = await self._load_adaptive_templates(db, campaign, template)
         organization = await db.get(Organization, campaign.organization_id)
+
+        # Module 3/4 guardrails: pre-compute every employee who must be skipped.
+        # Mandatory-training campaigns bypass both the cooldown and blacklist.
+        blockers = (
+            await get_send_blockers(
+                db,
+                organization,
+                target_ids,
+                exclude_campaign_id=cid,
+                is_mandatory_training=bool(campaign.is_mandatory_training),
+            )
+            if organization is not None
+            else {}
+        )
+        blocked: list[dict[str, Any]] = []
 
         campaign.status = "active"
         campaign.launched_at = _now()
@@ -183,6 +247,15 @@ class CampaignLauncher:
         sent = 0
 
         for employee_id in target_ids:
+            if employee_id in blockers:
+                blocked.append(blockers[employee_id])
+                logger.info(
+                    "campaign_recipient_blocked",
+                    campaign_id=str(cid),
+                    employee_id=str(employee_id),
+                    reason=blockers[employee_id].get("reason"),
+                )
+                continue
             try:
                 outcome = await self._send_to_employee(
                     db,
@@ -271,6 +344,8 @@ class CampaignLauncher:
             "sent": sent,
             "failed": len(failures),
             "failures": failures,
+            "blocked": blocked,
+            "blocked_count": len(blocked),
         }
         logger.info(
             "campaign_launched",
@@ -323,7 +398,7 @@ class CampaignLauncher:
 
         channel = (campaign.channel or "email").strip().lower()
         phone_error: str | None = None
-        if channel in PHONE_CHANNELS:
+        if channel in PHONE_CHANNELS or channel in VOICE_CHANNELS:
             if not (employee.phone or "").strip():
                 phone_error = (
                     f"employee has no phone number; {channel} campaigns require "
@@ -350,18 +425,31 @@ class CampaignLauncher:
                 "message_id": existing.provider_message_id,
             }
 
-        selected_template = self._select_adaptive_template(
-            template, adaptive_templates or [template], employee, channel
-        )
+        # A campaign that names a template sends that template verbatim.  Elo-band
+        # rotation is opt-in so an operator's explicit choice is never replaced by
+        # a different scenario, subject or language at launch time.
+        if self._adaptive_templates_enabled(campaign):
+            selected_template = self._select_adaptive_template(
+                template, adaptive_templates or [template], employee, channel
+            )
+        else:
+            selected_template = template
 
         tracking_uuid = uuid.uuid4()
-        provider_name = (
-            "brevo"
-            if channel == "email"
-            else "simulation"
-            if channel in SIMULATION_CHANNELS
-            else "vonage"
-        )
+        if channel == "email":
+            provider_name = "brevo"
+        elif channel in SIMULATION_CHANNELS:
+            provider_name = "simulation"
+        elif channel in VOICE_CHANNELS:
+            provider_name = "illyvoip"
+        elif channel == "whatsapp":
+            # WhatsApp has exactly one transport: the WA-AKG gateway.
+            provider_name = "wa-akg"
+        elif channel == "sms":
+            # SMS has exactly one transport: the TextBee Android gateway.
+            provider_name = "textbee"
+        else:
+            provider_name = "simulation"
         tracking = existing or EmailTracking(
             campaign_id=campaign.id,
             employee_id=employee.id,
@@ -382,11 +470,18 @@ class CampaignLauncher:
             tracking.short_code = TrackingService.generate_short_code()
         db.add(tracking)
         await db.flush()
+        if channel in VOICE_CHANNELS:
+            # The real call can take tens of seconds.  Persist the tracking row
+            # before the provider request so a worker crash, status poll or
+            # hangup can always correlate the call to the campaign recipient.
+            await db.commit()
 
         if phone_error is not None:
             tracking.delivery_status = "failed"
             tracking.delivery_error = phone_error[:500]
             await db.flush()
+            if channel in VOICE_CHANNELS:
+                await db.commit()
             logger.warning(
                 "campaign_send_phone_invalid",
                 campaign_id=str(campaign.id),
@@ -447,22 +542,139 @@ class CampaignLauncher:
                     error=str(exc),
                 )
                 response = {"success": False, "message_id": None, "error": str(exc)}
-        else:
-            rendered_text = self.personalizer.personalize_text(
-                selected_template,
-                employee,
-                organization,
-                tracking.tracking_uuid,
-                self._base_url(),
-            )
+        elif channel in VOICE_CHANNELS:
+            raw_config = campaign.channel_config or {}
+            voice_config: dict[str, Any] = {}
+            if isinstance(raw_config, dict):
+                candidate = raw_config.get("voice") or raw_config.get("vishing")
+                if isinstance(candidate, dict):
+                    voice_config = candidate
+            # Ring-only verification: dial and hang up at the first ring, with
+            # no script and therefore no TTS credit spent.
+            ring_only = bool(voice_config.get("ring_only"))
+            script = ""
+            if not ring_only:
+                script = str(voice_config.get("script") or "").strip()
+                if script:
+                    # An explicit script may contain merge tags; resolve them per
+                    # recipient so the TTS never reads "{{first_name}}" aloud.
+                    script = self.personalizer.render_voice_script(
+                        script,
+                        selected_template,
+                        employee,
+                        organization,
+                        tracking.tracking_uuid,
+                        self._base_url(),
+                    )
+                if not script:
+                    script = self.personalizer.personalize_voice(
+                        selected_template,
+                        employee,
+                        organization,
+                        tracking.tracking_uuid,
+                        self._base_url(),
+                    )
+            answer_timeout = voice_config.get("answer_timeout_seconds")
+            if answer_timeout is not None:
+                try:
+                    answer_timeout = float(answer_timeout)
+                except (TypeError, ValueError):
+                    answer_timeout = None
             try:
-                if channel == "sms":
-                    message_id = await self.vonage_service.send_sms(
-                        employee.phone or "", rendered_text["text_content"]
+                if ring_only:
+                    call_result = await self.illyvoip_service.ring_only_call(
+                        employee.phone or "",
+                        campaign_id=campaign.id,
+                        tracking_uuid=tracking.tracking_uuid,
+                        record=False,
                     )
                 else:
-                    message_id = await self.vonage_service.send_whatsapp(
-                        employee.phone or "", rendered_text["text_content"]
+                    call_result = await self.illyvoip_service.place_vishing_call(
+                        employee.phone or "",
+                        script,
+                        campaign_id=campaign.id,
+                        tracking_uuid=tracking.tracking_uuid,
+                        language=voice_config.get("language"),
+                        voice=voice_config.get("voice"),
+                        answer_timeout_seconds=answer_timeout,
+                        record=voice_config.get("record"),
+                    )
+                response = {
+                    "success": True,
+                    "message_id": call_result.get("call_control_id"),
+                    "error": None,
+                    "call_result": call_result,
+                }
+            except Exception as exc:  # noqa: BLE001 - transport failures are data
+                logger.error(
+                    "campaign_voice_provider_exception",
+                    campaign_id=str(campaign.id),
+                    employee_id=str(employee.id),
+                    channel=channel,
+                    error=str(exc),
+                    error_code=getattr(exc, "error_code", None),
+                    provider_status_code=getattr(exc, "status_code", None),
+                )
+                call_id = None
+                fields = getattr(exc, "fields", None)
+                if isinstance(fields, dict):
+                    call_id = fields.get("call_control_id")
+                rang = bool(fields.get("rang")) if isinstance(fields, dict) else False
+                ring_seconds = (
+                    fields.get("ring_seconds") if isinstance(fields, dict) else None
+                )
+                response = {
+                    "success": False,
+                    "message_id": call_id,
+                    "error": str(exc),
+                    "call_control_id": call_id,
+                    "rang": rang,
+                    "ring_seconds": ring_seconds,
+                }
+        else:
+            is_whatsapp = channel == "whatsapp"
+            sms_config = self._channel_config(
+                campaign, "whatsapp" if is_whatsapp else "sms"
+            )
+            custom_message = str(sms_config.get("custom_message") or "").strip()
+            if custom_message:
+                # The operator's own wording replaces the template body; merge
+                # tags and {{link}} are still resolved per recipient.
+                text_content = self.personalizer.render_custom_message(
+                    custom_message,
+                    selected_template,
+                    employee,
+                    organization,
+                    tracking.tracking_uuid,
+                    self._base_url(),
+                    short_code=tracking.short_code,
+                )
+            else:
+                text_content = self.personalizer.personalize_text(
+                    selected_template,
+                    employee,
+                    organization,
+                    tracking.tracking_uuid,
+                    self._base_url(),
+                )["text_content"]
+            try:
+                if is_whatsapp:
+                    message_id = await self._send_whatsapp(
+                        employee.phone or "",
+                        text_content,
+                        tracking,
+                        db,
+                        department=employee.department,
+                        manual_landing_page=sms_config.get("selected_landing_page"),
+                    )
+                else:
+                    message_id = await self._send_sms(
+                        employee.phone or "",
+                        text_content,
+                        tracking,
+                        db,
+                        department=employee.department,
+                        manual_landing_page=sms_config.get("selected_landing_page"),
                     )
                 response = {"success": True, "message_id": message_id, "error": None}
             except Exception as exc:  # noqa: BLE001 - transport failures are data
@@ -487,12 +699,35 @@ class CampaignLauncher:
             elif channel in SIMULATION_CHANNELS:
                 tracking.delivered_at = _now()
                 tracking.delivery_status = "available"
+            elif channel in VOICE_CHANNELS:
+                tracking.delivered_at = _now()
+                if ring_only:
+                    # Nothing was spoken, so the call is not a completed
+                    # simulation; record exactly what happened.
+                    tracking.delivery_status = "ring_only"
+                else:
+                    tracking.completed_at = _now()
+                    tracking.delivery_status = "completed"
             else:
                 tracking.delivery_status = "submitted"
             tracking.delivery_error = None
             employee.total_tests_received = (employee.total_tests_received or 0) + 1
             employee.last_test_date = _now()
             await db.flush()
+
+            if channel == "sms":
+                await self._record_sms_sent(db, tracking)
+            elif channel == "whatsapp":
+                await self._record_whatsapp_sent(db, tracking)
+
+            if channel in VOICE_CHANNELS:
+                await self._record_voice_events(
+                    db,
+                    tracking,
+                    response.get("call_result") or {},
+                    ring_only=ring_only,
+                )
+
             return {
                 "success": True,
                 "email": employee.email,
@@ -502,6 +737,30 @@ class CampaignLauncher:
 
         tracking.delivery_status = "failed"
         tracking.delivery_error = (response.get("error") or "send failed")[:500]
+        if channel in VOICE_CHANNELS:
+            tracking.failed_at = _now()
+            if response.get("message_id"):
+                tracking.provider_message_id = str(response["message_id"])[:255]
+            if response.get("rang"):
+                # The handset actually rang and nobody answered: that is an
+                # outcome of the simulation, not a delivery error by the system.
+                rang_for = response.get("ring_seconds")
+                rang_text = (
+                    f" after {float(rang_for):.0f}s of ringing"
+                    if isinstance(rang_for, (int, float)) and rang_for
+                    else ""
+                )
+                tracking.delivery_status = "no_answer"
+                tracking.delivery_error = (
+                    "No answer: the recipient's phone rang"
+                    f"{rang_text} and the carrier ended the call before pickup."
+                )[:500]
+            await self._record_voice_failure(
+                db,
+                tracking,
+                tracking.delivery_error,
+                not_answered=bool(response.get("rang")),
+            )
         await db.flush()
         return {
             "success": False,
@@ -509,6 +768,192 @@ class CampaignLauncher:
             "error": response.get("error") or "send failed",
             "message_id": None,
         }
+
+    async def _record_sms_sent(
+        self, db: AsyncSession, tracking: EmailTracking
+    ) -> None:
+        """Append ``sms_sent`` evidence for an accepted SMS.
+
+        A ledger failure must never turn an accepted provider message into a
+        campaign failure.
+        """
+        try:
+            from app.services.tracking_service import TrackingService
+
+            await TrackingService().log_sms_sent(
+                tracking.tracking_uuid,
+                db,
+                provider=self.personalizer.settings.sms_provider_effective,
+                batch_id=tracking.provider_message_id,
+                characters=0,
+            )
+        except Exception:  # noqa: BLE001 - the message is already accepted
+            logger.exception(
+                "campaign_sms_audit_failed",
+                tracking_uuid=str(tracking.tracking_uuid),
+            )
+
+    async def _record_whatsapp_sent(
+        self, db: AsyncSession, tracking: EmailTracking
+    ) -> None:
+        """Append ``whatsapp_sent`` evidence for an accepted WhatsApp message.
+
+        A ledger failure must never turn an accepted message into a campaign
+        failure.
+        """
+        try:
+            from app.services.tracking_service import TrackingService
+
+            await TrackingService().log_whatsapp_sent(
+                tracking.tracking_uuid,
+                db,
+                provider=self.personalizer.settings.whatsapp_provider_effective,
+                message_id=tracking.provider_message_id,
+                characters=0,
+            )
+        except Exception:  # noqa: BLE001 - the message is already accepted
+            logger.exception(
+                "campaign_whatsapp_audit_failed",
+                tracking_uuid=str(tracking.tracking_uuid),
+            )
+
+    async def _record_voice_events(
+        self,
+        db: AsyncSession,
+        tracking: EmailTracking,
+        call_result: dict[str, Any],
+        *,
+        ring_only: bool = False,
+    ) -> None:
+        """Append the real-call lifecycle to the interaction ledger.
+
+        A ledger failure must never turn a completed provider call into a
+        campaign failure; the tracking row has already been updated.
+        """
+        try:
+            from app.services.tracking_service import (
+                EVENT_VISHING_CALL_ANSWERED,
+                EVENT_VISHING_CALL_COMPLETED,
+                EVENT_VISHING_CALL_PLACED,
+                EVENT_VISHING_TTS_PLAYED,
+                TrackingService,
+            )
+
+            call_id = str(call_result.get("call_control_id") or "") or None
+            details = {
+                "provider": "illyvoip",
+                "call_control_id": call_id,
+                "state": call_result.get("state"),
+                "call_status": call_result.get("call_status"),
+                "duration_seconds": call_result.get("duration_seconds"),
+                "tts_media": call_result.get("tts_media"),
+                "answered_at": call_result.get("answered_at"),
+                "ended_at": call_result.get("ended_at"),
+                "failure_reason": call_result.get("failure_reason"),
+                # An answered timestamp is not proof a person listened: the
+                # destination may never have rung, or a voicemail/announcement
+                # may have answered.  Persist the evidence that distinguishes them.
+                "rang": bool(call_result.get("rang")),
+                "answer_delay_seconds": call_result.get("answer_delay_seconds"),
+                "answer_suspect_auto": bool(call_result.get("answer_suspect_auto")),
+            }
+            service = TrackingService()
+            async with db.begin_nested():
+                await service.log_vishing_event(
+                    tracking.tracking_uuid,
+                    EVENT_VISHING_CALL_PLACED,
+                    db,
+                    details=details,
+                    provider_message_id=call_id,
+                    delivery_status="ring_only" if ring_only else "calling",
+                )
+                if ring_only:
+                    # Verification call: it rang and was cut before any audio.
+                    # There is no answer and no completion to record.
+                    return
+                answered_by_human_evidence = bool(
+                    call_result.get("answered_at")
+                    and call_result.get("rang")
+                    and not call_result.get("answer_suspect_auto")
+                )
+                if answered_by_human_evidence:
+                    await service.log_vishing_event(
+                        tracking.tracking_uuid,
+                        EVENT_VISHING_CALL_ANSWERED,
+                        db,
+                        details=details,
+                        provider_message_id=call_id,
+                        delivery_status="answered",
+                    )
+                if call_result.get("tts_media"):
+                    await service.log_vishing_event(
+                        tracking.tracking_uuid,
+                        EVENT_VISHING_TTS_PLAYED,
+                        db,
+                        details={
+                            "call_control_id": call_id,
+                            "tts_media": call_result.get("tts_media"),
+                            "tts_charge": call_result.get("tts_charge"),
+                        },
+                        provider_message_id=call_id,
+                        delivery_status="answered",
+                    )
+                await service.log_vishing_event(
+                    tracking.tracking_uuid,
+                    EVENT_VISHING_CALL_COMPLETED,
+                    db,
+                    details=details,
+                    provider_message_id=call_id,
+                    delivery_status="completed",
+                )
+        except Exception:  # noqa: BLE001 - the call already completed
+            logger.exception(
+                "campaign_voice_audit_failed",
+                campaign_id=str(tracking.campaign_id),
+                employee_id=str(tracking.employee_id),
+            )
+
+    async def _record_voice_failure(
+        self,
+        db: AsyncSession,
+        tracking: EmailTracking,
+        error: str | None,
+        *,
+        not_answered: bool = False,
+    ) -> None:
+        """Append a failed real-call attempt to the interaction ledger."""
+        try:
+            from app.services.tracking_service import (
+                EVENT_VISHING_CALL_FAILED,
+                EVENT_VISHING_CALL_NOT_ANSWERED,
+                TrackingService,
+            )
+
+            event_type = (
+                EVENT_VISHING_CALL_NOT_ANSWERED
+                if not_answered
+                else EVENT_VISHING_CALL_FAILED
+            )
+            async with db.begin_nested():
+                await TrackingService().log_vishing_event(
+                    tracking.tracking_uuid,
+                    event_type,
+                    db,
+                    details={
+                        "provider": "illyvoip",
+                        "error": error,
+                        "call_control_id": tracking.provider_message_id,
+                    },
+                    provider_message_id=tracking.provider_message_id,
+                    delivery_status=tracking.delivery_status,
+                    delivery_error=error,
+                )
+        except Exception:  # noqa: BLE001 - the call failure is already recorded
+            logger.exception(
+                "campaign_voice_failure_audit_failed",
+                campaign_id=str(tracking.campaign_id),
+                employee_id=str(tracking.employee_id),
+            )
 
     # ------------------------------------------------------------------ #
     # Results
@@ -685,9 +1130,35 @@ class CampaignLauncher:
             .all()
         )
         templates = list(rows)
+        # A department-specific lure must never be swapped for another
+        # department's scenario: the landing-page skin is derived from it.
+        department = (fallback.target_department or "").strip().lower()
+        if department and department != "all":
+            templates = [
+                template
+                for template in templates
+                if (template.target_department or "").strip().lower() == department
+            ]
         if fallback.id not in {template.id for template in templates}:
             templates.append(fallback)
         return templates
+
+    @staticmethod
+    def _adaptive_templates_enabled(campaign: EmailCampaign) -> bool:
+        """Return ``True`` when the campaign opted into adaptive rotation.
+
+        ``channel_config.adaptive_templates`` is the explicit switch.  When it
+        is absent the campaign's own template is delivered exactly as authored.
+        """
+        raw = campaign.channel_config or {}
+        if not isinstance(raw, dict):
+            return False
+        value = raw.get("adaptive_templates")
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "on"}
+        return bool(value) if isinstance(value, (int, float)) else False
 
     def _select_adaptive_template(
         self,
@@ -765,15 +1236,202 @@ class CampaignLauncher:
         if not template.is_active:
             raise CampaignLaunchError("campaign template is inactive")
         channel = (campaign.channel or "email").strip().lower()
-        if channel in SIMULATION_CHANNELS:
-            # Simulation channels reuse an active email template as their
-            # scenario/reference content; delivery happens outside a provider.
+        if channel in SIMULATION_CHANNELS or channel in VOICE_CHANNELS:
+            # Simulation channels and real voice calls reuse an active email
+            # template as their scenario/reference content; delivery happens
+            # outside the email provider.
             return template
         if (template.channel or "email") != channel:
             raise CampaignLaunchError(
                 f"template channel '{template.channel}' does not match campaign channel '{channel}'"
             )
         return template
+
+    @staticmethod
+    def _sms_config(campaign: EmailCampaign) -> dict[str, Any]:
+        """Return the campaign's ``channel_config.sms`` block as a dict."""
+        raw = campaign.channel_config or {}
+        if not isinstance(raw, dict):
+            return {}
+        candidate = raw.get("sms")
+        return dict(candidate) if isinstance(candidate, dict) else {}
+
+    @staticmethod
+    def _channel_config(campaign: EmailCampaign, key: str) -> dict[str, Any]:
+        """Return one ``channel_config[key]`` block as a dict."""
+        raw = campaign.channel_config or {}
+        if not isinstance(raw, dict):
+            return {}
+        candidate = raw.get(key)
+        if not isinstance(candidate, dict):
+            return {}
+        return dict(candidate)
+
+    async def _send_sms(
+        self,
+        phone: str,
+        text: str,
+        tracking: EmailTracking,
+        db: AsyncSession,
+        *,
+        department: str | None = None,
+        manual_landing_page: str | None = None,
+    ) -> str:
+        """Deliver one simulated SMS through TextBee and return its batch id.
+
+        The call to action is a short link (``{SHORT_LINK_BASE_URL}/s/{code}``)
+        that records the click and then opens the SMS landing page; the long
+        tracking URL never appears in the message.  The destination carries the
+        resolved landing page as ``?page=…`` so the recipient always sees the
+        scenario that matches the message and their department.
+
+        Args:
+            phone: Recipient in E.164 format.
+            text: Message body (template render or custom text).
+            tracking: The recipient's tracking row.
+            db: Active session.
+            department: Recipient department (highest-priority override).
+            manual_landing_page: The administrator's explicit page choice.
+
+        Raises:
+            RuntimeError: When TextBee is not configured or rejects the
+                message; the launcher records it as a per-recipient failure.
+        """
+        settings = self.personalizer.settings
+        base = self._base_url().rstrip("/")
+        landing_page = self.landing_page_resolver.resolve(
+            message=text,
+            department=department,
+            manual=manual_landing_page,
+        )
+        link = await self.short_link_service.ensure_link(
+            db, tracking, landing_page=landing_page
+        )
+        tracking.short_code = link.code
+        short_url = await self.short_link_service.display_url(db, link)
+        click_url = f"{base}/api/v1/track/click/{tracking.tracking_uuid}"
+        sms_url = f"{base}/api/v1/track/sms/{tracking.tracking_uuid}"
+        body = (text or "").replace(click_url, short_url).replace(sms_url, short_url)
+        body = body.strip()
+        if short_url not in body:
+            body = f"{body} {short_url}".strip()
+
+        logger.info(
+            "campaign_sms_landing_page_resolved",
+            tracking_uuid=str(tracking.tracking_uuid),
+            department=department,
+            landing_page=landing_page,
+            characters=len(body),
+        )
+
+        if not settings.textbee_configured:
+            raise RuntimeError(
+                "TextBee is not configured: set TEXTBEE_API_KEY (and "
+                "TEXTBEE_DEVICE_ID) in backend/.env"
+            )
+        result = await self.textbee_service.send_sms(phone, body)
+        if not result.get("success"):
+            detail = str(result.get("error") or "the gateway rejected the message")
+            status_code = result.get("status_code")
+            raise RuntimeError(
+                "TextBee delivery failed: "
+                + detail
+                + (
+                    " (check that the TextBee device is online and the API key "
+                    "is valid)"
+                    if status_code is None or status_code == 401
+                    else ""
+                )
+            )
+        return str(result.get("batch_id") or "")
+
+    async def _send_whatsapp(
+        self,
+        phone: str,
+        text: str,
+        tracking: EmailTracking,
+        db: AsyncSession,
+        *,
+        department: str | None = None,
+        manual_landing_page: str | None = None,
+    ) -> str:
+        """Deliver one WhatsApp message through WA-AKG and return its message id.
+
+        The body keeps the short link (``{SHORT_LINK_BASE_URL}/s/{code}``) so the
+        long tracking URL never appears in the chat, and the landing page is
+        resolved with the same department/keyword rules as SMS.  Between two
+        outbound messages the launcher waits the configured 10-30 second
+        anti-ban pause.
+
+        Raises:
+            RuntimeError: When WA-AKG is not configured, the session is
+                disconnected or the provider rejects the message.
+        """
+        settings = self.personalizer.settings
+        base = self._base_url().rstrip("/")
+        landing_page = self.landing_page_resolver.resolve(
+            message=text,
+            department=department,
+            manual=manual_landing_page,
+        )
+        link = await self.short_link_service.ensure_link(
+            db, tracking, landing_page=landing_page
+        )
+        tracking.short_code = link.code
+        short_url = await self.short_link_service.display_url(db, link)
+        whatsapp_url = f"{base}/api/v1/track/whatsapp/{tracking.tracking_uuid}"
+        click_url = f"{base}/api/v1/track/click/{tracking.tracking_uuid}"
+        body = (text or "").replace(whatsapp_url, short_url).replace(click_url, short_url)
+        body = body.replace("{{link}}", short_url).strip()
+        if short_url not in body:
+            body = f"{body} {short_url}".strip()
+
+        logger.info(
+            "campaign_whatsapp_landing_page_resolved",
+            tracking_uuid=str(tracking.tracking_uuid),
+            department=department,
+            landing_page=landing_page,
+            characters=len(body),
+        )
+
+        readiness = self.whatsapp_service.configuration_status()
+        if not readiness.get("valid"):
+            missing = ", ".join(readiness.get("missing") or [])
+            raise RuntimeError(
+                "WhatsApp (WA-AKG) is not configured: set "
+                + (missing or "WA_AKG_API_KEY")
+                + " in backend/.env"
+            )
+
+        # Anti-ban pacing: never fire two messages closer than the configured
+        # minimum, measured from the end of the previous send.
+        if self._last_whatsapp_send_at is not None:
+            delay = self.whatsapp_service.delay_between_messages()
+            elapsed = time.monotonic() - self._last_whatsapp_send_at
+            remaining = delay - elapsed
+            if remaining > 0:
+                logger.info(
+                    "campaign_whatsapp_pause",
+                    seconds=round(remaining, 1),
+                    tracking_uuid=str(tracking.tracking_uuid),
+                )
+                await asyncio.sleep(remaining)
+
+        result = await self.whatsapp_service.send_whatsapp_message(
+            phone, body, tracking.tracking_uuid
+        )
+        self._last_whatsapp_send_at = time.monotonic()
+        if not result.get("success"):
+            error_code = result.get("error_code")
+            detail = str(result.get("error") or "the gateway rejected the message")
+            hint = {
+                "session_disconnected": " (scan the QR code again in the WA-AKG dashboard)",
+                "invalid_number": " (the number is not registered on WhatsApp)",
+                "rate_limited": " (WhatsApp is throttling this session; slow the campaign down)",
+                "timeout": " (the WA-AKG instance did not answer)",
+            }.get(str(error_code), "")
+            raise RuntimeError(f"WhatsApp delivery failed: {detail}{hint}")
+        return str(result.get("message_id") or "")
 
     def _base_url(self) -> str:
         """Return the base URL used for tracking links."""

@@ -366,7 +366,10 @@ async def test_generate_usb_html_multiple_recipients_returns_zip(
     with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
         names = archive.namelist()
         assert len(names) == 3
-        assert all(name.endswith("/الرواتب_السرية.html") for name in names)
+        # One folder per recipient, one shared document name inside them.
+        basenames = {name.rsplit("/", 1)[-1] for name in names}
+        assert len(basenames) == 1
+        assert basenames.pop().endswith(".html")
         assert len(set(names)) == 3
         first = archive.read(names[0]).decode("utf-8")
         assert USB_HTML_WARNING in first
@@ -426,7 +429,7 @@ async def _seed_usb_tracking(
 async def test_usb_open_redirects_and_penalises_once(
     client, db: AsyncSession, organization, employee, custom_template
 ) -> None:
-    """A first open costs 30 Elo and redirects to the USB training page."""
+    """A first open applies the USB channel click penalty once."""
     employee.elo_score = 1000
     await db.commit()
     tracking = await _seed_usb_tracking(db, organization, employee, custom_template)
@@ -441,7 +444,7 @@ async def test_usb_open_redirects_and_penalises_once(
     assert "no-store" in response.headers["cache-control"]
 
     await db.refresh(employee)
-    assert employee.elo_score == 970
+    assert employee.elo_score == 966
 
     events = (
         await db.execute(
@@ -453,14 +456,14 @@ async def test_usb_open_redirects_and_penalises_once(
     ).scalars().all()
     assert len(events) == 1
     assert events[0].details["first_open"] is True
-    assert events[0].details["elo_delta"] == -30
+    assert events[0].details["elo_delta"] == -34
 
     second = await client.get(
         f"/api/v1/track/usb/{tracking.tracking_uuid}", follow_redirects=False
     )
     assert second.status_code == 302
     await db.refresh(employee)
-    assert employee.elo_score == 970
+    assert employee.elo_score == 966
     events = (
         await db.execute(
             select(TrainingInteraction).where(
@@ -512,3 +515,31 @@ async def test_usb_open_unknown_uuid_still_redirects(client) -> None:
     assert response.headers["location"].endswith(
         f"/training/{tracking_uuid}?channel=usb"
     )
+
+
+async def test_generate_usb_html_generic_drop_without_targets(
+    client, db: AsyncSession, auth_headers, organization, custom_template
+) -> None:
+    """A generic physical drop (no employee list) still yields a safe document."""
+    created = await _create_campaign(
+        client, auth_headers, organization, custom_template, []
+    )
+
+    response = await client.post(
+        f"/api/v1/campaigns/{created['id']}/generate-usb-html",
+        headers=auth_headers,
+    )
+    assert response.status_code == 200, response.text
+    assert response.headers["content-type"].startswith("text/html")
+    document = response.content.decode("utf-8")
+    assert "/api/v1/track/usb/" in document
+
+    row = await db.scalar(
+        select(EmailTracking).where(
+            EmailTracking.campaign_id == uuid.UUID(created["id"])
+        )
+    )
+    assert row is not None
+    assert row.channel == "usb"
+    assert row.provider == "simulation"
+    assert row.delivery_status == "available"

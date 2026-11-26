@@ -21,4 +21,21 @@ module.exports = {
     '@typescript-eslint/no-explicit-any': 'error',
     'react-hooks/exhaustive-deps': 'warn',
   },
+  overrides: [
+    {
+      // These modules consume provider-specific JSON envelopes whose full
+      // schema lives in the backend. Keep their existing dynamic casts scoped
+      // here rather than duplicating a large, rapidly changing schema.
+      files: [
+        'src/api/endpoints.ts',
+        'src/pages/CampaignDetailPage.tsx',
+        'src/pages/QrLureLandingPage.tsx',
+        'src/components/EnterpriseContainmentStation.tsx',
+        'src/components/UsbDeploymentStation.tsx',
+      ],
+      rules: {
+        '@typescript-eslint/no-explicit-any': 'off',
+      },
+    },
+  ],
 };

@@ -28,7 +28,7 @@ const META: Record<string, EventMeta> = {
   message_sent: {
     label: 'SMS/WhatsApp accepted by the provider',
     tone: 'default',
-    description: 'Handed to Vonage for delivery.',
+    description: 'Handed to the TextBee gateway for delivery.',
   },
   message_delivered: { label: 'SMS/WhatsApp delivered', tone: 'success' },
   message_read: { label: 'SMS/WhatsApp read', tone: 'success' },

@@ -25,6 +25,8 @@ import MenuItem from '@mui/material/MenuItem';
 import Slider from '@mui/material/Slider';
 import Stack from '@mui/material/Stack';
 import Switch from '@mui/material/Switch';
+import Tab from '@mui/material/Tab';
+import Tabs from '@mui/material/Tabs';
 import TextField from '@mui/material/TextField';
 import Typography from '@mui/material/Typography';
 import { alpha } from '@mui/material/styles';
@@ -60,6 +62,7 @@ import { PageHeader } from '@/components/PageHeader';
 import { useAuth } from '@/hooks/useAuth';
 import { errorMessage } from '@/lib/errors';
 import type {
+  AIGeneratedTemplate,
   EmailDesign,
   EmailTemplate,
   EmailTemplateCreate,
@@ -254,13 +257,23 @@ export function TemplatesPage() {
   const [pendingDelete, setPendingDelete] = useState<EmailTemplate | null>(null);
   const [search, setSearch] = useState('');
   const [difficulty, setDifficulty] = useState('all');
-  const [channelFilter, setChannelFilter] = useState<'all' | 'email' | 'sms' | 'whatsapp'>('all');
+  const [activeTab, setActiveTab] = useState<'all' | 'email' | 'sms' | 'whatsapp' | 'ai'>('all');
   const [aiDepartment, setAiDepartment] = useState('');
   const [aiScenario, setAiScenario] = useState('');
   const [aiError, setAiError] = useState<string | null>(null);
+  const [aiChannel, setAiChannel] = useState<'email' | 'sms'>('sms');
+  const [aiResult, setAiResult] = useState<AIGeneratedTemplate | null>(null);
+  const channelFilter = activeTab === 'ai' ? 'all' : activeTab;
   const bodyRef = useRef<HTMLTextAreaElement | null>(null);
   const form = useForm<TemplateFormValues>({ defaultValues: EMPTY_TEMPLATE });
   const editorChannel = form.watch('channel') ?? 'email';
+  // SMS is a single segment: 170 characters including the {{link}} placeholder.
+  const SMS_BODY_LIMIT = 170;
+  const smsBodyText = plainText(form.watch('body_html') ?? '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const smsLength = smsBodyText.length;
+  const smsOverLimit = editorChannel === 'sms' && smsLength > SMS_BODY_LIMIT;
 
   const templatesQuery = useQuery({
     queryKey: ['templates', organizationId],
@@ -370,13 +383,20 @@ export function TemplatesPage() {
         channel: form.getValues('channel'),
       }),
     onSuccess: (generated) => {
+      const targetChannel = form.getValues('channel');
+      // SMS/WhatsApp are plain segments: keep the editor in text mode instead
+      // of replacing the body with the email HTML shell.
+      const bodyValue =
+        targetChannel === 'email' ? generated.body_html : plainText(generated.body_html);
       form.setValue('subject', generated.subject, { shouldDirty: true, shouldValidate: true });
-      form.setValue('body_html', generated.body_html, { shouldDirty: true, shouldValidate: true });
+      form.setValue('body_html', bodyValue, { shouldDirty: true, shouldValidate: true });
       form.setValue('difficulty_level', generated.difficulty_level, { shouldDirty: true });
       if (!form.getValues('name').trim()) {
         form.setValue('name', generated.subject.slice(0, 120), { shouldDirty: true });
       }
-      setDesign(legacyDesign(generated.body_html, branding?.primary_color));
+      if (targetChannel === 'email') {
+        setDesign(legacyDesign(generated.body_html, branding?.primary_color));
+      }
       setAiError(null);
       toast.success(`تم توليد القالب بالذكاء الاصطناعي (${generated.provider ?? 'AI'})`);
     },
@@ -386,6 +406,67 @@ export function TemplatesPage() {
       toast.error(message);
     },
   });
+
+  // Dedicated "AI generator" tab: generate, review, then open or save.
+  const aiGenerateMutation = useMutation({
+    mutationFn: () =>
+      aiApi.generateTemplate({
+        target_department: aiDepartment.trim(),
+        scenario: aiScenario.trim(),
+        channel: aiChannel,
+      }),
+    onSuccess: (generated) => {
+      setAiResult(generated);
+      setAiError(null);
+      toast.success(
+        `تم التوليد (${generated.model || generated.provider || 'AI'}) — راجع النص قبل الحفظ`,
+      );
+    },
+    onError: (error) => {
+      const message = errorMessage(error);
+      setAiResult(null);
+      setAiError(message);
+      toast.error(message);
+    },
+  });
+
+  const aiSaveMutation = useMutation({
+    mutationFn: async () => {
+      if (!organizationId || !aiResult) throw new Error('لا يوجد قالب مولّد للحفظ');
+      return templatesApi.create(organizationId, {
+        name: aiResult.subject.slice(0, 120),
+        subject: aiResult.subject,
+        body_html: aiResult.body_html,
+        channel: aiChannel,
+        difficulty_level: aiResult.difficulty_level,
+        is_active: true,
+        design_json: aiChannel === 'email' ? legacyDesign(aiResult.body_html, branding?.primary_color) : null,
+      } as EmailTemplateCreate);
+    },
+    onSuccess: () => {
+      toast.success('تم حفظ القالب المولّد');
+      setAiResult(null);
+      void queryClient.invalidateQueries({ queryKey: ['templates'] });
+    },
+    onError: (error) => toast.error(errorMessage(error)),
+  });
+
+  function openGeneratedInEditor() {
+    if (!aiResult) return;
+    openCreate();
+    form.setValue('channel', aiChannel, { shouldDirty: true });
+    form.setValue('name', aiResult.subject.slice(0, 120), { shouldDirty: true });
+    form.setValue('subject', aiResult.subject, { shouldDirty: true });
+    form.setValue('difficulty_level', aiResult.difficulty_level, { shouldDirty: true });
+    form.setValue(
+      'body_html',
+      aiChannel === 'email' ? aiResult.body_html : plainText(aiResult.body_html),
+      { shouldDirty: true },
+    );
+    setDesign(
+      aiChannel === 'email' ? legacyDesign(aiResult.body_html, branding?.primary_color) : null,
+    );
+  }
 
   const deleteMutation = useMutation({
     mutationFn: async (template: EmailTemplate) => {
@@ -425,6 +506,16 @@ export function TemplatesPage() {
       return matchesSearch && matchesDifficulty && matchesChannel;
     });
   }, [templates, search, difficulty, channelFilter]);
+
+  const channelCounts = useMemo(
+    () => ({
+      all: templates.length,
+      email: templates.filter((template) => (template.channel ?? 'email') === 'email').length,
+      sms: templates.filter((template) => template.channel === 'sms').length,
+      whatsapp: templates.filter((template) => template.channel === 'whatsapp').length,
+    }),
+    [templates],
+  );
 
   const stats = useMemo(
     () => ({
@@ -513,6 +604,296 @@ export function TemplatesPage() {
       <Box
         sx={{
           mb: 2.5,
+          borderRadius: 3,
+          border: '1px solid rgba(255,255,255,.08)',
+          bgcolor: 'rgba(9,15,26,.6)',
+          px: 1,
+        }}
+      >
+        <Tabs
+          value={activeTab}
+          onChange={(_event, value) => setActiveTab(value)}
+          variant="scrollable"
+          scrollButtons="auto"
+          allowScrollButtonsMobile
+          sx={{
+            minHeight: 48,
+            '& .MuiTab-root': {
+              minHeight: 48,
+              fontWeight: 800,
+              fontSize: '0.82rem',
+              gap: 0.5,
+            },
+            '& .Mui-selected': { color: 'primary.main' },
+            '& .MuiTabs-indicator': {
+              height: 3,
+              borderRadius: 2,
+              background: 'linear-gradient(90deg, #00F0FF, #7C4DFF)',
+            },
+          }}
+        >
+          <Tab value="all" icon={<Layers size={15} />} iconPosition="start" label={`كل القوالب (${channelCounts.all})`} />
+          <Tab value="email" icon={<Mail size={15} />} iconPosition="start" label={`بريد إلكتروني (${channelCounts.email})`} />
+          <Tab value="sms" icon={<MessageSquare size={15} />} iconPosition="start" label={`رسائل SMS (${channelCounts.sms})`} />
+          <Tab value="whatsapp" icon={<MessageCircle size={15} />} iconPosition="start" label={`واتساب (${channelCounts.whatsapp})`} />
+          <Tab value="ai" icon={<Wand2 size={15} />} iconPosition="start" label="المولّد الذكي" />
+        </Tabs>
+      </Box>
+
+      {activeTab === 'ai' ? (
+        <Box sx={{ maxWidth: 1000, mx: 'auto' }}>
+          <Box
+            sx={{
+              p: { xs: 2, md: 2.5 },
+              borderRadius: 4,
+              border: '1px solid rgba(0,240,255,.20)',
+              background:
+                'radial-gradient(circle at 92% 0%, rgba(0,240,255,.12), transparent 44%), linear-gradient(145deg, rgba(20,35,58,.9), rgba(8,14,26,.9))',
+            }}
+          >
+            <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 0.5 }}>
+              <Wand2 size={18} color="#00F0FF" />
+              <Typography sx={{ fontWeight: 800, fontSize: '1rem' }}>المولّد الذكي للرسائل</Typography>
+              <Chip
+                size="small"
+                label="AI"
+                sx={{
+                  height: 20,
+                  fontSize: '0.58rem',
+                  fontWeight: 900,
+                  color: '#00F0FF',
+                  bgcolor: 'rgba(0,240,255,.1)',
+                  border: '1px solid rgba(0,240,255,.28)',
+                }}
+              />
+            </Stack>
+            <Typography variant="caption" sx={{ display: 'block', color: 'text.secondary', mb: 2 }}>
+              اكتب السيناريو؛ يُستخدم قطاع مؤسستك تلقائياً. لرسائل SMS يولّد النموذج مقطعاً واحداً
+              (≤170 حرفاً) يحتوي <code>{'{{link}}'}</code> فقط، بدون HTML بريدي. راجع الناتج قبل
+              الحفظ — لا يُنشأ أي قالب تلقائياً.
+            </Typography>
+
+            <Grid container spacing={1.5}>
+              <Grid item xs={12} sm={3}>
+                <TextField
+                  select
+                  size="small"
+                  fullWidth
+                  label="القناة"
+                  value={aiChannel}
+                  onChange={(event) => setAiChannel(event.target.value as 'email' | 'sms')}
+                  disabled={aiGenerateMutation.isPending}
+                >
+                  <MenuItem value="sms">SMS — مقطع واحد</MenuItem>
+                  <MenuItem value="email">بريد إلكتروني</MenuItem>
+                </TextField>
+              </Grid>
+              <Grid item xs={12} sm={4}>
+                <TextField
+                  size="small"
+                  fullWidth
+                  label="القسم المستهدف"
+                  placeholder="مثال: IT أو المالية"
+                  value={aiDepartment}
+                  onChange={(event) => setAiDepartment(event.target.value)}
+                  disabled={aiGenerateMutation.isPending}
+                />
+              </Grid>
+              <Grid item xs={12} sm={5}>
+                <TextField
+                  size="small"
+                  fullWidth
+                  multiline
+                  minRows={2}
+                  label="السيناريو المطلوب"
+                  placeholder="مثال: انتهاء جلسة VPN وتطلب إعادة التحقق"
+                  value={aiScenario}
+                  onChange={(event) => setAiScenario(event.target.value)}
+                  disabled={aiGenerateMutation.isPending}
+                />
+              </Grid>
+            </Grid>
+
+            <Stack
+              direction={{ xs: 'column', sm: 'row' }}
+              spacing={1.2}
+              alignItems={{ xs: 'stretch', sm: 'center' }}
+              sx={{ mt: 1.75 }}
+            >
+              <Button
+                variant="contained"
+                startIcon={
+                  aiGenerateMutation.isPending ? (
+                    <CircularProgress size={14} color="inherit" />
+                  ) : (
+                    <Sparkles size={16} />
+                  )
+                }
+                disabled={
+                  aiGenerateMutation.isPending || !aiDepartment.trim() || !aiScenario.trim()
+                }
+                onClick={() => {
+                  setAiError(null);
+                  aiGenerateMutation.mutate();
+                }}
+                sx={{
+                  px: 3,
+                  py: 1,
+                  fontWeight: 900,
+                  background: 'linear-gradient(135deg, #00F0FF 0%, #7C4DFF 100%)',
+                  color: '#04101C',
+                  '&:hover': { background: 'linear-gradient(135deg, #5CF6FF 0%, #9B75FF 100%)' },
+                }}
+              >
+                {aiGenerateMutation.isPending ? 'جارٍ التوليد…' : 'توليد الرسالة'}
+              </Button>
+              <Typography variant="caption" sx={{ color: 'text.secondary' }}>
+                يعبّئ الموضوع والجسم ومستوى الصعوبة تلقائياً. قد يستغرق حتى دقيقة.
+              </Typography>
+            </Stack>
+
+            {aiError ? (
+              <Alert
+                severity="error"
+                sx={{ mt: 1.75 }}
+                action={
+                  <Button
+                    color="inherit"
+                    size="small"
+                    onClick={() => aiGenerateMutation.mutate()}
+                    disabled={aiGenerateMutation.isPending}
+                  >
+                    إعادة المحاولة
+                  </Button>
+                }
+              >
+                <Typography variant="body2" sx={{ fontWeight: 700, mb: 0.4 }}>
+                  تعذّر توليد الرسالة
+                </Typography>
+                <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap' }}>
+                  {aiError}
+                </Typography>
+              </Alert>
+            ) : null}
+
+            {aiResult ? (
+              <Box
+                sx={{
+                  mt: 2,
+                  p: { xs: 1.5, md: 2 },
+                  borderRadius: 3,
+                  border: '1px solid rgba(255,255,255,.10)',
+                  bgcolor: 'rgba(255,255,255,.02)',
+                }}
+              >
+                <Stack
+                  direction={{ xs: 'column', sm: 'row' }}
+                  justifyContent="space-between"
+                  alignItems={{ xs: 'flex-start', sm: 'center' }}
+                  spacing={1}
+                  sx={{ mb: 1.25 }}
+                >
+                  <Box sx={{ minWidth: 0 }}>
+                    <Typography variant="subtitle2" sx={{ fontWeight: 800 }}>
+                      الناتج — راجعه قبل الحفظ
+                    </Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      {aiResult.subject}
+                    </Typography>
+                  </Box>
+                  <Stack direction="row" spacing={0.6} sx={{ flexWrap: 'wrap', gap: 0.6 }}>
+                    <Chip size="small" variant="outlined" label={`L${aiResult.difficulty_level}`} />
+                    <Chip
+                      size="small"
+                      variant="outlined"
+                      color={aiChannel === 'sms' && plainText(aiResult.body_html).length > 170 ? 'error' : 'success'}
+                      label={
+                        aiChannel === 'sms'
+                          ? `${plainText(aiResult.body_html).length} حرف`
+                          : 'HTML بريدي'
+                      }
+                    />
+                    <Chip
+                      size="small"
+                      variant="outlined"
+                      label={aiResult.model || aiResult.provider || 'AI'}
+                    />
+                  </Stack>
+                </Stack>
+
+                {aiChannel === 'email' ? (
+                  <Box
+                    component="iframe"
+                    title="AI generated preview"
+                    sandbox=""
+                    srcDoc={localPreview(aiResult.body_html)}
+                    sx={{
+                      width: '100%',
+                      height: 320,
+                      border: '1px solid rgba(255,255,255,.12)',
+                      borderRadius: 2,
+                      bgcolor: '#fff',
+                    }}
+                  />
+                ) : (
+                  <Box
+                    sx={{
+                      border: '1px solid rgba(255,255,255,.12)',
+                      borderRadius: 2,
+                      bgcolor: 'rgba(3,8,18,.82)',
+                      p: 2,
+                    }}
+                  >
+                    <Typography
+                      component="pre"
+                      sx={{
+                        m: 0,
+                        whiteSpace: 'pre-wrap',
+                        wordBreak: 'break-word',
+                        fontFamily: 'Tahoma, Arial, sans-serif',
+                        fontSize: '0.9rem',
+                        lineHeight: 1.9,
+                        color: '#EAF6FF',
+                        direction: 'rtl',
+                      }}
+                    >
+                      {plainText(applySampleVariables(aiResult.body_html))}
+                    </Typography>
+                  </Box>
+                )}
+
+                <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} sx={{ mt: 1.75 }}>
+                  <Button
+                    variant="contained"
+                    startIcon={<Pencil size={15} />}
+                    onClick={openGeneratedInEditor}
+                  >
+                    فتح في المحرر
+                  </Button>
+                  <Button
+                    variant="outlined"
+                    startIcon={
+                      aiSaveMutation.isPending ? (
+                        <CircularProgress size={14} color="inherit" />
+                      ) : (
+                        <Plus size={15} />
+                      )
+                    }
+                    disabled={aiSaveMutation.isPending}
+                    onClick={() => aiSaveMutation.mutate()}
+                  >
+                    حفظ كقالب جديد
+                  </Button>
+                </Stack>
+              </Box>
+            ) : null}
+          </Box>
+        </Box>
+      ) : (
+        <>
+      <Box
+        sx={{
+          mb: 2.5,
           p: { xs: 2, md: 2.5 },
           borderRadius: 4,
           border: '1px solid rgba(0,240,255,.14)',
@@ -575,21 +956,6 @@ export function TemplatesPage() {
             ),
           }}
         />
-        <TextField
-          select
-          size="small"
-          label="القناة"
-          value={channelFilter}
-          onChange={(event) =>
-            setChannelFilter(event.target.value as 'all' | 'email' | 'sms' | 'whatsapp')
-          }
-          sx={{ minWidth: 150 }}
-        >
-          <MenuItem value="all">كل القنوات</MenuItem>
-          <MenuItem value="email">بريد إلكتروني</MenuItem>
-          <MenuItem value="sms">SMS</MenuItem>
-          <MenuItem value="whatsapp">واتساب</MenuItem>
-        </TextField>
         <TextField
           select
           size="small"
@@ -739,6 +1105,9 @@ export function TemplatesPage() {
             </Grid>
           ))}
         </Grid>
+      )}
+
+        </>
       )}
 
       {/* ------------------------------ editor ------------------------------ */}
@@ -1008,6 +1377,29 @@ export function TemplatesPage() {
                         />
                       )}
                     />
+                    {editorChannel === 'sms' ? (
+                      <Stack
+                        direction="row"
+                        alignItems="center"
+                        spacing={1}
+                        sx={{ mt: 1 }}
+                      >
+                        <Chip
+                          size="small"
+                          color={smsOverLimit ? 'error' : smsLength > 140 ? 'warning' : 'success'}
+                          variant={smsOverLimit ? 'filled' : 'outlined'}
+                          label={`${smsLength} / ${SMS_BODY_LIMIT} حرف`}
+                        />
+                        <Typography
+                          variant="caption"
+                          sx={{ color: smsOverLimit ? 'error.main' : 'text.secondary' }}
+                        >
+                          {smsOverLimit
+                            ? `تجاوزت الحد بـ ${smsLength - SMS_BODY_LIMIT} حرفاً — لن يُسمح بالحفظ.`
+                            : 'رسالة واحدة (GSM) تشمل رابط التتبع المختصر {{link}}.'}
+                        </Typography>
+                      </Stack>
+                    ) : null}
                   </Grid>
                   <Grid item xs={12} md={5}>
                     <Typography variant="caption" sx={{ display: 'block', color: 'text.secondary', mb: 1 }}>
@@ -1132,6 +1524,7 @@ export function TemplatesPage() {
               variant="contained"
               disabled={
                 saveMutation.isPending ||
+                smsOverLimit ||
                 (editorChannel === 'email' && (!design || designQuery.isLoading))
               }
             >

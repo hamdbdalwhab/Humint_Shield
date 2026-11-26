@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.deps import get_current_user, rate_limit
+from app.deps import get_current_user, rate_limit, require_permissions
 from app.logging_config import get_logger
 from app.models import EmailCampaign, Organization, User
 from app.services.executive_report import ExecutiveReportService
@@ -28,7 +28,7 @@ router = APIRouter(
 )
 async def executive_pdf(
     campaign_id: uuid.UUID = Query(..., description="Campaign to report on"),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permissions("reports.view")),
     db: AsyncSession = Depends(get_db),
 ) -> Response:
     """Generate a PDF scoped to the authenticated user's organization.

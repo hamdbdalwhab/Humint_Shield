@@ -23,7 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.database import get_db
-from app.deps import rate_limit, require_roles
+from app.deps import get_current_user, rate_limit, require_roles
 from app.logging_config import get_logger
 from app.models import EmailCampaign, Organization, User
 from app.schemas import QRPosterRequest, QRScanPublic
@@ -34,27 +34,6 @@ from app.services.quishing_service import (
 )
 
 logger = get_logger(__name__)
-from fastapi.security import HTTPAuthorizationCredentials
-from app.deps import bearer_scheme
-from app.security import decode_token
-
-
-async def _optional_auth_user(
-    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
-    db: AsyncSession = Depends(get_db),
-) -> User | None:
-    if credentials is None or not credentials.credentials:
-        return None
-    try:
-        payload = decode_token(credentials.credentials)
-        subject = payload.get("sub")
-        if subject:
-            user = await db.get(User, uuid.UUID(str(subject)))
-            if user and user.is_active:
-                return user
-    except Exception:
-        return None
-    return None
 
 router = APIRouter(
     prefix="/campaigns",
@@ -114,7 +93,7 @@ async def generate_qr_posters(
     request: Request,
     payload: QRPosterRequest | None = Body(default=None),
     db: AsyncSession = Depends(get_db),
-    user: User | None = Depends(_optional_auth_user),
+    user: User = Depends(require_roles("admin", "manager")),
 ) -> Response:
     """Generate one generic campaign poster (no employee names).
 
@@ -125,12 +104,8 @@ async def generate_qr_posters(
     campaign = await db.get(EmailCampaign, campaign_id)
     if campaign is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Campaign not found")
-    if user is not None and campaign.organization_id != user.organization_id:
+    if campaign.organization_id != user.organization_id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
-    if False:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Campaign not found"
-        )
     if (campaign.channel or "").strip().lower() != "qr":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -144,9 +119,7 @@ async def generate_qr_posters(
         )
 
     settings = get_settings()
-    host = request.headers.get("x-forwarded-host") or request.headers.get("host")
-    proto = request.headers.get("x-forwarded-proto") or request.url.scheme
-    base_url = f"{proto}://{host}" if host else settings.base_url.rstrip("/")
+    base_url = settings.base_url.rstrip("/")
     recipients = [
         PosterRecipient(
             name="",
@@ -211,17 +184,15 @@ __all__ = ["router"]
 async def get_campaign_scans(
     campaign_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    user: User | None = Depends(_optional_auth_user),
+    user: User = Depends(get_current_user),
 ) -> list[QRScanPublic]:
-    """Retrieve live radar scans for a campaign directly."""
+    """Retrieve live radar scans for a campaign in the caller's organization.
+
+    The radar exposes assignee names, e-mail addresses and device fingerprints,
+    so it requires an authenticated operator and is strictly tenant-scoped.
+    """
     campaign = await db.get(EmailCampaign, campaign_id)
-    if campaign is None:
+    if campaign is None or campaign.organization_id != user.organization_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Campaign not found")
-    if user is not None and campaign.organization_id != user.organization_id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
-    if False:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Campaign not found"
-        )
     from app.api.v1.campaigns import _qr_scan_public_rows
     return await _qr_scan_public_rows(db, campaign)

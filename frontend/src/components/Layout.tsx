@@ -27,6 +27,7 @@ import { alpha, useTheme } from '@mui/material/styles';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
   Activity,
+  BarChart3,
   Bell,
   BookOpen,
   ChevronLeft,
@@ -73,6 +74,7 @@ const CAMPAIGN_NAV: NavItem[] = [
   { labelAr: 'الموظفون', labelEn: 'Human Assets', to: '/employees', icon: <Users size={19} /> },
   { labelAr: 'قوالب الرسائل', labelEn: 'Templates', to: '/templates', icon: <Mail size={19} /> },
   { labelAr: 'الحملات', labelEn: 'Campaigns', to: '/campaigns', icon: <Megaphone size={19} /> },
+  { labelAr: 'التقارير', labelEn: 'Reports', to: '/reports', icon: <BarChart3 size={19} /> },
   { labelAr: 'محاكاة SOC', labelEn: 'SOC Simulation', to: '/incident-response-simulation', icon: <Terminal size={19} /> },
 ];
 
@@ -88,6 +90,7 @@ const PAGE_TITLES: Array<{ prefix: string; ar: string; en: string }> = [
   { prefix: '/employees', ar: 'الموظفون', en: 'Human Assets' },
   { prefix: '/templates', ar: 'قوالب الرسائل', en: 'Templates' },
   { prefix: '/campaigns', ar: 'الحملات', en: 'Campaigns' },
+  { prefix: '/reports', ar: 'التقارير', en: 'Reports' },
   {
     prefix: '/incident-response-simulation',
     ar: 'محاكاة SOC',
@@ -98,6 +101,7 @@ const PAGE_TITLES: Array<{ prefix: string; ar: string; en: string }> = [
   { prefix: '/my-training', ar: 'تدريبي', en: 'My Training' },
   { prefix: '/report-inbox', ar: 'صندوق البلاغات', en: 'Report Inbox' },
   { prefix: '/settings', ar: 'الإعدادات', en: 'Settings' },
+  { prefix: '/change-password', ar: 'تغيير كلمة المرور', en: 'Change Password' },
 ];
 
 interface RecentEvent {
@@ -544,6 +548,17 @@ export function Layout({ children }: { children: ReactNode }) {
           </Stack>
         </MenuItem>
         <Divider />
+        <MenuItem
+          onClick={() => {
+            setProfileAnchor(null);
+            navigate('/change-password');
+          }}
+        >
+          <ListItemIcon>
+            <KeyRound size={16} />
+          </ListItemIcon>
+          <ListItemText primary="تغيير كلمة المرور" />
+        </MenuItem>
         <MenuItem
           onClick={() => {
             setProfileAnchor(null);

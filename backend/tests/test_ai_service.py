@@ -8,12 +8,14 @@ import pytest
 
 from app.config import Settings
 from app.services.ai_service import (
+    SHORT_MESSAGE_MAX_LENGTH,
     AIProviderError,
     AIService,
     AIServiceNotConfigured,
     _extract_json,
     sanitize_generated_html,
     sanitize_generated_text,
+    short_message_length,
 )
 
 
@@ -212,6 +214,143 @@ async def test_provider_error_is_not_swallowed() -> None:
             )
     assert "HTTP 500" in str(exc.value)
     assert "upstream exploded" in str(exc.value)
+
+
+async def test_sms_generation_returns_one_short_segment() -> None:
+    """An SMS generation is a plain segment with {{link}}, not an email shell."""
+    seen_prompt: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        seen_prompt["prompt"] = body["messages"][1]["content"]
+        content = json.dumps(
+            {
+                "subject": "VPN expiry",
+                "body_text": (
+                    "Your VPN session expires today. Re-authenticate: "
+                    "https://old.example/verify"
+                ),
+                "difficulty_level": 6,
+            }
+        )
+        return httpx.Response(
+            200,
+            json={"model": "test-model", "choices": [{"message": {"content": content}}]},
+        )
+
+    settings = Settings(
+        llm_provider="openai",
+        llm_api_key="test-key",
+        llm_model="test-model",
+        llm_fallback_models="",
+        llm_base_url="https://llm.example.test/v1",
+    )
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        generated = await AIService(settings, client=client).generate_template(
+            organization_industry="Technology",
+            target_department="IT",
+            scenario="VPN session expiry",
+            channel="sms",
+        )
+
+    body = generated.body_html
+    assert body.startswith("<p>") and body.endswith("</p>")
+    assert "<table" not in body and "dir=\"rtl\"" not in body
+    assert "{{link}}" in body
+    # The invented URL is replaced by the tracked placeholder.
+    assert "old.example" not in body
+    assert short_message_length(body) <= SHORT_MESSAGE_MAX_LENGTH
+    assert "130 characters" in str(seen_prompt["prompt"])
+
+
+async def test_overlong_sms_generation_is_rejected_with_the_length() -> None:
+    """A too-long SMS is an explicit error, never silently truncated."""
+    long_text = "A" * 200
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        content = json.dumps({"subject": "Too long", "body_text": long_text})
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": content}}]},
+        )
+
+    settings = Settings(
+        llm_provider="openai",
+        llm_api_key="test-key",
+        llm_model="test-model",
+        llm_fallback_models="",
+        llm_base_url="https://llm.example.test/v1",
+    )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(AIProviderError) as exc:
+            await AIService(settings, client=client).generate_template(
+                organization_industry="Technology",
+                target_department="IT",
+                scenario="VPN",
+                channel="sms",
+            )
+    assert "limit is 170" in str(exc.value)
+
+
+async def test_exhausted_quota_is_actionable() -> None:
+    """A 402 from the provider explains exactly what to fix."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            402,
+            json={
+                "error": {
+                    "code": "insufficient_quota",
+                    "message": "available tokens exhausted",
+                }
+            },
+        )
+
+    settings = Settings(
+        llm_provider="openai",
+        llm_api_key="test-key",
+        llm_model="test-model",
+        llm_fallback_models="",
+        llm_base_url="https://llm.example.test/v1",
+    )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(AIProviderError) as exc:
+            await AIService(settings, client=client).generate_template(
+                organization_industry="Technology",
+                target_department="Finance",
+                scenario="Invoice",
+            )
+    message = str(exc.value)
+    assert "quota is exhausted" in message
+    assert "LLM_BASE_URL/LLM_API_KEY" in message
+
+
+async def test_unresolvable_endpoint_is_explained() -> None:
+    """A dead tunnel host becomes a clear DNS error, not a generic failure."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError(
+            "[Errno 11001] getaddrinfo failed", request=request
+        )
+
+    settings = Settings(
+        llm_provider="openai",
+        llm_api_key="test-key",
+        llm_model="test-model",
+        llm_fallback_models="",
+        llm_base_url="https://dead-tunnel.example.test/v1",
+    )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(AIProviderError) as exc:
+            await AIService(settings, client=client).generate_template(
+                organization_industry="Technology",
+                target_department="Finance",
+                scenario="Invoice",
+            )
+    message = str(exc.value)
+    assert "does not resolve" in message
+    assert "LLM_BASE_URL" in message
 
 
 async def test_invalid_json_is_rejected() -> None:

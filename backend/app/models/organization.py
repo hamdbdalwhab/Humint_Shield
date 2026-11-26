@@ -28,6 +28,11 @@ class Organization(Base):
     adaptive_mode: Mapped[bool] = mapped_column(Boolean, default=True)
     max_tests_per_day: Mapped[int] = mapped_column(Integer, default=10)
     data_retention_days: Mapped[int] = mapped_column(Integer, default=365)
+    #: Minimum days between two simulations for the same employee (module 3).
+    #: ``0`` disables the cooldown guardrail.
+    campaign_cooldown_days: Mapped[int] = mapped_column(
+        Integer, default=14, server_default="14", nullable=False
+    )
     # --- Branding (Pillar 2) ------------------------------------------------
     brand_primary_color: Mapped[str] = mapped_column(
         String(7), default="#0F6CBD", server_default="#0F6CBD", nullable=False

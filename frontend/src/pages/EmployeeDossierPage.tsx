@@ -210,6 +210,13 @@ export function EmployeeDossierPage() {
               sx={{ fontWeight: 800 }}
             />
             <ThreatBadge level={employee.threat_level} />
+            {employee.is_blacklisted ? (
+              <Chip
+                color="error"
+                label="BLACKLISTED: Repeated Failure"
+                sx={{ fontWeight: 800 }}
+              />
+            ) : null}
             <Chip
               variant="outlined"
               label={

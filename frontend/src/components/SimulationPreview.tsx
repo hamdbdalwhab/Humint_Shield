@@ -30,6 +30,7 @@ import {
   X,
 } from 'lucide-react';
 
+import { usbDocumentNames } from '@/lib/usbDocuments';
 import type { RedFlag } from '@/lib/simulationContent';
 import type { TrackingContext } from '@/types';
 
@@ -460,8 +461,11 @@ function PretextChat({ context }: { context: TrackingContext }) {
 
 function UsbDrop({ context }: { context: TrackingContext }) {
   const primary = brand(context);
+  // Same rule as the backend: an explicit operator name wins, otherwise the
+  // document follows the selected template.
   const documentName =
-    context.channel_config?.usb?.document_name?.trim() || 'راتب_الشهر_القادم.pdf';
+    context.channel_config?.usb?.document_name?.trim() ||
+    usbDocumentNames(context.template_name, context.subject).pdf;
   return (
     <Box
       dir="rtl"

@@ -41,20 +41,17 @@ from app.security import EncryptionError, decrypt_value, encrypt_value
 from app.services.classification_engine import ClassificationEngine
 from app.services.enterprise_identity_service import enterprise_identity_service
 from app.services.elo_engine import (
-    CLICK_ELO_DELTA,
-    OTP_SUBMISSION_ELO_DELTA,
-    PRETEXTING_FRAUD_ELO_DELTA,
-    PRETEXTING_REPORT_ELO_DELTA,
-    QR_CREDENTIAL_ELO_DELTA,
     QR_REPEAT_EVASION_ELO_DELTA,
     QR_SCAN_ELO_DELTA,
-    USB_OPEN_ELO_DELTA,
-    VISHING_CREDENTIAL_ELO_DELTA,
-    VISHING_REPORT_ELO_DELTA,
-    apply_click,
+    SMS_CREDENTIAL_ELO_DELTA,
     apply_elo_delta,
-    apply_report,
     clamp_elo,
+    smart_elo_delta,
+)
+from app.services.employee_service import (
+    apply_elo_action,
+    campaign_difficulty,
+    tracking_difficulty,
 )
 
 logger = get_logger(__name__)
@@ -107,10 +104,91 @@ EVENT_COMPLETED = "training_completed"
 EVENT_QR_SCANNED = "qr_scanned"
 EVENT_CREDENTIAL_SUBMITTED = "credential_submitted"
 EVENT_USB_OPENED = "usb_opened"
+EVENT_USB_DEVICE_PROBE = "usb_device_probe"
 EVENT_CREDENTIAL_DISCLOSED = "credential_disclosed"
 EVENT_FINANCIAL_FRAUD = "financial_fraud"
 EVENT_REPORTED_PHISH = "reported_phish"
 EVENT_QR_IDENTITY_ASSIGNED = "qr_identity_assigned"
+EVENT_SMS_SENT = "sms_sent"
+EVENT_SMS_CLICKED = "sms_clicked"
+EVENT_SMS_SUBMITTED = "sms_credential_submitted"
+EVENT_WHATSAPP_SENT = "whatsapp_sent"
+EVENT_WHATSAPP_READ = "whatsapp_read"
+EVENT_WHATSAPP_REPLIED = "whatsapp_replied"
+EVENT_WHATSAPP_CLICKED = "whatsapp_clicked"
+EVENT_WHATSAPP_SESSION_STATUS = "whatsapp_session_status"
+
+#: WhatsApp reply classification.  Disclosing information to an unknown sender
+#: costs Elo; pushing back / reporting it earns Elo.
+WHATSAPP_REPLY_PENALTY = 15
+WHATSAPP_REPLY_REWARD = 10
+
+#: Vocabulary of a reply that hands information to the attacker.
+WHATSAPP_DISCLOSURE_KEYWORDS: tuple[str, ...] = (
+    "password",
+    "passcode",
+    "otp",
+    "verification code",
+    "code is",
+    "pin",
+    "cvv",
+    "card number",
+    "iban",
+    "account number",
+    "transfer",
+    "wire",
+    "here it is",
+    "i will send",
+    "yes i did",
+)
+
+#: Vocabulary of a reply that challenges or reports the lure.
+WHATSAPP_SUSPICION_KEYWORDS: tuple[str, ...] = (
+    "phishing",
+    "scam",
+    "fraud",
+    "suspicious",
+    "spam",
+    "report",
+    "who are you",
+    "not me",
+    "did not request",
+    "didn't request",
+    "verify with it",
+    "call the helpdesk",
+    "blocked",
+    "not clicking",
+    "security team",
+)
+
+
+def classify_whatsapp_reply(text: str | None) -> tuple[str, int]:
+    """Classify a recipient's WhatsApp reply and return ``(category, delta)``.
+
+    Categories:
+        ``disclosed``  – the reply shares a secret or agrees to transfer money
+            (``-15`` Elo);
+        ``suspicious`` – the reply challenges or reports the message
+            (``+10`` Elo);
+        ``neutral``    – anything else (``0``).
+    """
+    lowered = (text or "").strip().lower()
+    if not lowered:
+        return "neutral", 0
+    if any(keyword in lowered for keyword in WHATSAPP_DISCLOSURE_KEYWORDS):
+        return "disclosed", -WHATSAPP_REPLY_PENALTY
+    if any(keyword in lowered for keyword in WHATSAPP_SUSPICION_KEYWORDS):
+        return "suspicious", WHATSAPP_REPLY_REWARD
+    return "neutral", 0
+EVENT_VISHING_CALL_PLACED = "vishing_call_placed"
+EVENT_VISHING_CALL_ANSWERED = "vishing_call_answered"
+EVENT_VISHING_CALL_COMPLETED = "vishing_call_completed"
+EVENT_VISHING_CALL_FAILED = "vishing_call_failed"
+#: The phone rang but nobody picked up before the carrier ended the call.  This
+#: is a recipient-side outcome, not a system error, so it is tracked apart from
+#: :data:`EVENT_VISHING_CALL_FAILED`.
+EVENT_VISHING_CALL_NOT_ANSWERED = "vishing_call_not_answered"
+EVENT_VISHING_TTS_PLAYED = "vishing_tts_played"
 
 #: Identity resolution outcomes stored on tracking rows and QR scans.
 IDENTITY_MATCHED_EMAIL = "matched_email"
@@ -271,6 +349,217 @@ def latest_submitted_values(tracking: EmailTracking) -> dict[str, str] | None:
         legacy["identifier"] = tracking.submitted_identifier
     legacy.update(tracking.submitted_fields or {})
     return legacy or None
+#: Hard limits for the endpoint telemetry a browser can send with a USB open.
+MAX_TELEMETRY_DEPTH = 4
+MAX_TELEMETRY_ITEMS = 120
+MAX_TELEMETRY_KEY_LENGTH = 64
+MAX_TELEMETRY_STRING = 400
+MAX_TELEMETRY_LIST = 24
+
+
+def sanitize_telemetry(raw: object, _depth: int = 0, _budget: list[int] | None = None) -> dict[str, Any]:
+    """Return a bounded, JSON-safe copy of browser telemetry.
+
+    The payload comes from an untrusted document, so nothing is stored verbatim:
+    nesting depth, entry count, key length, string length and list length are all
+    capped.  Scalars are kept as they are so the dashboard can render them
+    without a second parse.
+
+    Args:
+        raw: Whatever the client sent (usually a decoded JSON object).
+        _depth: Current recursion depth (internal).
+        _budget: Remaining entry budget (internal).
+
+    Returns:
+        A sanitised mapping; ``{}`` when the input is not a mapping.
+    """
+    if not isinstance(raw, dict) or _depth > MAX_TELEMETRY_DEPTH:
+        return {}
+    budget = _budget if _budget is not None else [MAX_TELEMETRY_ITEMS]
+    clean: dict[str, Any] = {}
+    for key, value in raw.items():
+        if budget[0] <= 0:
+            break
+        name = str(key)[:MAX_TELEMETRY_KEY_LENGTH]
+        if value is None:
+            continue
+        budget[0] -= 1
+        if isinstance(value, bool | int | float):
+            clean[name] = value
+        elif isinstance(value, str):
+            clean[name] = value[:MAX_TELEMETRY_STRING]
+        elif isinstance(value, dict):
+            nested = sanitize_telemetry(value, _depth + 1, budget)
+            if nested:
+                clean[name] = nested
+        elif isinstance(value, list | tuple):
+            items: list[Any] = []
+            for item in list(value)[:MAX_TELEMETRY_LIST]:
+                if isinstance(item, str):
+                    items.append(item[:MAX_TELEMETRY_STRING])
+                elif isinstance(item, bool | int | float):
+                    items.append(item)
+                elif isinstance(item, dict) and _depth < MAX_TELEMETRY_DEPTH:
+                    nested = sanitize_telemetry(item, _depth + 1, budget)
+                    if nested:
+                        items.append(nested)
+            if items:
+                clean[name] = items
+    return clean
+
+
+#: Fields the optional local identity tool may report.  The probe endpoint is
+#: public (the tracking UUID is the only secret), so the stored shape is a fixed
+#: whitelist instead of whatever JSON arrives.
+IDENTITY_PROBE_TEXT_FIELDS: tuple[str, ...] = (
+    "username",
+    "user_domain",
+    "logged_on_user",
+    "hostname",
+    "domain",
+    "workgroup",
+    "os_caption",
+    "os_version",
+    "os_build",
+    "os_arch",
+    "manufacturer",
+    "model",
+    "serial",
+    "cpu",
+    "local_ip",
+    "mac",
+    "gateway",
+    "dns_servers",
+    "session_name",
+    "powershell",
+    "timezone",
+)
+IDENTITY_PROBE_NUMBER_FIELDS: tuple[str, ...] = (
+    "cpu_cores",
+    "cpu_logical",
+    "ram_gb",
+    "uptime_minutes",
+)
+IDENTITY_PROBE_BOOL_FIELDS: tuple[str, ...] = ("is_admin",)
+IDENTITY_PROBE_MAX_TEXT = 200
+
+
+def sanitize_identity_probe(raw: object) -> dict[str, Any]:
+    """Return a bounded, whitelisted copy of the local tool's report.
+
+    Args:
+        raw: The decoded request body.
+
+    Returns:
+        Only known identity fields, truncated to a display-safe length; ``{}``
+        when nothing usable was sent.
+    """
+    if not isinstance(raw, dict):
+        return {}
+    clean: dict[str, Any] = {}
+    for key in IDENTITY_PROBE_TEXT_FIELDS:
+        value = raw.get(key)
+        if isinstance(value, str):
+            text = value.replace("\x00", "").strip()[:IDENTITY_PROBE_MAX_TEXT]
+            if text:
+                clean[key] = text
+        elif isinstance(value, bool | int | float):
+            clean[key] = str(value)[:IDENTITY_PROBE_MAX_TEXT]
+    for key in IDENTITY_PROBE_NUMBER_FIELDS:
+        value = raw.get(key)
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, int | float):
+            clean[key] = value
+        elif isinstance(value, str):
+            try:
+                clean[key] = float(value)
+            except ValueError:
+                continue
+    for key in IDENTITY_PROBE_BOOL_FIELDS:
+        value = raw.get(key)
+        if isinstance(value, bool):
+            clean[key] = value
+    event_id = raw.get("client_event_id")
+    if isinstance(event_id, str) and event_id.strip():
+        clean["client_event_id"] = event_id.strip()[:64]
+    collected_at = raw.get("collected_at")
+    if isinstance(collected_at, str) and collected_at.strip():
+        clean["collected_at"] = collected_at.strip()[:40]
+    return clean
+
+
+def merge_telemetry(
+    existing: dict[str, Any] | None,
+    incoming: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Merge new telemetry over the stored packet without losing known facts.
+
+    Each open replaces the values it can observe, but a later, smaller packet
+    (a retry, an older copy of the document, a link-preview fetch) must never
+    erase a richer profile captured minutes earlier.  Incoming values win where
+    present; everything else is kept.
+    """
+    merged: dict[str, Any] = dict(existing or {})
+    for key, value in (incoming or {}).items():
+        current = merged.get(key)
+        if isinstance(value, dict) and isinstance(current, dict):
+            merged[key] = merge_telemetry(current, value)
+        elif value in (None, "", {}, []):
+            merged.setdefault(key, value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def telemetry_summary(telemetry: dict[str, Any] | None) -> dict[str, Any]:
+    """Return the display-sized subset of a telemetry payload.
+
+    The ledger ``details`` column and the live board only need the forensic
+    headline (which machine, which network, where from), not the whole packet.
+    """
+    data = telemetry or {}
+    device = data.get("device") if isinstance(data.get("device"), dict) else {}
+    screen = data.get("screen") if isinstance(data.get("screen"), dict) else {}
+    network = data.get("network") if isinstance(data.get("network"), dict) else {}
+    gpu = data.get("gpu") if isinstance(data.get("gpu"), dict) else {}
+    source = data.get("source") if isinstance(data.get("source"), dict) else {}
+    server = data.get("server") if isinstance(data.get("server"), dict) else {}
+    summary = {
+        "fingerprint": data.get("fingerprint"),
+        "client_event_id": data.get("client_event_id"),
+        "platform": device.get("ua_platform") or device.get("platform"),
+        "platform_version": device.get("ua_platform_version"),
+        "architecture": device.get("ua_architecture"),
+        "model": device.get("ua_model"),
+        "user_agent": device.get("user_agent"),
+        "language": device.get("language"),
+        "timezone": device.get("timezone"),
+        "cpu_cores": device.get("hardware_concurrency"),
+        "memory_gb": device.get("device_memory_gb"),
+        "screen": (
+            f"{screen.get('width')}x{screen.get('height')}"
+            if screen.get("width") and screen.get("height")
+            else None
+        ),
+        "pixel_ratio": screen.get("pixel_ratio"),
+        "gpu": gpu.get("renderer"),
+        "online": network.get("online"),
+        "effective_type": network.get("effective_type"),
+        "downlink_mbps": network.get("downlink_mbps"),
+        "rtt_ms": network.get("rtt_ms"),
+        "source_path": source.get("path") or source.get("href"),
+        "opened_at": source.get("opened_at"),
+        "ip": server.get("ip"),
+        "country": server.get("country"),
+        "city": server.get("city"),
+        "isp": server.get("isp"),
+        "latitude": server.get("latitude"),
+        "longitude": server.get("longitude"),
+    }
+    return {key: value for key, value in summary.items() if value not in (None, "")}
+
+
 def _now() -> datetime:
     """Return the current timezone-aware UTC time."""
     return datetime.now(timezone.utc)
@@ -364,6 +653,85 @@ class TrackingService:
     # ------------------------------------------------------------------ #
     # Events
     # ------------------------------------------------------------------ #
+    async def log_vishing_event(
+        self,
+        tracking_uuid: uuid.UUID | str,
+        event_type: str,
+        db: AsyncSession,
+        *,
+        details: dict[str, Any] | None = None,
+        provider_message_id: str | None = None,
+        delivery_status: str | None = None,
+        delivery_error: str | None = None,
+    ) -> EmailTracking | None:
+        """Record one real vishing call lifecycle event.
+
+        The call-control provider is IllyVoIP.  ``provider_message_id`` is the
+        provider's ``call_control_id`` and is indexed on the tracking row so a
+        later status/hangup request can be correlated back to the campaign.
+
+        Args:
+            tracking_uuid: Per-recipient tracking UUID.
+            event_type: One of the ``EVENT_VISHING_*`` constants.
+            db: Active session.
+            details: Non-secret call context (state, status, duration).
+            provider_message_id: IllyVoIP ``call_control_id``.
+            delivery_status: Provider-neutral status (``calling``,
+                ``answered``, ``completed`` or ``failed``).
+            delivery_error: Last provider error, when the call failed.
+
+        Returns:
+            The updated row, or ``None`` when the UUID is unknown.
+        """
+        uid = self._coerce_uuid(tracking_uuid)
+        if uid is None:
+            return None
+        row = await self._locked_tracking(db, EmailTracking.tracking_uuid, uid)
+        if row is None:
+            logger.warning(
+                "vishing_track_unknown", tracking_uuid=str(tracking_uuid)
+            )
+            return None
+
+        now = _now()
+        row.provider = "illyvoip"
+        row.event_type = event_type
+        if provider_message_id:
+            row.provider_message_id = provider_message_id[:255]
+        if delivery_status:
+            row.delivery_status = delivery_status[:20]
+        if delivery_error is not None:
+            row.delivery_error = delivery_error[:500]
+        if event_type in {
+            EVENT_VISHING_CALL_PLACED,
+            EVENT_VISHING_CALL_ANSWERED,
+        }:
+            row.sent_at = row.sent_at or now
+        if event_type == EVENT_VISHING_CALL_ANSWERED:
+            row.delivered_at = row.delivered_at or now
+        if event_type == EVENT_VISHING_CALL_COMPLETED:
+            row.completed_at = row.completed_at or now
+        if event_type in {
+            EVENT_VISHING_CALL_FAILED,
+            EVENT_VISHING_CALL_NOT_ANSWERED,
+        }:
+            row.failed_at = row.failed_at or now
+
+        # TrainingInteraction.employee_id is non-null; campaign tracking rows
+        # always have an employee, but a malformed legacy row must not break
+        # the provider call after it has already been placed.
+        if row.employee_id is not None:
+            self._record_interaction(
+                db,
+                row,
+                event_type,
+                now,
+                ip_address=None,
+                user_agent=None,
+                details=details or {},
+            )
+        return row
+
     async def log_open(
         self,
         tracking_uuid: uuid.UUID | str,
@@ -403,12 +771,20 @@ class TrackingService:
         if row.delivered_at is None:
             row.delivered_at = now
 
+        elo_delta = 0
         if first_open:
             await db.execute(
                 update(EmailCampaign)
                 .where(EmailCampaign.id == row.campaign_id)
                 .values(opened_count=EmailCampaign.opened_count + 1)
             )
+            employee = (
+                await db.get(HumanAsset, row.employee_id)
+                if row.employee_id is not None
+                else None
+            )
+            if employee is not None:
+                elo_delta = await apply_elo_action(db, employee, row, "opened")
         self._record_interaction(
             db,
             row,
@@ -416,7 +792,11 @@ class TrackingService:
             now,
             ip_address,
             user_agent,
-            {"open_count": row.open_count, "first_open": first_open},
+            {
+                "open_count": row.open_count,
+                "first_open": first_open,
+                "elo_delta": elo_delta,
+            },
         )
         await db.flush()
         logger.info(
@@ -469,18 +849,21 @@ class TrackingService:
         row.last_ip_address = ip_address or row.last_ip_address
         row.last_user_agent = (user_agent or row.last_user_agent or "")[:2000] or None
 
+        elo_delta = 0
         if first_click:
             await db.execute(
                 update(EmailCampaign)
                 .where(EmailCampaign.id == row.campaign_id)
                 .values(clicked_count=EmailCampaign.clicked_count + 1)
             )
+            difficulty = await tracking_difficulty(db, row)
+            elo_delta = smart_elo_delta(row.channel, "clicked", difficulty)
             await self._adjust_employee(
                 db,
                 row.employee_id,
                 delta=-CLICK_PENALTY,
                 increment_clicks=first_click,
-                elo_delta=CLICK_ELO_DELTA,
+                elo_delta=elo_delta,
             )
         self._record_interaction(
             db,
@@ -489,7 +872,11 @@ class TrackingService:
             now,
             ip_address,
             user_agent,
-            {"click_count": row.click_count, "first_click": first_click},
+            {
+                "click_count": row.click_count,
+                "first_click": first_click,
+                "elo_delta": elo_delta,
+            },
         )
         await db.flush()
         logger.info(
@@ -766,11 +1153,7 @@ class TrackingService:
                     employee.total_credential_submissions or 0
                 ) + 1
                 employee.last_test_date = now
-                if is_qr:
-                    employee.elo_score = apply_elo_delta(
-                        employee.elo_score, QR_CREDENTIAL_ELO_DELTA
-                    )
-                    elo_delta = QR_CREDENTIAL_ELO_DELTA
+                elo_delta = await apply_elo_action(db, employee, row, "submitted")
             await db.flush()
             target_id = (
                 (employee.email if employee else None)
@@ -868,10 +1251,7 @@ class TrackingService:
         if first_otp:
             employee = await db.get(HumanAsset, row.employee_id)
             if employee is not None:
-                employee.elo_score = apply_elo_delta(
-                    employee.elo_score, OTP_SUBMISSION_ELO_DELTA
-                )
-                elo_delta = OTP_SUBMISSION_ELO_DELTA
+                elo_delta = await apply_elo_action(db, employee, row, "submitted")
             await db.flush()
 
         self._record_interaction(
@@ -1437,7 +1817,8 @@ class TrackingService:
                 employee = entered_employee
                 resolution = raw_resolution
                 status_flag = "first_scan"
-                elo_delta = QR_CREDENTIAL_ELO_DELTA  # -25
+                qr_difficulty = await campaign_difficulty(db, campaign)
+                elo_delta = smart_elo_delta("qr", "submitted", qr_difficulty)
                 employee.elo_score = apply_elo_delta(employee.elo_score, elo_delta)
                 employee.total_credential_submissions = (employee.total_credential_submissions or 0) + 1
                 employee.last_test_date = now
@@ -1724,11 +2105,10 @@ class TrackingService:
                     employee.total_credential_submissions or 0
                 ) + 1
                 employee.last_test_date = scan.occurred_at or _now()
-                employee.elo_score = apply_elo_delta(
-                    employee.elo_score, QR_CREDENTIAL_ELO_DELTA
-                )
+                qr_difficulty = await campaign_difficulty(db, campaign)
+                elo_delta = smart_elo_delta("qr", "submitted", qr_difficulty)
+                employee.elo_score = apply_elo_delta(employee.elo_score, elo_delta)
                 penalty_applied = True
-                elo_delta = QR_CREDENTIAL_ELO_DELTA
                 await db.flush()
                 await self._classify(employee.id, db)
 
@@ -1833,6 +2213,7 @@ class TrackingService:
         row.reported_at = now
         row.last_ip_address = ip_address or row.last_ip_address
         row.last_user_agent = (user_agent or row.last_user_agent or "")[:2000] or None
+        elo_delta = await apply_elo_action(db, employee, row, "reported")
         self._record_interaction(
             db,
             row,
@@ -1840,7 +2221,7 @@ class TrackingService:
             now,
             ip_address,
             user_agent,
-            {"source": "training_page"},
+            {"source": "training_page", "elo_delta": elo_delta},
         )
 
         report = PhishingReport(
@@ -1859,10 +2240,9 @@ class TrackingService:
         )
         db.add(report)
         employee.total_reports = (employee.total_reports or 0) + 1
-        # A report is a positive security behaviour.  Apply the Elo reward only
-        # on the first report; the ``reported_at`` guard above already makes the
-        # whole operation idempotent.
-        employee.elo_score = apply_report(employee.elo_score)
+        # A report is a positive security behaviour.  The reward was applied
+        # above via the smart channel/difficulty engine; the ``reported_at``
+        # guard makes the whole operation idempotent.
         await db.flush()
         await self._classify(employee.id, db)
         logger.info(
@@ -1928,8 +2308,10 @@ class TrackingService:
         row.last_ip_address = ip_address or row.last_ip_address
         row.last_user_agent = (user_agent or row.last_user_agent or "")[:2000] or None
 
+        elo_delta = 0
         if not was_reported:
             employee.total_reports = (employee.total_reports or 0) + 1
+            elo_delta = await apply_elo_action(db, employee, row, "reported")
             report = PhishingReport(
                 organization_id=employee.organization_id,
                 employee_id=employee.id,
@@ -1954,11 +2336,9 @@ class TrackingService:
         employee.behavioral_category = "competent"
         employee.requires_mandatory_training = False
         employee.under_enhanced_monitoring = False
-        if not was_reported:
-            # The report reward is applied once.  A row already reported through
-            # the public training page has had its +32; an administrator marking
-            # that same report safe must not grant it a second time.
-            employee.elo_score = apply_report(employee.elo_score)
+        # The report reward is applied once.  A row already reported through the
+        # public training page has already earned it; an administrator marking
+        # that same report safe must not grant it a second time.
         self._record_interaction(
             db,
             row,
@@ -1972,6 +2352,7 @@ class TrackingService:
                 "quiz_score": 5,
                 "quiz_total": 5,
                 "actor": actor,
+                "elo_delta": elo_delta,
             },
         )
         await db.flush()
@@ -2021,11 +2402,200 @@ class TrackingService:
             employee = await db.get(HumanAsset, row.employee_id)
             if employee is not None:
                 employee.total_clicks = (employee.total_clicks or 0) + 1
-                # A direct form submission (without the click endpoint) still
-                # proves the recipient followed the simulated link.  Apply the
-                # Elo click penalty exactly once, when the click marker is
-                # backfilled here.
-                employee.elo_score = apply_click(employee.elo_score)
+                # The submission itself is scored with the smart "submitted"
+                # impact in ``log_submission``.  Do not also apply a click
+                # penalty here: a direct form submission is one outcome.
+
+    # ------------------------------------------------------------------ #
+    # WhatsApp events
+    # ------------------------------------------------------------------ #
+    async def log_whatsapp_sent(
+        self,
+        tracking_uuid: uuid.UUID | str,
+        db: AsyncSession,
+        *,
+        provider: str = "wa-akg",
+        message_id: str | None = None,
+        characters: int = 0,
+    ) -> EmailTracking | None:
+        """Append ``whatsapp_sent`` evidence for an accepted message.
+
+        Acceptance is not delivery: ``delivered_at``/``read_at`` are only set by
+        the WA-AKG webhook, never here.
+        """
+        uid = self._coerce_uuid(tracking_uuid)
+        if uid is None:
+            return None
+        row = await self._locked_tracking(db, EmailTracking.tracking_uuid, uid)
+        if row is None:
+            logger.warning("whatsapp_sent_unknown", tracking_uuid=str(tracking_uuid))
+            return None
+        now = _now()
+        row.provider = provider
+        if message_id and not row.provider_message_id:
+            row.provider_message_id = str(message_id)[:255]
+        self._record_interaction(
+            db,
+            row,
+            EVENT_WHATSAPP_SENT,
+            now,
+            row.last_ip_address,
+            row.last_user_agent,
+            {
+                "channel": "whatsapp",
+                "provider": provider,
+                "message_id": message_id,
+                "characters": characters,
+                "elo_delta": 0,
+            },
+        )
+        await db.flush()
+        logger.info(
+            "whatsapp_sent_logged",
+            tracking_uuid=str(uid),
+            provider=provider,
+            message_id=message_id,
+        )
+        return row
+
+    async def log_whatsapp_click(
+        self,
+        tracking_uuid: uuid.UUID | str,
+        ip_address: str | None,
+        user_agent: str | None,
+        db: AsyncSession,
+    ) -> EmailTracking | None:
+        """Record that a recipient followed the WhatsApp tracking link.
+
+        Following the link is score-neutral; the failure outcome is the lure
+        form, exactly like SMS.
+        """
+        uid = self._coerce_uuid(tracking_uuid)
+        if uid is None:
+            return None
+        row = await self._locked_tracking(db, EmailTracking.tracking_uuid, uid)
+        if row is None:
+            logger.warning("track_whatsapp_unknown", tracking_uuid=str(tracking_uuid))
+            return None
+        now = _now()
+        first_click = await self._ensure_visit(db, row, now)
+        row.last_ip_address = ip_address or row.last_ip_address
+        row.last_user_agent = (user_agent or row.last_user_agent or "")[:2000] or None
+        self._record_interaction(
+            db,
+            row,
+            EVENT_WHATSAPP_CLICKED,
+            now,
+            ip_address,
+            user_agent,
+            {
+                "channel": "whatsapp",
+                "first_click": first_click,
+                "elo_delta": 0,
+            },
+        )
+        await db.flush()
+        logger.info("whatsapp_clicked", tracking_uuid=str(uid), first_click=first_click)
+        return row
+
+    async def log_whatsapp_read(
+        self,
+        tracking_uuid: uuid.UUID | str,
+        db: AsyncSession,
+        *,
+        message_id: str | None = None,
+    ) -> EmailTracking | None:
+        """Record a WhatsApp read receipt (``message.read`` webhook).
+
+        Reading is score-neutral; the ledger keeps the exact timestamp so the
+        operator can tell "sent" from "read".
+        """
+        uid = self._coerce_uuid(tracking_uuid)
+        if uid is None:
+            return None
+        row = await self._locked_tracking(db, EmailTracking.tracking_uuid, uid)
+        if row is None:
+            return None
+        now = _now()
+        if row.read_at is None:
+            row.read_at = now
+            row.delivery_status = "read"
+        if message_id and not row.provider_message_id:
+            row.provider_message_id = str(message_id)[:255]
+        self._record_interaction(
+            db,
+            row,
+            EVENT_WHATSAPP_READ,
+            now,
+            row.last_ip_address,
+            row.last_user_agent,
+            {"channel": "whatsapp", "message_id": message_id, "elo_delta": 0},
+        )
+        await db.flush()
+        logger.info("whatsapp_read", tracking_uuid=str(uid), message_id=message_id)
+        return row
+
+    async def log_whatsapp_reply(
+        self,
+        tracking_uuid: uuid.UUID | str,
+        db: AsyncSession,
+        *,
+        text: str | None,
+        phone: str | None = None,
+        message_id: str | None = None,
+    ) -> tuple[EmailTracking, str, int] | None:
+        """Record a WhatsApp reply and score the recipient's response.
+
+        The reply body itself is **not** persisted (it may contain real secrets);
+        only its length, the classification and the Elo delta are stored.
+
+        Returns:
+            ``(row, category, elo_delta)`` or ``None`` for an unknown link.
+        """
+        uid = self._coerce_uuid(tracking_uuid)
+        if uid is None:
+            return None
+        row = await self._locked_tracking(db, EmailTracking.tracking_uuid, uid)
+        if row is None:
+            logger.warning("whatsapp_reply_unknown", tracking_uuid=str(tracking_uuid))
+            return None
+        category, delta = classify_whatsapp_reply(text)
+        now = _now()
+        if row.read_at is None:
+            row.read_at = now
+        row.delivery_status = "replied" if delta >= 0 else "replied_disclosed"
+        if message_id and not row.provider_message_id:
+            row.provider_message_id = str(message_id)[:255]
+        if delta:
+            employee = (
+                await db.get(HumanAsset, row.employee_id) if row.employee_id else None
+            )
+            if employee is not None:
+                employee.elo_score = apply_elo_delta(employee.elo_score, delta)
+        self._record_interaction(
+            db,
+            row,
+            EVENT_WHATSAPP_REPLIED,
+            now,
+            row.last_ip_address,
+            row.last_user_agent,
+            {
+                "channel": "whatsapp",
+                "phone": phone,
+                "message_id": message_id,
+                "reply_length": len((text or "").strip()),
+                "reply_category": category,
+                "elo_delta": delta,
+            },
+        )
+        await db.flush()
+        logger.info(
+            "whatsapp_replied",
+            tracking_uuid=str(uid),
+            category=category,
+            elo_delta=delta,
+        )
+        return row, category, delta
 
     async def _ensure_visit(
         self, db: AsyncSession, row: EmailTracking, now: datetime
@@ -2110,6 +2680,180 @@ class TrackingService:
         await db.flush()
         return row
 
+    async def log_sms_sent(
+        self,
+        tracking_uuid: uuid.UUID | str,
+        db: AsyncSession,
+        *,
+        provider: str,
+        batch_id: str | None,
+        characters: int,
+    ) -> EmailTracking | None:
+        """Append ``sms_sent`` evidence for an accepted SMS.
+
+        ``provider`` acceptance is not delivery: the delivery timestamp is only
+        set by the gateway callback/poll, mirroring the email channel.
+        """
+        uid = self._coerce_uuid(tracking_uuid)
+        if uid is None:
+            return None
+        row = await self._locked_tracking(db, EmailTracking.tracking_uuid, uid)
+        if row is None:
+            return None
+        now = _now()
+        self._record_interaction(
+            db,
+            row,
+            EVENT_SMS_SENT,
+            now,
+            row.last_ip_address,
+            row.last_user_agent,
+            {
+                "channel": "sms",
+                "provider": provider,
+                "batch_id": batch_id,
+                "characters": characters,
+                "elo_delta": 0,
+            },
+        )
+        await db.flush()
+        logger.info(
+            "sms_sent",
+            tracking_uuid=str(uid),
+            provider=provider,
+            batch_id=batch_id,
+        )
+        return row
+
+    async def log_sms_click(
+        self,
+        tracking_uuid: uuid.UUID | str,
+        ip_address: str | None,
+        user_agent: str | None,
+        db: AsyncSession,
+    ) -> EmailTracking | None:
+        """Record that a recipient opened the link in a simulated SMS.
+
+        The click is score-neutral on purpose: the smishing penalty belongs to
+        the credential form on the landing page, not to following a link.
+        """
+        uid = self._coerce_uuid(tracking_uuid)
+        if uid is None:
+            return None
+        row = await self._locked_tracking(db, EmailTracking.tracking_uuid, uid)
+        if row is None:
+            logger.warning("track_sms_unknown", tracking_uuid=str(tracking_uuid))
+            return None
+        now = _now()
+        first_click = await self._ensure_visit(db, row, now)
+        row.last_ip_address = ip_address or row.last_ip_address
+        row.last_user_agent = (user_agent or row.last_user_agent or "")[:2000] or None
+        self._record_interaction(
+            db,
+            row,
+            EVENT_SMS_CLICKED,
+            now,
+            ip_address,
+            user_agent,
+            {
+                "channel": "sms",
+                "first_click": first_click,
+                "elo_delta": 0,
+            },
+        )
+        await db.flush()
+        logger.info("sms_clicked", tracking_uuid=str(uid), first_click=first_click)
+        return row
+
+    async def log_sms_submission(
+        self,
+        tracking_uuid: uuid.UUID | str,
+        ip_address: str | None,
+        user_agent: str | None,
+        db: AsyncSession,
+        *,
+        identifier: str | None = None,
+        password_length: int | None = None,
+    ) -> tuple[EmailTracking, bool] | None:
+        """Record a credential submission on the SMS landing page.
+
+        Idempotent per tracking row: the ``-40`` smishing penalty is applied
+        once, however many times the form is submitted.
+
+        Returns:
+            ``(tracking_row, already_recorded)`` or ``None`` for an unknown link.
+        """
+        uid = self._coerce_uuid(tracking_uuid)
+        if uid is None:
+            return None
+        row = await self._locked_tracking(db, EmailTracking.tracking_uuid, uid)
+        if row is None:
+            logger.warning(
+                "track_sms_submit_unknown", tracking_uuid=str(tracking_uuid)
+            )
+            return None
+        existing = await db.scalar(
+            select(TrainingInteraction.id).where(
+                TrainingInteraction.tracking_id == row.id,
+                TrainingInteraction.event_type == EVENT_SMS_SUBMITTED,
+            )
+        )
+        if existing is not None:
+            return row, True
+
+        employee = await db.get(HumanAsset, row.employee_id)
+        if employee is None:  # pragma: no cover - FK guarantees existence
+            return None
+
+        now = _now()
+        first_click = await self._ensure_visit(db, row, now)
+        row.last_ip_address = ip_address or row.last_ip_address
+        row.last_user_agent = (user_agent or row.last_user_agent or "")[:2000] or None
+        # Keep the evidence the recipient will see: the typed identifier (for a
+        # masked display) and the password *length* only.  The password value
+        # itself is never stored.
+        clean_identifier = (identifier or "").strip()[:255]
+        if clean_identifier:
+            row.submitted_identifier = clean_identifier
+        if password_length is not None and password_length > 0:
+            row.password_length = int(password_length)
+            row.password_submitted = True
+
+        employee.elo_score = apply_elo_delta(
+            employee.elo_score, SMS_CREDENTIAL_ELO_DELTA
+        )
+        employee.total_credential_submissions = (
+            employee.total_credential_submissions or 0
+        ) + 1
+        if row.submitted_at is None:
+            row.submitted_at = now
+        row.submission_count = (row.submission_count or 0) + 1
+
+        self._record_interaction(
+            db,
+            row,
+            EVENT_SMS_SUBMITTED,
+            now,
+            ip_address,
+            user_agent,
+            {
+                "channel": "sms",
+                "first_click": first_click,
+                "elo_delta": SMS_CREDENTIAL_ELO_DELTA,
+                "submission_index": row.submission_count,
+                "store": "discarded",
+            },
+        )
+        await self._classify(employee.id, db)
+        await db.flush()
+        logger.info(
+            "sms_credential_submitted",
+            tracking_uuid=str(uid),
+            employee_id=str(employee.id),
+            elo=employee.elo_score,
+        )
+        return row, False
+
     async def log_qr_scan(
         self,
         tracking_uuid: uuid.UUID | str,
@@ -2178,13 +2922,22 @@ class TrackingService:
         arch: str | None = None,
         scenario: str | None = None,
         attack_type: str | None = None,
+        telemetry: dict[str, Any] | None = None,
     ) -> EmailTracking | None:
         """Record that a recipient opened the safe USB-drop document or triggered HID.
 
         The deliverable is placed outside a provider on a physical USB drive.
-        A first open is a USB-specific failure: it costs ``-30`` (or ``-40`` for HID) Elo
-        rather than the email click penalty. Opening the same document again is idempotent
-        for scoring but still appended to the ledger for evidence.
+        A first open is scored with the USB channel weight: a normal bait is a
+        click-level failure and HID execution is a submission-level failure.
+        Opening the same document again is idempotent for scoring but still
+        appended to the ledger for evidence.
+
+        ``telemetry`` is the optional forensic packet the document itself sends
+        (device, screen, GPU, network, timezone, source path, GPS, server-side
+        GeoIP).  It is sanitised, stored on the tracking row and echoed in the
+        ledger so the live board can show *which machine* opened the file.  A
+        client retry is recognised by its ``client_event_id`` and is not counted
+        twice.
         """
         uid = self._coerce_uuid(tracking_uuid)
         if uid is None:
@@ -2203,15 +2956,75 @@ class TrackingService:
             return row
 
         now = _now()
-        first_open = await self._ensure_visit(db, row, now)
+        clean_telemetry = sanitize_telemetry(telemetry)
+        client_context = dict(row.client_context or {})
+
+        # A retried beacon is the same open, not a second one.  The id is
+        # generated by the document and kept for the last 20 packets.
+        event_id = clean_telemetry.get("client_event_id")
+        seen_ids = [str(item) for item in (client_context.get("usb_event_ids") or [])]
+        if event_id and str(event_id) in seen_ids:
+            logger.info(
+                "usb_open_duplicate_ignored",
+                tracking_uuid=str(uid),
+                client_event_id=str(event_id),
+            )
+            return row
+
+        if clean_telemetry:
+            device = clean_telemetry.get("device")
+            device = device if isinstance(device, dict) else {}
+            hostname = hostname or device.get("hostname")
+            username = username or device.get("username")
+            domain = domain or device.get("domain")
+            arch = arch or device.get("ua_architecture")
+            if event_id:
+                seen_ids.append(str(event_id))
+                client_context["usb_event_ids"] = seen_ids[-20:]
+            previous_telemetry = client_context.get("usb_telemetry")
+            client_context["usb_telemetry"] = merge_telemetry(
+                previous_telemetry if isinstance(previous_telemetry, dict) else None,
+                clean_telemetry,
+            )
+            client_context["device_fingerprint"] = (
+                clean_telemetry.get("fingerprint")
+                or client_context.get("device_fingerprint")
+            )
+            source = clean_telemetry.get("source")
+            if isinstance(source, dict) and source:
+                client_context["usb_source"] = source
+            server = clean_telemetry.get("server")
+            if isinstance(server, dict) and server:
+                client_context["geo"] = {
+                    key: server.get(key)
+                    for key in ("country", "city", "isp", "latitude", "longitude")
+                    if server.get(key) is not None
+                }
+
+        device_summary = telemetry_summary(clean_telemetry)
+        if device_summary.get("source_path"):
+            source_path = str(device_summary["source_path"])
+            client_context["source_path"] = source_path[:500]
         row.last_ip_address = ip_address or row.last_ip_address
         row.last_user_agent = (user_agent or row.last_user_agent or "")[:2000] or None
 
+        # A physical open is an *open*, not a click: nobody followed a link.
+        # Only the open markers are set so the board shows the truthful stage.
+        first_open = row.opened_at is None
+        if row.opened_at is None:
+            row.opened_at = now
+        row.open_count = (row.open_count or 0) + 1
+        if first_open:
+            await db.execute(
+                update(EmailCampaign)
+                .where(EmailCampaign.id == row.campaign_id)
+                .values(opened_count=EmailCampaign.opened_count + 1)
+            )
+
         is_hid = str(attack_type or "").lower() in ("hid", "badusb")
         actual_attack_type = "badusb_hid" if is_hid else "baiting"
-        elo_penalty = -40 if is_hid else USB_OPEN_ELO_DELTA
+        elo_penalty = 0
 
-        client_context = dict(row.client_context or {})
         if hostname:
             client_context["hostname"] = hostname
         if username:
@@ -2223,7 +3036,7 @@ class TrackingService:
         if scenario:
             client_context["scenario"] = scenario
         client_context["attack_type"] = actual_attack_type
-        
+
         # Log to breach event log for real-time live radar
         breaches = list(client_context.get("breach_events") or [])
         breaches.append({
@@ -2235,8 +3048,10 @@ class TrackingService:
             "attack_type": actual_attack_type,
             "ip_address": ip_address,
             "timestamp": now.isoformat(),
+            "device": device_summary,
+            "source_path": device_summary.get("source_path"),
         })
-        client_context["breach_events"] = breaches
+        client_context["breach_events"] = breaches[-50:]
         row.client_context = client_context
 
         if row.employee_id is None and (username or hostname):
@@ -2254,8 +3069,10 @@ class TrackingService:
         if first_open:
             employee = await db.get(HumanAsset, row.employee_id) if row.employee_id else None
             if employee is not None:
-                employee.elo_score = apply_elo_delta(
-                    employee.elo_score, elo_penalty
+                # A normal USB bait is a click-level failure; HID execution is
+                # equivalent to a credential submission and scores as such.
+                elo_penalty = await apply_elo_action(
+                    db, employee, row, "submitted" if is_hid else "clicked"
                 )
                 await db.flush()
                 await self._classify(employee.id, db)
@@ -2296,6 +3113,9 @@ class TrackingService:
                 "hostname": hostname,
                 "username": username,
                 "attack_type": actual_attack_type,
+                "device": device_summary,
+                "source_path": device_summary.get("source_path"),
+                "ip_address": ip_address,
             },
         )
         await db.flush()
@@ -2303,8 +3123,130 @@ class TrackingService:
             "usb_opened",
             tracking_uuid=str(uid),
             first_open=first_open,
+            device_platform=device_summary.get("platform"),
+            device_city=device_summary.get("city"),
+            telemetry_present=bool(clean_telemetry),
         )
         return row
+
+    async def log_usb_device_probe(
+        self,
+        tracking_uuid: uuid.UUID | str,
+        payload: dict[str, Any] | None,
+        ip_address: str | None,
+        user_agent: str | None,
+        db: AsyncSession,
+    ) -> tuple[EmailTracking | None, bool]:
+        """Attach the local identity tool's report to a USB tracking row.
+
+        The HTML document can never read the Windows account or the machine's
+        real name; the optional collector can, and posts it here.  This is
+        enrichment, not a new failure, so it neither increments the open count
+        nor applies another Elo penalty.
+
+        Returns:
+            ``(row, recorded)``.  ``recorded`` is ``False`` for a retry, an
+            unknown link or a row that belongs to another channel.
+        """
+        uid = self._coerce_uuid(tracking_uuid)
+        if uid is None:
+            return None, False
+        row = await self._locked_tracking(db, EmailTracking.tracking_uuid, uid)
+        if row is None:
+            logger.warning("usb_probe_unknown", tracking_uuid=str(tracking_uuid))
+            return None, False
+        channel = (row.channel or "").strip().lower()
+        if channel not in ("", "usb"):
+            logger.warning(
+                "usb_probe_channel_mismatch",
+                tracking_uuid=str(uid),
+                channel=channel,
+            )
+            return row, False
+
+        identity = sanitize_identity_probe(payload)
+        if not identity:
+            return row, False
+
+        now = _now()
+        client_context = dict(row.client_context or {})
+        event_id = identity.get("client_event_id")
+        seen_ids = [
+            str(item) for item in (client_context.get("usb_probe_event_ids") or [])
+        ]
+        if event_id and str(event_id) in seen_ids:
+            logger.info(
+                "usb_probe_duplicate_ignored",
+                tracking_uuid=str(uid),
+                client_event_id=str(event_id),
+            )
+            return row, False
+        if event_id:
+            seen_ids.append(str(event_id))
+            client_context["usb_probe_event_ids"] = seen_ids[-20:]
+
+        telemetry = dict(client_context.get("usb_telemetry") or {})
+        telemetry["local_probe"] = {
+            "source": "local_tool",
+            "identity": identity,
+            "ip_address": ip_address,
+            "user_agent": user_agent,
+            "received_at": now.isoformat(),
+        }
+        client_context["usb_telemetry"] = telemetry
+        client_context["identity_source"] = "local_tool"
+        hostname = identity.get("hostname")
+        username = identity.get("username")
+        if hostname:
+            client_context["hostname"] = hostname
+            client_context["device_real_name"] = hostname
+        if username:
+            client_context["username"] = username
+        domain = identity.get("domain") or identity.get("workgroup")
+        if domain:
+            client_context["domain"] = domain
+        row.last_ip_address = ip_address or row.last_ip_address
+        row.last_user_agent = (user_agent or row.last_user_agent or "")[:2000] or None
+
+        if row.employee_id is None and (username or hostname):
+            campaign = await db.get(EmailCampaign, row.campaign_id)
+            if campaign:
+                matched_emp, _ = await self.resolve_qr_identity(
+                    db,
+                    campaign.organization_id,
+                    email=None,
+                    username=username or hostname,
+                )
+                if matched_emp:
+                    row.employee_id = matched_emp.id
+
+        row.client_context = client_context
+        self._record_interaction(
+            db,
+            row,
+            EVENT_USB_DEVICE_PROBE,
+            now,
+            ip_address,
+            user_agent,
+            {
+                "channel": "usb",
+                "source": "local_tool",
+                "hostname": hostname,
+                "username": username,
+                "domain": domain,
+                "os_build": identity.get("os_build"),
+                "model": identity.get("model"),
+                "is_admin": identity.get("is_admin"),
+            },
+        )
+        await db.flush()
+        logger.info(
+            "usb_device_probe_recorded",
+            tracking_uuid=str(uid),
+            hostname=hostname,
+            username_present=bool(username),
+        )
+        return row, True
 
     async def log_channel_choice(
         self,
@@ -2387,11 +3329,7 @@ class TrackingService:
             row.client_context = client
 
         if choice == "reported_phish":
-            delta = (
-                VISHING_REPORT_ELO_DELTA
-                if channel == "vishing"
-                else PRETEXTING_REPORT_ELO_DELTA
-            )
+            delta = await apply_elo_action(db, employee, row, "reported")
             row.reported_at = now
             employee.total_reports = (employee.total_reports or 0) + 1
             report = PhishingReport(
@@ -2419,11 +3357,7 @@ class TrackingService:
             )
             db.add(report)
         else:
-            delta = (
-                VISHING_CREDENTIAL_ELO_DELTA
-                if channel == "vishing"
-                else PRETEXTING_FRAUD_ELO_DELTA
-            )
+            delta = await apply_elo_action(db, employee, row, "submitted")
             if row.submitted_at is None:
                 row.submitted_at = now
             row.submission_count = (row.submission_count or 0) + 1
@@ -2432,7 +3366,6 @@ class TrackingService:
                     employee.total_credential_submissions or 0
                 ) + 1
 
-        employee.elo_score = apply_elo_delta(employee.elo_score, delta)
         self._record_interaction(
             db,
             row,

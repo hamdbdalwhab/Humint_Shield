@@ -1,21 +1,35 @@
 """Diagnostic endpoints: deliverability test and dependency health."""
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, status
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.database import get_db
-from app.deps import rate_limit, require_roles
+from app.deps import rate_limit, require_permissions
 from app.logging_config import get_logger
 from app.models import User
 from app.schemas import TestEmailRequest
 from app.services.brevo_email_service import BrevoEmailService
-from app.services.vonage_service import VonageService
+from app.services.illyvoip_service import IllyVoIPService
+from app.services.textbee_service import TextBeeService
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/test", tags=["diagnostics"])
+
+
+def _illyvoip_identity() -> dict[str, str | None]:
+    """Return the effective SIP identity and caller ID, or ``None``.
+
+    Placeholder values (``CHANGE_ME_…``, ``YOUR_…``) are reported as unset so
+    the UI never presents them as a real caller ID.
+    """
+    status = IllyVoIPService().configuration_status()
+    return {
+        "illyvoip_sip_user_id": status.get("sip_user_id"),
+        "illyvoip_caller_id": status.get("caller_id"),
+    }
 
 
 @router.post(
@@ -25,7 +39,7 @@ router = APIRouter(prefix="/test", tags=["diagnostics"])
 )
 async def test_brevo(
     payload: TestEmailRequest,
-    user: User = Depends(require_roles("admin", "manager")),
+    user: User = Depends(require_permissions("settings.diagnostics")),
 ) -> dict:
     """Dispatch a diagnostic email and report the raw result.
 
@@ -43,7 +57,7 @@ async def test_brevo(
 @router.get("/health", summary="Dependency health check")
 async def health(
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "viewer")),
+    user: User = Depends(require_permissions("settings.view")),
 ) -> dict:
     """Report the reachability of every external dependency.
 
@@ -84,10 +98,35 @@ async def health(
         "redis": {"ok": redis_ok, "error": redis_error},
         "brevo_configured": settings.brevo_configured,
         "email_dry_run": settings.email_dry_run,
-        "vonage_configured": settings.vonage_configured,
-        "vonage_sms_configured": settings.vonage_sms_configured,
-        "vonage_whatsapp_configured": settings.vonage_whatsapp_configured,
+        "textbee_configured": settings.textbee_configured,
+        "sms_provider": settings.sms_provider_effective,
+        "illyvoip_configured": settings.illyvoip_configured,
+        "illyvoip_api_key_configured": settings.illyvoip_api_key_configured,
+        "illyvoip_missing_settings": settings.illyvoip_missing_settings(),
+        "illyvoip_identity_warnings": settings.illyvoip_identity_warnings(),
     }
+
+
+@router.get(
+    "/illyvoip/verify",
+    dependencies=[Depends(rate_limit(limit=10, window=60, scope="test_illyvoip_verify"))],
+    summary="Validate the IllyVoIP Voice API configuration",
+)
+async def verify_illyvoip(
+    user: User = Depends(require_permissions("settings.diagnostics")),
+) -> dict:
+    """Validate local readiness and the live IllyVoIP Voice backend.
+
+    This endpoint never places a call.  It returns the non-secret readiness
+    report plus the provider's ``backend_status``.
+
+    Args:
+        user: Authenticated admin/manager.
+
+    Returns:
+        ``{"valid", "missing", "api_reachable", "backend_status", ...}``.
+    """
+    return await IllyVoIPService().verify_configuration()
 
 
 @router.get(
@@ -96,7 +135,7 @@ async def health(
     summary="Validate the Brevo API key",
 )
 async def verify_brevo(
-    user: User = Depends(require_roles("admin", "manager")),
+    user: User = Depends(require_permissions("settings.diagnostics")),
 ) -> dict:
     """Call the Brevo account endpoint to validate the API key.
 
@@ -110,69 +149,59 @@ async def verify_brevo(
 
 
 @router.get(
-    "/vonage/verify",
-    dependencies=[Depends(rate_limit(limit=20, window=60, scope="test_vonage_verify"))],
-    summary="Validate the Vonage SMS/WhatsApp configuration",
+    "/sms/verify",
+    dependencies=[Depends(rate_limit(limit=20, window=60, scope="test_sms_verify"))],
+    summary="Validate the TextBee SMS gateway configuration",
 )
-async def verify_vonage(
-    channel: str = Query("sms", pattern="^(sms|whatsapp)$"),
-    user: User = Depends(require_roles("admin", "manager")),
+async def verify_sms(
+    user: User = Depends(require_permissions("settings.diagnostics")),
 ) -> dict:
-    """Report whether real Vonage delivery is configured for a channel.
+    """Report whether real SMS delivery through TextBee can work.
 
     This endpoint deliberately does not send a message.  It validates the
-    environment and returns the exact dashboard webhook URLs that must be
-    configured for delivery/read receipts.
+    environment and, when a key is present, asks TextBee to confirm it.
 
     Args:
-        channel: ``sms`` or ``whatsapp``.
         user: Authenticated admin/manager.
 
     Returns:
-        ``{"valid", "error", "detail", "missing", "webhook_urls", ...}``.
+        ``{"valid", "error", "hint", "missing", "provider", ...}``.
     """
     settings = get_settings()
-    service = VonageService(settings=settings)
-    status_data = service.configuration_status(channel)
-    missing = status_data["missing"]
-    base_url = settings.base_url.rstrip("/")
-    webhook_urls = {
-        "sms_dlr": f"{base_url}/api/v1/webhooks/vonage/dlr",
-        "whatsapp_status": f"{base_url}/api/v1/webhooks/vonage/whatsapp-status",
-    }
-    if status_data["valid"]:
-        hint = f"Vonage {channel.upper()} sender '{status_data['from']}' is configured."
+    service = TextBeeService(settings=settings)
+    status_data = await service.verify_configuration()
+    missing = status_data.get("missing") or []
+    if status_data.get("valid"):
+        hint = (
+            "TextBee SMS gateway is ready"
+            + (
+                f" (device {status_data.get('device_id')})."
+                if status_data.get("device_id")
+                else "."
+            )
+        )
         error = None
     else:
-        error = (
-            "Vonage is not fully configured; set "
-            + (", ".join(missing) if missing else "the missing values")
+        error = status_data.get("error") or (
+            "TextBee is not fully configured; set "
+            + (", ".join(missing) if missing else "TEXTBEE_API_KEY")
             + " in backend/.env"
         )
         hint = error
     return {
         **status_data,
+        "provider": "textbee",
+        "channel": "sms",
         "error": error,
         "hint": hint,
-        "detail": {
-            "transport": "vonage",
-            "channel": channel,
-            "from": status_data["from"],
-            "application_configured": status_data["application_configured"],
-            "messages_base_url": status_data["messages_base_url"],
-        },
-        "sms_ready": settings.vonage_sms_configured,
-        "whatsapp_ready": settings.vonage_whatsapp_configured,
-        "vonage_configured": settings.vonage_configured,
-        "vonage_application_configured": settings.vonage_application_configured,
-        "webhook_urls": webhook_urls,
-        "webhook_token_required": bool((settings.vonage_webhook_token or "").strip()),
+        "sms_ready": bool(status_data.get("valid")),
+        "whatsapp_ready": False,
     }
 
 
 @router.get("/config", summary="Non-secret runtime configuration")
 async def config_summary(
-    user: User = Depends(require_roles("admin", "manager", "viewer")),
+    user: User = Depends(require_permissions("settings.view")),
 ) -> dict:
     """Expose the non-secret configuration the UI needs.
 
@@ -189,16 +218,18 @@ async def config_summary(
         "brevo_configured": settings.brevo_configured,
         "smtp_configured": settings.smtp_configured,
         "email_dry_run": settings.email_dry_run,
-        "vonage_configured": settings.vonage_configured,
-        "vonage_sms_configured": settings.vonage_sms_configured,
-        "vonage_whatsapp_configured": settings.vonage_whatsapp_configured,
-        "vonage_application_configured": settings.vonage_application_configured,
-        "vonage_sms_from": settings.vonage_sms_from,
-        "vonage_whatsapp_from": settings.vonage_whatsapp_from,
-        "vonage_webhook_paths": {
-            "sms_dlr": "/api/v1/webhooks/vonage/dlr",
-            "whatsapp_status": "/api/v1/webhooks/vonage/whatsapp-status",
-        },
+        "textbee_configured": settings.textbee_configured,
+        "textbee_device_id": settings.textbee_device_id or None,
+        "textbee_missing_settings": settings.textbee_missing_settings(),
+        "sms_provider": settings.sms_provider_effective,
+        "illyvoip_configured": settings.illyvoip_configured,
+        "illyvoip_api_key_configured": settings.illyvoip_api_key_configured,
+        "illyvoip_missing_settings": settings.illyvoip_missing_settings(),
+        "illyvoip_identity_warnings": settings.illyvoip_identity_warnings(),
+        **_illyvoip_identity(),
+        "illyvoip_tts_language": settings.illyvoip_tts_language,
+        "illyvoip_tts_voice": settings.illyvoip_tts_voice,
+        "illyvoip_record_calls": settings.illyvoip_record_calls,
         "rate_limit_enabled": settings.rate_limit_enabled,
         "environment": settings.environment,
     }
