@@ -406,9 +406,17 @@ uvicorn app.main:app --host 127.0.0.1 --port 8000
 يوجد في [`cloudflare/`](cloudflare/) Worker يقدّم الواجهة المبنية ويوكّل
 `/api/*` و`/s/*` و`/healthz` و`/metrics` إلى الخلفية.
 
-1. انشر `cloudflare/assets` (نسخة `frontend/dist`) مع Worker.
-2. اضبط متغير/سر `BACKEND_ORIGIN` على أصل FastAPI العام.
-3. انشر باستخدام Wrangler:
+1. ابنِ الواجهة ثم انسخها إلى مجلد الأصول (المجلد غير مُتعقَّب في Git):
+
+```bash
+cd frontend && npm run build && cd ..
+rm -rf cloudflare/assets && mkdir -p cloudflare/assets
+cp -r frontend/dist/. cloudflare/assets/
+```
+
+2. انشر `cloudflare/assets` (نسخة `frontend/dist`) مع Worker.
+3. اضبط متغير/سر `BACKEND_ORIGIN` على أصل FastAPI العام.
+4. انشر باستخدام Wrangler:
 
 ```bash
 cd cloudflare

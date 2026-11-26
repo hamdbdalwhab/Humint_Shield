@@ -79,7 +79,10 @@ backend/.env.development
 backend/.env.production
 
 # --- Generated build output / deploy bundles ---------------------------------
-cloudflare/
+# The Worker source (cloudflare/worker.js + manifest.json) is committed;
+# only the copied frontend build and the tunnel log stay local.
+cloudflare/assets/
+cloudflare/tunnel.log
 
 # --- One-off report / document generators (kept locally, not published) ------
 build_complete_word_report.py
