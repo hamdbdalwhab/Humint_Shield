@@ -16,6 +16,7 @@ import { CampaignsPage } from '@/pages/CampaignsPage';
 import { ChangePasswordPage } from '@/pages/ChangePasswordPage';
 import { DashboardPage } from '@/pages/DashboardPage';
 import { EmployeeDossierPage } from '@/pages/EmployeeDossierPage';
+import { EmployeeIntelligenceProfile } from '@/pages/EmployeeIntelligenceProfile';
 import { EmployeesPage } from '@/pages/EmployeesPage';
 import { HackedPage } from '@/pages/HackedPage';
 import { IncidentResponseSimulationPage } from '@/pages/IncidentResponseSimulationPage';
@@ -88,6 +89,14 @@ export function App() {
         element={
           <Shell>
             <EmployeeDossierPage />
+          </Shell>
+        }
+      />
+      <Route
+        path="/employees/:employeeId/intelligence"
+        element={
+          <Shell>
+            <EmployeeIntelligenceProfile />
           </Shell>
         }
       />

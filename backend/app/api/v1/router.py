@@ -9,6 +9,7 @@ from app.api.v1 import (
     branding,
     campaigns,
     containment,
+    departments,
     email_templates,
     employees,
     lms,
@@ -29,6 +30,7 @@ api_router.include_router(ai.router)
 api_router.include_router(branding.public_router)
 api_router.include_router(branding.router)
 api_router.include_router(employees.router)
+api_router.include_router(departments.router)
 api_router.include_router(email_templates.router)
 api_router.include_router(campaigns.router)
 api_router.include_router(vishing.router)
@@ -39,6 +41,7 @@ api_router.include_router(tracking.router)
 api_router.include_router(webhooks.whatsapp_router)
 api_router.include_router(lms.router)
 api_router.include_router(reports.router)
+api_router.include_router(reports.org_router)
 api_router.include_router(security.router)
 api_router.include_router(users.router)
 api_router.include_router(test.router)

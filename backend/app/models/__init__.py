@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from app.database import Base
 from app.models.audit import AuditLog, TokenRevocation
+from app.models.department import Department
 from app.models.email_campaign import (
     CAMPAIGN_STATUSES,
     CHANNELS,
@@ -34,6 +35,7 @@ __all__ = [
     "DEFAULT_VARIABLES",
     "EmailCampaign",
     "EmailTemplate",
+    "Department",
     "EmailTracking",
     "HumanAsset",
     "MonthlyArchive",

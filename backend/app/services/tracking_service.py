@@ -2534,6 +2534,11 @@ class TrackingService:
             return None
         now = _now()
         first_click = await self._ensure_visit(db, row, now)
+        if not first_click:
+            # ``clicked_at`` keeps the first-click time (the funnel must not
+            # move), but every repeat click is counted so the live board and the
+            # reports show real activity instead of a frozen "1".
+            row.click_count = (row.click_count or 0) + 1
         row.last_ip_address = ip_address or row.last_ip_address
         row.last_user_agent = (user_agent or row.last_user_agent or "")[:2000] or None
         self._record_interaction(
@@ -2801,6 +2806,11 @@ class TrackingService:
             return None
         now = _now()
         first_click = await self._ensure_visit(db, row, now)
+        if not first_click:
+            # ``clicked_at`` keeps the first-click time (the funnel must not
+            # move), but every repeat click is counted so the live board and the
+            # reports show real activity instead of a frozen "1".
+            row.click_count = (row.click_count or 0) + 1
         row.last_ip_address = ip_address or row.last_ip_address
         row.last_user_agent = (user_agent or row.last_user_agent or "")[:2000] or None
         self._record_interaction(
@@ -2853,14 +2863,35 @@ class TrackingService:
                 TrainingInteraction.event_type == EVENT_SMS_SUBMITTED,
             )
         )
+        now = _now()
         if existing is not None:
+            # The form was submitted again.  The -40 penalty stays once-only,
+            # but the attempt must still exist as evidence: a repeat submission
+            # is exactly the behaviour the training page is meant to reveal.
+            row.last_ip_address = ip_address or row.last_ip_address
+            row.last_user_agent = (user_agent or row.last_user_agent or "")[:2000] or None
+            self._record_interaction(
+                db,
+                row,
+                EVENT_SMS_SUBMITTED,
+                now,
+                ip_address,
+                user_agent,
+                {
+                    "channel": "sms",
+                    "repeat": True,
+                    "elo_delta": 0,
+                    "submission_index": row.submission_count,
+                    "store": "discarded",
+                },
+            )
+            await db.flush()
             return row, True
 
         employee = await db.get(HumanAsset, row.employee_id)
         if employee is None:  # pragma: no cover - FK guarantees existence
             return None
 
-        now = _now()
         first_click = await self._ensure_visit(db, row, now)
         row.last_ip_address = ip_address or row.last_ip_address
         row.last_user_agent = (user_agent or row.last_user_agent or "")[:2000] or None

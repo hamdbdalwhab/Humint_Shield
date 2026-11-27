@@ -796,6 +796,386 @@ def build_monthly_report_pdf(
     return buffer.getvalue()
 
 
+def build_monthly_org_report_pdf(
+    organization_name: str,
+    month_year: str,
+    rows: Sequence[dict[str, Any]],
+    *,
+    average_elo: float | None = None,
+) -> bytes:
+    """Render the organization's monthly summary PDF.
+
+    Unlike the full archive report this executive view answers three questions
+    only: who is riskiest (bottom ten Elo), who reports the most (top ten
+    reporters) and what the organization-average Elo is.
+
+    Args:
+        organization_name: Tenant name printed in the header.
+        month_year: ``YYYY-MM`` month the report covers.
+        rows: Archive (or live) rows for the month.
+        average_elo: Pre-computed average, recomputed when omitted.
+
+    Returns:
+        The PDF document as bytes.
+    """
+    _register_fonts()
+    buffer = io.BytesIO()
+    document = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        rightMargin=12 * mm,
+        leftMargin=12 * mm,
+        topMargin=14 * mm,
+        bottomMargin=14 * mm,
+    )
+
+    title_style = _style(size=18, bold=True, color=_NAVY, align=TA_CENTER)
+    subtitle_style = _style(size=10, color=_MUTED, align=TA_CENTER)
+    heading_style = _style(size=11, bold=True, color=_NAVY)
+    cell_style = _style(size=7.2, color=_INK)
+    header_style = _style(size=7.6, bold=True, color=colors.white, align=TA_CENTER)
+
+    computed_average = average_elo
+    if computed_average is None and rows:
+        computed_average = sum(int(row.get("final_elo_score") or 0) for row in rows) / len(rows)
+
+    story: list[Any] = [
+        _paragraph(f"التقرير التنفيذي الشهري — {month_year}", title_style),
+        _paragraph(organization_name, subtitle_style),
+        Spacer(1, 4 * mm),
+    ]
+    summary_text = (
+        f"عدد الموظفين: {len(rows)}   ·   متوسط Elo: {computed_average:.1f}"
+        if computed_average is not None
+        else f"عدد الموظفين: {len(rows)}   ·   لا توجد بيانات لهذا الشهر"
+    )
+    story.extend([_paragraph(summary_text, subtitle_style), Spacer(1, 5 * mm)])
+
+    def _table(
+        title: str, headers: Sequence[str], data_rows: Sequence[Sequence[Any]]
+    ) -> None:
+        """Append a titled top-ten table."""
+        story.append(_paragraph(title, heading_style))
+        data: list[list[Any]] = [
+            [_paragraph(header, header_style) for header in headers]
+        ]
+        for row in data_rows:
+            data.append(
+                [
+                    _paragraph(value if value not in (None, "") else "—", cell_style)
+                    for value in row
+                ]
+            )
+        if len(data) == 1:
+            story.append(_paragraph("لا توجد بيانات.", cell_style))
+        else:
+            table = Table(data, colWidths=[34 * mm, 40 * mm, 30 * mm, 26 * mm, 26 * mm])
+            table.setStyle(
+                TableStyle(
+                    [
+                        ("BACKGROUND", (0, 0), (-1, 0), _NAVY),
+                        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                        ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#CBD5E1")),
+                        (
+                            "ROWBACKGROUNDS",
+                            (0, 1),
+                            (-1, -1),
+                            [colors.white, colors.HexColor("#F8FAFC")],
+                        ),
+                        ("TOPPADDING", (0, 0), (-1, -1), 3),
+                        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+                    ]
+                )
+            )
+            story.append(table)
+        story.append(Spacer(1, 5 * mm))
+
+    top_risk = sorted(rows, key=lambda row: int(row.get("final_elo_score") or 0))[:10]
+    top_reporters = sorted(
+        rows, key=lambda row: int(row.get("total_reports") or 0), reverse=True
+    )[:10]
+
+    _table(
+        "أعلى 10 مخاطر",
+        ["Elo", "البلاغات", "القسم", "البريد", "الموظف"],
+        [
+            [
+                row.get("final_elo_score"),
+                row.get("total_reports", 0),
+                row.get("department"),
+                row.get("email"),
+                row.get("employee_name"),
+            ]
+            for row in top_risk
+        ],
+    )
+    _table(
+        "أعلى 10 مُبلّغين",
+        ["البلاغات", "Elo", "القسم", "البريد", "الموظف"],
+        [
+            [
+                row.get("total_reports", 0),
+                row.get("final_elo_score"),
+                row.get("department"),
+                row.get("email"),
+                row.get("employee_name"),
+            ]
+            for row in top_reporters
+        ],
+    )
+    story.append(
+        _paragraph(
+            "أعلى المخاطر مرتّبة تصاعدياً حسب Elo؛ أعلى المُبلّغين مرتّبون تنازلياً "
+            "حسب عدد البلاغات. المصدر: الأرشيف الشهري غير القابل للتعديل.",
+            _style(size=7.5, color=_MUTED),
+        )
+    )
+
+    def _footer(pdf_canvas, _doc) -> None:
+        pdf_canvas.saveState()
+        pdf_canvas.setFont(_FONT_REGULAR, 7)
+        pdf_canvas.setFillColor(_MUTED)
+        pdf_canvas.drawCentredString(
+            A4[0] / 2, 8 * mm, "HUMINT Shield · Monthly Executive Report"
+        )
+        pdf_canvas.restoreState()
+
+    document.build(story, onFirstPage=_footer, onLaterPages=_footer)
+    return buffer.getvalue()
+
+
+def build_employee_report_pdf(
+    employee: HumanAsset,
+    organization_name: str,
+    *,
+    summary: dict[str, Any] | None = None,
+    campaigns: Sequence[dict[str, Any]] | None = None,
+    events: Sequence[dict[str, Any]] | None = None,
+    submissions: Sequence[dict[str, Any]] | None = None,
+    certificates: Sequence[dict[str, Any]] | None = None,
+) -> bytes:
+    """Render one employee's complete intelligence profile as PDF bytes.
+
+    The report is the printable counterpart of the Employee Intelligence Hub:
+    profile and current Elo, the behavioural summary, one row per campaign, the
+    latest ledger events, every captured submission (already masked by the
+    caller) and the monthly certificates on record.
+
+    Args:
+        employee: The employee the report is about.
+        organization_name: Tenant name printed in the header.
+        summary: Aggregate counters from the dossier.
+        campaigns: Per-campaign records.
+        events: Most recent ledger events.
+        submissions: Captured form submissions (values already masked).
+        certificates: Monthly archive rows.
+
+    Returns:
+        The PDF document as bytes.
+    """
+    _register_fonts()
+    buffer = io.BytesIO()
+    document = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        rightMargin=12 * mm,
+        leftMargin=12 * mm,
+        topMargin=14 * mm,
+        bottomMargin=14 * mm,
+    )
+
+    score = int(employee.elo_score or INITIAL_ELO)
+    title_style = _style(size=18, bold=True, color=_NAVY, align=TA_CENTER)
+    subtitle_style = _style(size=10, color=_MUTED, align=TA_CENTER)
+    heading_style = _style(size=11, bold=True, color=_NAVY)
+    body_style = _style(size=8, color=_INK)
+    cell_style = _style(size=7.2, color=_INK)
+    number_style = _style(size=7.2, color=_INK, align=TA_CENTER)
+    header_style = _style(size=7.4, bold=True, color=colors.white, align=TA_CENTER)
+
+    story: list[Any] = [
+        _paragraph("تقرير الموظف الأمني الشامل", title_style),
+        _paragraph(employee.full_name, subtitle_style),
+        _paragraph(organization_name, subtitle_style),
+        Spacer(1, 5 * mm),
+    ]
+
+    facts = [
+        ("البريد الإلكتروني", employee.email or "—"),
+        ("القسم", employee.department or "—"),
+        ("المسمى الوظيفي", employee.job_title or "—"),
+        ("درجة Elo", str(score)),
+        ("مستوى الوعي", awareness_level_ar(score)),
+        ("التصنيف السلوكي", employee.behavioral_category or "—"),
+    ]
+    fact_table = Table(
+        [
+            [
+                _paragraph(label, header_style),
+                _paragraph(value, cell_style),
+                _paragraph(other_label, header_style),
+                _paragraph(other_value, cell_style),
+            ]
+            for (label, value), (other_label, other_value) in zip(
+                facts[0::2], facts[1::2], strict=False
+            )
+        ],
+        colWidths=[32 * mm, 53 * mm, 32 * mm, 53 * mm],
+    )
+    fact_table.setStyle(
+        TableStyle(
+            [
+                ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#CBD5E1")),
+                ("BACKGROUND", (0, 0), (0, -1), _NAVY),
+                ("BACKGROUND", (2, 0), (2, -1), _NAVY),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("TOPPADDING", (0, 0), (-1, -1), 4),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ]
+        )
+    )
+    story.extend([fact_table, Spacer(1, 5 * mm)])
+
+    if summary:
+        story.append(_paragraph("الملخص السلوكي", heading_style))
+        summary_text = (
+            f"الحملات: {summary.get('campaigns', 0)}   ·   "
+            f"أُرسلت: {summary.get('emails_sent', 0)}   ·   "
+            f"فُتحت: {summary.get('opened', 0)}   ·   "
+            f"نُقرت: {summary.get('clicked', 0)}   ·   "
+            f"إدخالات: {summary.get('submitted', 0)}   ·   "
+            f"بلاغات: {summary.get('reported', 0)}   ·   "
+            f"أكمل التدريب: {summary.get('completed', 0)}"
+        )
+        story.extend([_paragraph(summary_text, body_style), Spacer(1, 4 * mm)])
+
+    def _section(
+        title: str,
+        headers: Sequence[str],
+        rows: Sequence[Sequence[Any]],
+        widths: Sequence[float],
+        empty_text: str,
+    ) -> None:
+        """Append a titled table section to the story."""
+        story.append(_paragraph(title, heading_style))
+        data: list[list[Any]] = [
+            [_paragraph(header, header_style) for header in headers]
+        ]
+        for row in rows:
+            data.append(
+                [
+                    _paragraph(
+                        "—" if value in (None, "") else str(value), cell_style
+                    )
+                    for value in row
+                ]
+            )
+        if not rows:
+            story.append(_paragraph(empty_text, body_style))
+        else:
+            table = Table(data, colWidths=list(widths), repeatRows=1)
+            table.setStyle(
+                TableStyle(
+                    [
+                        ("BACKGROUND", (0, 0), (-1, 0), _NAVY),
+                        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                        ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#CBD5E1")),
+                        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                        (
+                            "ROWBACKGROUNDS",
+                            (0, 1),
+                            (-1, -1),
+                            [colors.white, colors.HexColor("#F8FAFC")],
+                        ),
+                        ("TOPPADDING", (0, 0), (-1, -1), 3),
+                        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+                    ]
+                )
+            )
+            story.append(table)
+        story.append(Spacer(1, 4 * mm))
+
+    _section(
+        "الحملات",
+        ["الحالة", "الإدخالات", "النقرات", "القناة", "التاريخ", "الحملة"],
+        [
+            [
+                row.get("status"),
+                row.get("submission_count", 0),
+                row.get("click_count", 0),
+                row.get("channel"),
+                str(row.get("sent_at") or "")[:10],
+                row.get("campaign_name"),
+            ]
+            for row in (campaigns or [])
+        ],
+        [22 * mm, 18 * mm, 16 * mm, 20 * mm, 24 * mm, 70 * mm],
+        "لا توجد حملات مسجلة.",
+    )
+
+    _section(
+        "أحدث الأحداث",
+        ["الحدث", "الحدث", "IP", "الوقت"],
+        [
+            [
+                event.get("event_type"),
+                event.get("campaign_name"),
+                event.get("ip_address"),
+                str(event.get("occurred_at") or "")[:19],
+            ]
+            for event in (events or [])[-25:]
+        ],
+        [40 * mm, 55 * mm, 40 * mm, 35 * mm],
+        "لا توجد أحداث مسجلة.",
+    )
+
+    _section(
+        "البيانات المدخلة (كلمات المرور مقنّعة)",
+        ["القيم", "طول كلمة المرور", "IP", "الوقت"],
+        [
+            [
+                " · ".join(f"{key}={value}" for key, value in (row.get("values") or {}).items()),
+                row.get("password_length"),
+                row.get("ip_address"),
+                str(row.get("occurred_at") or "")[:19],
+            ]
+            for row in (submissions or [])[-25:]
+        ],
+        [60 * mm, 20 * mm, 40 * mm, 35 * mm],
+        "لا توجد بيانات مدخلة.",
+    )
+
+    _section(
+        "الشهادات",
+        ["المستوى", "الإدخالات", "النقرات", "البلاغات", "Elo", "الشهر"],
+        [
+            [
+                awareness_level_ar(int(row.get("final_elo_score") or 0)),
+                row.get("total_submissions", 0),
+                row.get("total_clicks", 0),
+                row.get("total_reports", 0),
+                row.get("final_elo_score"),
+                row.get("month_year"),
+            ]
+            for row in (certificates or [])
+        ],
+        [40 * mm, 20 * mm, 20 * mm, 20 * mm, 20 * mm, 30 * mm],
+        "لا توجد شهادات شهرية بعد.",
+    )
+
+    def _footer(pdf_canvas, _doc) -> None:
+        pdf_canvas.saveState()
+        pdf_canvas.setFont(_FONT_REGULAR, 7)
+        pdf_canvas.setFillColor(_MUTED)
+        pdf_canvas.drawCentredString(
+            A4[0] / 2, 8 * mm, "HUMINT Shield · Employee Intelligence Report"
+        )
+        pdf_canvas.restoreState()
+
+    document.build(story, onFirstPage=_footer, onLaterPages=_footer)
+    return buffer.getvalue()
+
+
 def build_certificates_zip(
     month_year: str,
     rows: Sequence[dict[str, Any]],

@@ -542,7 +542,9 @@ async def test_sms_submission_applies_minus_40_once(
             )
         )
     ).scalars().all()
-    assert events == [EVENT_SMS_SUBMITTED]
+    # Two evidence rows: the penalised first submission and the repeat attempt.
+    # The repeat carries ``elo_delta == 0``, which is what "once-only" means.
+    assert events == [EVENT_SMS_SUBMITTED, EVENT_SMS_SUBMITTED]
 
 
 @pytest.mark.asyncio

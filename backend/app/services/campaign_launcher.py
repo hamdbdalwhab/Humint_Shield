@@ -199,6 +199,7 @@ class CampaignLauncher:
                     if existing_tracking is None:
                         generic_tracking = EmailTracking(
                             campaign_id=campaign.id,
+                            journey_id=campaign.journey_id,
                             employee_id=None,
                             channel="usb",
                             tracking_uuid=uuid.uuid4(),
@@ -453,6 +454,7 @@ class CampaignLauncher:
             provider_name = "simulation"
         tracking = existing or EmailTracking(
             campaign_id=campaign.id,
+            journey_id=campaign.journey_id,
             employee_id=employee.id,
             template_id=selected_template.id,
             channel=channel,

@@ -50,6 +50,12 @@ class EmailCampaign(Base):
         UUIDType, ForeignKey("templates.id", ondelete="SET NULL")
     )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
+    #: Stable identifier shared by every tracking row this campaign produces.
+    #: It lets the platform treat a campaign as one *journey* even when a
+    #: recipient is later re-tested in a follow-up wave.
+    journey_id: Mapped[uuid.UUID] = mapped_column(
+        UUIDType, default=generate_uuid, index=True, nullable=False
+    )
     channel: Mapped[str] = mapped_column(
         String(20), default=DEFAULT_CHANNEL, server_default=DEFAULT_CHANNEL, index=True, nullable=False
     )
@@ -128,6 +134,9 @@ class EmailTracking(Base):
     template_id: Mapped[uuid.UUID | None] = mapped_column(
         UUIDType, ForeignKey("templates.id", ondelete="SET NULL")
     )
+    #: Denormalised copy of the campaign's journey id so one tracking row can
+    #: be grouped into a journey without joining ``campaigns`` on every read.
+    journey_id: Mapped[uuid.UUID | None] = mapped_column(UUIDType, index=True)
     channel: Mapped[str] = mapped_column(
         String(20), default=DEFAULT_CHANNEL, server_default=DEFAULT_CHANNEL, index=True, nullable=False
     )

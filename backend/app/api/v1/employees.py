@@ -5,7 +5,7 @@ import csv
 import io
 import math
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import (
     APIRouter,
@@ -29,7 +29,14 @@ from app.deps import (
     require_roles,
 )
 from app.logging_config import get_logger
-from app.models import EmailCampaign, EmailTracking, HumanAsset, MonthlyArchive, User
+from app.models import (
+    Department,
+    EmailCampaign,
+    EmailTracking,
+    HumanAsset,
+    MonthlyArchive,
+    User,
+)
 from app.schemas import (
     BulkImportResult,
     EmployeeCreate,
@@ -52,6 +59,7 @@ from app.services.employee_service import (
     archive_monthly_scores,
     build_certificate_pdf,
     build_certificates_zip,
+    build_employee_report_pdf,
     build_monthly_report_pdf,
     validate_month,
 )
@@ -624,42 +632,292 @@ async def certificates_zip(
 async def employee_certificate(
     org_id: uuid.UUID,
     employee_id: uuid.UUID,
-    month: str = Query(
-        ..., pattern=r"^\d{4}-(0[1-9]|1[0-2])$", description="YYYY-MM"
+    month: str | None = Query(
+        None, pattern=r"^\d{4}-(0[1-9]|1[0-2])$", description="YYYY-MM (default: current month)"
     ),
     db: AsyncSession = Depends(get_db),
     organization=Depends(get_organization_or_404),
     user: User = Depends(require_permissions("reports.view")),
 ) -> Response:
-    """Render one employee's archived monthly certificate as a PDF."""
-    validate_month(month)
+    """Render one employee's certificate as a PDF.
+
+    When ``month`` is omitted the current UTC month is used.  If that month has
+    already been archived the immutable snapshot is printed; otherwise the live
+    Elo score and counters are used, so a certificate can always be produced
+    without waiting for the month-end job.
+    """
+    if month is not None:
+        validate_month(month)
     employee = await _get_employee(db, org_id, employee_id)
+    certificate_month = month or datetime.now(timezone.utc).strftime("%Y-%m")
     archive = await db.scalar(
         select(MonthlyArchive).where(
             MonthlyArchive.employee_id == employee.id,
-            MonthlyArchive.month_year == month,
+            MonthlyArchive.month_year == certificate_month,
         )
     )
-    if archive is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"No monthly archive exists for this employee in {month}",
-        )
+    if archive is not None:
+        final_score = int(archive.final_elo_score)
+        reports = int(archive.total_reports or 0)
+        clicks = int(archive.total_clicks or 0)
+        submissions = int(archive.total_submissions or 0)
+    else:
+        final_score = int(employee.elo_score or 0)
+        reports = int(employee.total_reports or 0)
+        clicks = int(employee.total_clicks or 0)
+        submissions = int(employee.total_credential_submissions or 0)
     pdf = build_certificate_pdf(
         employee,
-        month,
-        int(archive.final_elo_score),
-        int(archive.total_reports or 0),
-        int(archive.total_clicks or 0),
-        int(archive.total_submissions or 0),
+        certificate_month,
+        final_score,
+        reports,
+        clicks,
+        submissions,
     )
     return Response(
         content=pdf,
         media_type="application/pdf",
         headers={
             "Content-Disposition": (
-                f'attachment; filename="certificate-{employee.id}-{month}.pdf"'
-            )
+                f'attachment; filename="certificate-{employee.id}-{certificate_month}.pdf"'
+            ),
+            "Cache-Control": "no-store",
+        },
+    )
+
+
+#: Field-name tokens whose value must never leave the server in clear text.
+SENSITIVE_FIELD_TOKENS = ("pass", "secret", "pin", "otp", "token", "cvv", "code")
+
+
+def _masked_values(values: dict | None) -> dict[str, object]:
+    """Return ``values`` with credential-like fields replaced by bullets."""
+    masked: dict[str, object] = {}
+    for key, value in (values or {}).items():
+        lowered = str(key).lower()
+        masked[key] = "••••••" if any(token in lowered for token in SENSITIVE_FIELD_TOKENS) else value
+    return masked
+
+
+@router.get(
+    "/{employee_id}/intelligence",
+    summary="Aggregated intelligence profile for one employee",
+)
+async def employee_intelligence(
+    org_id: uuid.UUID,
+    employee_id: uuid.UUID,
+    limit: int = Query(50, ge=1, le=500, description="Ledger events to return"),
+    db: AsyncSession = Depends(get_db),
+    organization=Depends(get_organization_or_404),
+    user: User = Depends(require_permissions("employees.view")),
+) -> dict:
+    """Return everything the Employee Intelligence Hub needs in one call.
+
+    One request replaces the five the old UI issued (profile, dossier, timeline,
+    submissions, archives) and guarantees they are mutually consistent because
+    they are read in the same transaction.
+
+    Returns:
+        ``employee``, ``elo``, ``summary``, ``journeys``, ``events``,
+        ``submissions`` and ``certificates``.
+    """
+    employee = await _get_employee(db, org_id, employee_id)
+    dossier = await InteractionReportService().employee_dossier(employee, db)
+
+    archives = (
+        await db.execute(
+            select(MonthlyArchive)
+            .where(MonthlyArchive.employee_id == employee.id)
+            .order_by(MonthlyArchive.month_year.desc())
+        )
+    ).scalars().all()
+    department = (
+        await db.get(Department, employee.department_id)
+        if employee.department_id
+        else None
+    )
+
+    events = dossier["events"]
+    recent_events = events[-limit:]
+    submissions = [
+        {
+            "campaign_id": str(item.get("campaign_id")) if item.get("campaign_id") else None,
+            "campaign_name": item.get("campaign_name"),
+            "occurred_at": item.get("occurred_at"),
+            "ip_address": item.get("ip_address"),
+            "user_agent": item.get("user_agent"),
+            "password_length": item.get("password_length"),
+            "client": item.get("client"),
+            "values": _masked_values(item.get("values")),
+        }
+        for record in dossier["campaigns"]
+        for item in record["submissions"]
+    ][-limit:]
+
+    campaign_ids = {
+        event["campaign_id"] for event in events if event.get("campaign_id") is not None
+    }
+    journey_map = (
+        dict(
+            (
+                await db.execute(
+                    select(EmailCampaign.id, EmailCampaign.journey_id).where(
+                        EmailCampaign.id.in_(campaign_ids)
+                    )
+                )
+            ).all()
+        )
+        if campaign_ids
+        else {}
+    )
+    journeys = [
+        {
+            "campaign_id": str(record["campaign_id"]),
+            "journey_id": str(journey_map.get(record["campaign_id"]))
+            if journey_map.get(record["campaign_id"])
+            else None,
+            "campaign_name": record["campaign_name"],
+            "channel": record["channel"],
+            "status": record["status"],
+            "sent_at": record["sent_at"],
+            "clicked_at": record["clicked_at"],
+            "submitted_at": record["submitted_at"],
+            "completed_at": record["completed_at"],
+        }
+        for record in dossier["campaigns"]
+    ]
+
+    score = int(employee.elo_score or 0)
+    return {
+        "employee": {
+            "id": str(employee.id),
+            "organization_id": str(employee.organization_id),
+            "full_name": employee.full_name,
+            "first_name": employee.first_name,
+            "last_name": employee.last_name,
+            "email": employee.email,
+            "phone": employee.phone,
+            "job_title": employee.job_title,
+            "department": employee.department,
+            "department_id": str(employee.department_id) if employee.department_id else None,
+            "department_name": department.name if department is not None else None,
+            "is_active": employee.is_active,
+            "is_blacklisted": employee.is_blacklisted,
+            "blacklist_reason": employee.blacklist_reason,
+            "under_enhanced_monitoring": employee.under_enhanced_monitoring,
+            "requires_mandatory_training": employee.requires_mandatory_training,
+            "created_at": employee.created_at,
+        },
+        "elo": {
+            "score": score,
+            "level_en": awareness_level_for_elo(score),
+            "level_ar": awareness_level_ar(score),
+            "category": employee.behavioral_category,
+            "immunity_score": (
+                float(employee.immunity_score)
+                if employee.immunity_score is not None
+                else None
+            ),
+            "total_clicks": int(employee.total_clicks or 0),
+            "total_reports": int(employee.total_reports or 0),
+            "total_submissions": int(employee.total_credential_submissions or 0),
+        },
+        "summary": dossier["summary"],
+        "journeys": journeys,
+        "events": recent_events,
+        "submissions": submissions,
+        "certificates": [
+            {
+                "month_year": archive.month_year,
+                "final_elo_score": int(archive.final_elo_score),
+                "total_reports": int(archive.total_reports or 0),
+                "total_clicks": int(archive.total_clicks or 0),
+                "total_submissions": int(archive.total_submissions or 0),
+                "level_ar": awareness_level_ar(int(archive.final_elo_score)),
+                "level_en": awareness_level_for_elo(int(archive.final_elo_score)),
+                "download_url": (
+                    f"/api/v1/organizations/{org_id}/employees/{employee.id}"
+                    f"/certificate?month={archive.month_year}"
+                ),
+            }
+            for archive in archives
+        ],
+    }
+
+
+@router.get(
+    "/{employee_id}/report-pdf",
+    summary="Download one employee's detailed intelligence report (PDF)",
+)
+async def employee_report_pdf(
+    org_id: uuid.UUID,
+    employee_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    organization=Depends(get_organization_or_404),
+    user: User = Depends(require_permissions("reports.view")),
+) -> Response:
+    """Render the employee's full profile report as a PDF."""
+    employee = await _get_employee(db, org_id, employee_id)
+    dossier = await InteractionReportService().employee_dossier(employee, db)
+    archives = (
+        await db.execute(
+            select(MonthlyArchive)
+            .where(MonthlyArchive.employee_id == employee.id)
+            .order_by(MonthlyArchive.month_year.desc())
+        )
+    ).scalars().all()
+    submissions = [
+        {
+            **item,
+            "values": _masked_values(item.get("values")),
+        }
+        for record in dossier["campaigns"]
+        for item in record["submissions"]
+    ]
+    try:
+        pdf = build_employee_report_pdf(
+            employee,
+            organization.name,
+            summary=dossier["summary"],
+            campaigns=dossier["campaigns"],
+            events=dossier["events"],
+            submissions=submissions,
+            certificates=[
+                {
+                    "month_year": archive.month_year,
+                    "final_elo_score": int(archive.final_elo_score),
+                    "total_reports": int(archive.total_reports or 0),
+                    "total_clicks": int(archive.total_clicks or 0),
+                    "total_submissions": int(archive.total_submissions or 0),
+                }
+                for archive in archives
+            ],
+        )
+    except Exception as exc:  # noqa: BLE001 - a PDF failure must not 500 quietly
+        logger.exception(
+            "employee_report_pdf_failed",
+            employee_id=str(employee.id),
+            error=str(exc),
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Unable to generate the employee report",
+        ) from exc
+    logger.info(
+        "employee_report_pdf_generated",
+        employee_id=str(employee.id),
+        organization_id=str(org_id),
+        bytes=len(pdf),
+    )
+    return Response(
+        content=pdf,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="employee-report-{employee.id}.pdf"'
+            ),
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
         },
     )
 

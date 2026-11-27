@@ -1256,3 +1256,70 @@ export interface RuntimeConfig {
   rate_limit_enabled: boolean;
   environment: string;
 }
+
+/** One monthly certificate row shown in the intelligence hub. */
+export interface EmployeeIntelligenceCertificate {
+  month_year: string;
+  final_elo_score: number;
+  total_reports: number;
+  total_clicks: number;
+  total_submissions: number;
+  level_ar: string;
+  level_en: string;
+  download_url: string;
+}
+
+/** One campaign journey the employee belongs to. */
+export interface EmployeeIntelligenceJourney {
+  campaign_id: string;
+  journey_id: string | null;
+  campaign_name: string;
+  channel: string;
+  status: CampaignStatus;
+  sent_at: string | null;
+  clicked_at: string | null;
+  submitted_at: string | null;
+  completed_at: string | null;
+}
+
+/**
+ * The single aggregated payload behind the Employee Intelligence Hub.
+ * One request returns profile, Elo, the last 50 events, captured data and
+ * every certificate, read in one transaction so the numbers always agree.
+ */
+export interface EmployeeIntelligence {
+  employee: {
+    id: string;
+    organization_id: string;
+    full_name: string;
+    first_name: string;
+    last_name: string;
+    email: string;
+    phone: string | null;
+    job_title: string | null;
+    department: string | null;
+    department_id: string | null;
+    department_name: string | null;
+    is_active: boolean;
+    is_blacklisted: boolean;
+    blacklist_reason: string | null;
+    under_enhanced_monitoring: boolean;
+    requires_mandatory_training: boolean;
+    created_at: string;
+  };
+  elo: {
+    score: number;
+    level_en: string;
+    level_ar: string;
+    category: string | null;
+    immunity_score: number | null;
+    total_clicks: number;
+    total_reports: number;
+    total_submissions: number;
+  };
+  summary: EmployeeSummary;
+  journeys: EmployeeIntelligenceJourney[];
+  events: InteractionEvent[];
+  submissions: Submission[];
+  certificates: EmployeeIntelligenceCertificate[];
+}

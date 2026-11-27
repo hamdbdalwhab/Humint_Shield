@@ -52,6 +52,10 @@ celery_app.conf.beat_schedule = {
         "task": "app.worker.tasks.archive_monthly_scores",
         "schedule": crontab(hour=23, minute=59),
     },
+    "check-smart-alerts-hourly": {
+        "task": "app.worker.tasks.check_smart_alerts",
+        "schedule": crontab(minute=5),
+    },
 }
 
 

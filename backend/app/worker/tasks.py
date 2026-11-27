@@ -282,6 +282,40 @@ def retest_failed_campaign_employees(self, campaign_id: str) -> dict:  # noqa: A
     return run_async(_run())
 
 
+@celery_app.task(name="app.worker.tasks.check_smart_alerts")
+def check_smart_alerts() -> dict:
+    """Evaluate the smart alert rules and log every triggered alert.
+
+    Celery beat runs this hourly.  The rules themselves live in
+    :mod:`app.services.alert_service` so the same evaluation can be reused by
+    the live dashboard without duplicating thresholds.
+
+    Returns:
+        ``{"alerts": <count>, "types": [...]}``.
+    """
+    logger.info("task_check_smart_alerts")
+
+    async def _run() -> dict:
+        from app.services.alert_service import collect_smart_alerts
+
+        async with get_session_factory()() as session:
+            alerts = await collect_smart_alerts(session)
+        for alert in alerts:
+            logger.warning(
+                "smart_alert",
+                alert_type=alert["type"],
+                severity=alert["severity"],
+                detail=alert["detail_ar"],
+                entity_id=alert["entity_id"],
+            )
+        return {
+            "alerts": len(alerts),
+            "types": [alert["type"] for alert in alerts],
+        }
+
+    return run_async(_run())
+
+
 @celery_app.task(name="app.worker.tasks.archive_monthly_scores", bind=True, max_retries=0)
 def archive_monthly_scores(
     self, month: str | None = None, force: bool = False

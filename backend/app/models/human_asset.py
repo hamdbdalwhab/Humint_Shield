@@ -54,6 +54,12 @@ class HumanAsset(Base):
     first_name: Mapped[str] = mapped_column(String(100), nullable=False, default="")
     last_name: Mapped[str] = mapped_column(String(100), nullable=False, default="")
     department: Mapped[str | None] = mapped_column(String(100), index=True)
+    #: Canonical department row.  The free-text ``department`` column above is
+    #: kept in sync by the service layer for backwards compatibility, so both
+    #: the normalised master data and the historical string stay available.
+    department_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUIDType, ForeignKey("departments.id", ondelete="SET NULL"), index=True
+    )
     job_title: Mapped[str | None] = mapped_column(String(100))
     access_level: Mapped[int] = mapped_column(Integer, default=1)
     immunity_score: Mapped[Decimal] = mapped_column(Numeric(6, 2), default=Decimal("50.00"))
@@ -92,6 +98,9 @@ class HumanAsset(Base):
     )
 
     organization: Mapped["Organization"] = relationship(back_populates="employees")  # noqa: F821
+    department_ref: Mapped["Department | None"] = relationship(  # noqa: F821
+        back_populates="employees"
+    )
     tracking_events: Mapped[list["EmailTracking"]] = relationship(  # noqa: F821
         back_populates="employee", cascade="all, delete-orphan"
     )

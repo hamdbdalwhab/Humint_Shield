@@ -27,6 +27,7 @@ import type {
   Employee,
   EmployeeCreate,
   EmployeeDossier,
+  EmployeeIntelligence,
   EmployeeUpdate,
   HealthReport,
   IllyVoIPVerification,
@@ -183,6 +184,21 @@ export const employeesApi = {
       `/api/v1/organizations/${orgId}/employees/${id}/timeline`,
     );
     return data;
+  },
+  /** Aggregated profile, Elo, events, submissions and certificates. */
+  async intelligence(orgId: string, id: string): Promise<EmployeeIntelligence> {
+    const { data } = await http.get<EmployeeIntelligence>(
+      `/api/v1/organizations/${orgId}/employees/${id}/intelligence`,
+    );
+    return data;
+  },
+  /** Download the detailed employee intelligence report as a PDF. */
+  async reportPdf(orgId: string, id: string): Promise<Blob> {
+    const { data } = await http.get(
+      `/api/v1/organizations/${orgId}/employees/${id}/report-pdf`,
+      { responseType: 'blob' },
+    );
+    return data as Blob;
   },
   async dossier(orgId: string, id: string): Promise<EmployeeDossier> {
     const { data } = await http.get<EmployeeDossier>(
