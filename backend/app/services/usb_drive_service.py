@@ -215,6 +215,18 @@ def deploy_files(drive: str, files: list[tuple[str, bytes]]) -> dict:
     if not files:
         raise USBDriveError("No files were supplied for the USB drive")
     root = Path(f"{info.drive}\\")
+    required = sum(len(content) for _, content in files)
+    # Refuse before writing anything: a half-copied lure is worse than a clear
+    # error, because the operator would deploy an incomplete stick.
+    try:
+        free_bytes = shutil.disk_usage(root).free
+    except OSError:  # pragma: no cover - the drive can vanish mid-request
+        free_bytes = None
+    if free_bytes is not None and required > free_bytes:
+        raise USBDriveError(
+            f"Not enough free space on {info.drive}: "
+            f"{required} bytes needed, {free_bytes} available"
+        )
     written: list[dict] = []
     total = 0
     for index, (name, content) in enumerate(files, start=1):
@@ -248,6 +260,19 @@ def deploy_files(drive: str, files: list[tuple[str, bytes]]) -> dict:
                         ) from exc
                 else:
                     time.sleep(0.6 * (attempt + 1))
+        # Read the size back: a truncated write (full volume, failing flash
+        # cell) must never be reported as a successful deployment.
+        try:
+            written_size = target.stat().st_size
+        except OSError as exc:  # pragma: no cover - drive removed mid-request
+            raise USBDriveError(
+                f"Unable to verify {target.name} after writing: {exc}"
+            ) from exc
+        if written_size != len(content):
+            raise USBDriveError(
+                f"{target.name} is {written_size} of {len(content)} bytes after "
+                "writing; the drive may be full or failing"
+            )
         total += len(content)
         written.append({"name": target.name, "bytes": len(content)})
     return {

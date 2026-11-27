@@ -20,7 +20,7 @@ import secrets
 import string
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 
@@ -91,6 +91,10 @@ SECRET_FIELD_TOKENS = (
 #: Hard caps that keep a hostile payload from bloating the row.
 MAX_SUBMITTED_FIELDS = 25
 MAX_FIELD_KEY_LENGTH = 64
+
+#: A second scan of the same poster from the same device (IP + User-Agent)
+#: within this window is the same interaction, not a new one.
+QR_DUPLICATE_SCAN_WINDOW_SECONDS = 90
 MAX_FIELD_VALUE_LENGTH = 512
 
 #: Interaction event types written to the ledger.
@@ -1403,9 +1407,61 @@ class TrackingService:
         ip_address: str | None,
         user_agent: str | None,
         db: AsyncSession,
-    ) -> tuple[EmailTracking, QRScan]:
-        """Record an anonymous QR scan from a printed poster encoding the campaign ID."""
+    ) -> tuple[EmailTracking, QRScan] | None:
+        """Record an anonymous QR scan from a printed poster encoding the campaign ID.
+
+        Two kinds of traffic are deliberately not new interactions:
+
+        * **link-preview fetchers** (WhatsApp, Telegram, Slack, crawlers) that
+          fetch the URL only to render a preview — counting them would add a
+          phantom scan every time the poster URL is pasted into a chat, and
+        * **repeat scans** from the same device (same IP and User-Agent)
+          inside :data:`QR_DUPLICATE_SCAN_WINDOW_SECONDS`, which are the same
+          person re-opening the same poster.
+
+        Returns ``None`` for a preview fetch so the caller can redirect without
+        creating a row; a duplicate returns the original tracking/scan pair.
+        """
+        from app.services.device_detector import detect_device_model, is_preview_bot
+
+        if is_preview_bot(user_agent):
+            logger.info(
+                "qr_campaign_scan_preview_ignored",
+                campaign_id=str(campaign.id),
+                user_agent=(user_agent or "")[:120],
+            )
+            return None
+
         now = _now()
+        if ip_address or user_agent:
+            recent_filters = [
+                QRScan.campaign_id == campaign.id,
+                QRScan.occurred_at
+                >= now - timedelta(seconds=QR_DUPLICATE_SCAN_WINDOW_SECONDS),
+            ]
+            if ip_address:
+                recent_filters.append(QRScan.ip_address == ip_address)
+            if user_agent:
+                recent_filters.append(QRScan.user_agent == user_agent[:2000])
+            previous = (
+                await db.execute(
+                    select(QRScan)
+                    .where(*recent_filters)
+                    .order_by(QRScan.occurred_at.desc())
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            if previous is not None and previous.tracking_id is not None:
+                existing = await db.get(EmailTracking, previous.tracking_id)
+                if existing is not None:
+                    logger.info(
+                        "qr_campaign_scan_duplicate_ignored",
+                        campaign_id=str(campaign.id),
+                        scan_id=str(previous.id),
+                        tracking_uuid=str(existing.tracking_uuid),
+                    )
+                    return existing, previous
+
         tracking = EmailTracking(
             campaign_id=campaign.id,
             employee_id=None,
@@ -1422,7 +1478,6 @@ class TrackingService:
         db.add(tracking)
         await db.flush()
 
-        from app.services.device_detector import detect_device_model
         from app.services.geoip_service import lookup_ip_geolocation
 
         dev_model = detect_device_model(user_agent)

@@ -1179,18 +1179,22 @@ async def track_qr_scan(
         campaign = await db.get(EmailCampaign, identifier)
         if campaign is not None and (campaign.channel or "").strip().lower() == "qr":
             try:
-                tracking_row, scan_row = await TrackingService().log_campaign_qr_scan(
+                # ``None`` means a link-preview fetcher or crawler: the visitor
+                # still gets the landing page, but no phantom scan is recorded.
+                scanned = await TrackingService().log_campaign_qr_scan(
                     campaign,
                     _client_ip(request),
                     request.headers.get("user-agent"),
                     db,
                 )
                 await db.commit()
-                config = campaign.channel_config or {}
-                qr_config = config.get("qr")
-                qr_values = dict(qr_config) if isinstance(qr_config, dict) else {}
-                lure_type = normalize_lure_type(qr_values.get("lure_type") or qr_values.get("pretext_key")) or "bonus"
-                target_suffix = f"/qr/landing/{campaign.id}?tid={tracking_row.tracking_uuid}"
+                if scanned is None:
+                    target_suffix = f"/qr/landing/{campaign.id}"
+                else:
+                    tracking_row, _scan_row = scanned
+                    target_suffix = (
+                        f"/qr/landing/{campaign.id}?tid={tracking_row.tracking_uuid}"
+                    )
             except Exception as exc:
                 await db.rollback()
                 logger.error("track_qr_campaign_scan_failed", error=str(exc))

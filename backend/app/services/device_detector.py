@@ -11,6 +11,57 @@ import re
 from typing import Any
 import user_agents
 
+#: User agents that only fetch a URL to build a link preview or crawl a page.
+#: WhatsApp, Telegram, Slack, Teams and the social networks all fetch shared
+#: links this way; counting them as QR scans inflates campaign statistics by
+#: exactly the number of times the link was pasted into a chat.
+PREVIEW_BOT_PATTERNS: tuple[str, ...] = (
+    "whatsapp/",
+    "telegrambot",
+    "facebookexternalhit",
+    "facebot",
+    "twitterbot",
+    "linkedinbot",
+    "slackbot",
+    "slack-imgproxy",
+    "discordbot",
+    "skypeuripreview",
+    "pinterest/",
+    "redditbot",
+    "embedly",
+    "vkshare",
+    "mattermost",
+    "googlebot",
+    "bingbot",
+    "applebot",
+    "duckduckbot",
+    "yandexbot",
+    "baiduspider",
+    "headlesschrome",
+    "phantomjs",
+    "python-requests",
+    "python-httpx",
+    "httpx/",
+    "aiohttp/",
+    "curl/",
+    "wget/",
+    "go-http-client",
+    "libwww-perl",
+    "okhttp/",
+)
+
+
+def is_preview_bot(user_agent: str | None) -> bool:
+    """Return ``True`` for link-preview fetchers and crawlers.
+
+    A real phone browser never carries these tokens, so the caller can skip the
+    scan instead of creating a phantom QR interaction.
+    """
+    value = (user_agent or "").strip().lower()
+    if not value:
+        return False
+    return any(token in value for token in PREVIEW_BOT_PATTERNS)
+
 # Known Samsung Galaxy Model Number to Commercial Name Mapping
 _SAMSUNG_MODELS: dict[str, str] = {
     # Galaxy S24 Series

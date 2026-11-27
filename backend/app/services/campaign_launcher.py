@@ -46,6 +46,7 @@ from app.services.tracking_service import latest_submitted_values
 from app.services.illyvoip_service import IllyVoIPService
 from app.services.landing_page_resolver import LandingPageResolver
 from app.services.short_link_service import ShortLinkService
+from app.services.sms_segments import segment_info
 from app.services.textbee_service import TextBeeService, is_e164_phone
 from app.services.whatsapp_service import WhatsAppService
 
@@ -785,7 +786,7 @@ class CampaignLauncher:
                 db,
                 provider=self.personalizer.settings.sms_provider_effective,
                 batch_id=tracking.provider_message_id,
-                characters=0,
+                characters=int(getattr(tracking, "sms_characters", 0) or 0),
             )
         except Exception:  # noqa: BLE001 - the message is already accepted
             logger.exception(
@@ -1316,13 +1317,30 @@ class CampaignLauncher:
         if short_url not in body:
             body = f"{body} {short_url}".strip()
 
+        # Arabic copy is UCS-2: 70 characters per segment, not 160.  The exact
+        # count is kept on the tracking row so the interaction ledger records
+        # what was actually sent and billed.
+        segments = segment_info(body)
+        tracking.sms_characters = segments.units
+        tracking.sms_segments = segments.segments
+
         logger.info(
             "campaign_sms_landing_page_resolved",
             tracking_uuid=str(tracking.tracking_uuid),
             department=department,
             landing_page=landing_page,
-            characters=len(body),
+            characters=segments.units,
+            encoding=segments.encoding,
+            segments=segments.segments,
         )
+        if segments.concatenated:
+            logger.warning(
+                "campaign_sms_multipart",
+                tracking_uuid=str(tracking.tracking_uuid),
+                encoding=segments.encoding,
+                segments=segments.segments,
+                characters_per_segment=segments.characters_per_segment,
+            )
 
         if not settings.textbee_configured:
             raise RuntimeError(

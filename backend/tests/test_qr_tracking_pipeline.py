@@ -328,3 +328,68 @@ async def test_empty_fingerprint_rejected(client, db: AsyncSession, qr_campaign_
     res = await client.post("/api/v1/track/qr/submit", json=submit_payload)
     assert res.status_code == 200
     assert res.json()["success"] is True
+
+
+async def test_link_preview_fetcher_is_not_counted_as_a_scan(
+    client, db: AsyncSession, qr_campaign_factory
+):
+    """A WhatsApp/Telegram preview fetch must not inflate QR scan statistics."""
+    campaign = await qr_campaign_factory("bonus")
+    headers = {
+        "User-Agent": "WhatsApp/2.24.1.76 A",
+        "X-Forwarded-For": "203.0.113.9",
+    }
+    response = await client.get(
+        f"/api/v1/track/qr/{campaign.id}", headers=headers, follow_redirects=False
+    )
+
+    assert response.status_code == 302
+    assert "tid=" not in response.headers["location"]
+
+    tracking_rows = (
+        await db.execute(
+            select(EmailTracking).where(EmailTracking.campaign_id == campaign.id)
+        )
+    ).scalars().all()
+    scan_rows = (
+        await db.execute(
+            select(QRScan).where(QRScan.campaign_id == campaign.id)
+        )
+    ).scalars().all()
+    assert tracking_rows == []
+    assert scan_rows == []
+
+
+async def test_repeat_scan_from_the_same_device_reuses_the_interaction(
+    client, db: AsyncSession, qr_campaign_factory
+):
+    """Scanning the same poster twice on one phone is one interaction."""
+    campaign = await qr_campaign_factory("bonus")
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36",
+        "X-Forwarded-For": "198.51.100.77",
+    }
+    first = await client.get(
+        f"/api/v1/track/qr/{campaign.id}", headers=headers, follow_redirects=False
+    )
+    second = await client.get(
+        f"/api/v1/track/qr/{campaign.id}", headers=headers, follow_redirects=False
+    )
+
+    assert first.status_code == second.status_code == 302
+    first_tid = first.headers["location"].split("tid=")[1]
+    second_tid = second.headers["location"].split("tid=")[1]
+    assert first_tid == second_tid
+
+    tracking_rows = (
+        await db.execute(
+            select(EmailTracking).where(EmailTracking.campaign_id == campaign.id)
+        )
+    ).scalars().all()
+    scan_rows = (
+        await db.execute(
+            select(QRScan).where(QRScan.campaign_id == campaign.id)
+        )
+    ).scalars().all()
+    assert len(tracking_rows) == 1
+    assert len(scan_rows) == 1

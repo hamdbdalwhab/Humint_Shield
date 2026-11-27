@@ -64,3 +64,48 @@ def test_drives_payload_shape() -> None:
     payload = svc.drives_payload()
     assert set(payload) == {"host", "platform", "drives"}
     assert isinstance(payload["drives"], list)
+
+
+def _fake_removable(drive: str) -> svc.DriveInfo:
+    return svc.DriveInfo(drive, "USB", "FAT32", True, False, "removable", 1.0, 2.0, True)
+
+
+def test_deploy_refuses_a_full_drive_before_writing(monkeypatch) -> None:
+    """A drive without room fails with a clear error, not a truncated copy."""
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(svc, "resolve_drive", lambda drive: _fake_removable("H:\\"))
+    monkeypatch.setattr(svc.shutil, "disk_usage", lambda _root: SimpleNamespace(free=10))
+
+    with pytest.raises(svc.USBDriveError, match="Not enough free space"):
+        svc.deploy_files("H:", [("awareness.html", b"x" * 1000)])
+
+
+@pytest.mark.skipif(os.name != "nt", reason="writes to a Windows path")
+def test_deploy_verifies_every_written_file(monkeypatch, tmp_path) -> None:
+    """Each file is read back so a short write cannot be reported as success."""
+    monkeypatch.setattr(
+        svc, "resolve_drive", lambda drive: _fake_removable(str(tmp_path) + "\\")
+    )
+    result = svc.deploy_files("H:", [("awareness.html", b"hello world")])
+
+    assert (tmp_path / "awareness.html").read_bytes() == b"hello world"
+    assert result["files"] == [{"name": "awareness.html", "bytes": 11}]
+    assert result["total_bytes"] == 11
+
+
+@pytest.mark.skipif(os.name != "nt", reason="writes to a Windows path")
+def test_deploy_detects_a_truncated_write(monkeypatch, tmp_path) -> None:
+    """A partial write must raise instead of leaving a silent half-copy."""
+    from pathlib import Path
+
+    monkeypatch.setattr(
+        svc, "resolve_drive", lambda drive: _fake_removable(str(tmp_path) + "\\")
+    )
+    real_write = Path.write_bytes
+    monkeypatch.setattr(
+        Path, "write_bytes", lambda self, data: real_write(self, bytes(data)[:2])
+    )
+
+    with pytest.raises(svc.USBDriveError, match="after writing"):
+        svc.deploy_files("H:", [("awareness.html", b"hello world")])

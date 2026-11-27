@@ -26,6 +26,7 @@ import httpx
 
 from app.config import Settings, get_settings
 from app.logging_config import get_logger
+from app.services.sms_segments import segment_info
 
 logger = get_logger(__name__)
 
@@ -298,6 +299,15 @@ class TextBeeService:
             result["error"] = "message cannot be empty"
             result["error_code"] = "empty_message"
             return result
+        # GSM-7 holds 160 septets, UCS-2 (Arabic/emoji) only 70.  Reporting the
+        # real encoding and segment count keeps cost and delivery accounting
+        # honest instead of counting raw characters.
+        segments = segment_info(body)
+        result.update(
+            encoding=segments.encoding,
+            segments=segments.segments,
+            characters=segments.units,
+        )
         try:
             self._require_configured()
             device_id = await self.resolve_device_id()
@@ -339,8 +349,19 @@ class TextBeeService:
             to=mask_phone(recipient),
             batch_id=result["batch_id"],
             device_id=result["device_id"],
-            characters=len(body),
+            characters=segments.units,
+            encoding=segments.encoding,
+            segments=segments.segments,
         )
+        if segments.concatenated:
+            logger.warning(
+                "textbee_sms_multipart",
+                to=mask_phone(recipient),
+                batch_id=result["batch_id"],
+                encoding=segments.encoding,
+                segments=segments.segments,
+                characters_per_segment=segments.characters_per_segment,
+            )
         return result
 
 
