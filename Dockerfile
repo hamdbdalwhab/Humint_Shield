@@ -64,15 +64,16 @@ COPY --chown=humint:humint backend/app ./app
 COPY --chown=humint:humint backend/alembic ./alembic
 COPY --chown=humint:humint backend/alembic.ini backend/pyproject.toml ./
 COPY --chown=humint:humint backend/docker/entrypoint.sh /usr/local/bin/entrypoint.sh
+COPY --chown=humint:humint backend/docker/healthcheck.sh /usr/local/bin/healthcheck.sh
 COPY --chown=humint:humint --from=frontend /app/dist ./frontend/dist
-RUN chmod +x /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/healthcheck.sh
 
 USER humint
 
 EXPOSE 8000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=45s --retries=3 \
-  CMD curl -fsS "http://localhost:${PORT:-8000}/healthz" || exit 1
+  CMD ["/usr/local/bin/healthcheck.sh"]
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["web"]
