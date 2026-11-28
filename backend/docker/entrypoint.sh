@@ -50,7 +50,8 @@ case "$ROLE" in
   beat)
     echo "[entrypoint] starting celery beat"
     exec celery -A app.worker.celery_app:celery_app beat \
-      --loglevel="${LOG_LEVEL:-INFO}" "$@"
+      --loglevel="${LOG_LEVEL:-INFO}" \
+      --schedule "${CELERYBEAT_SCHEDULE:-/tmp/celerybeat-schedule}" "$@"
     ;;
   migrate)
     exec alembic upgrade head "$@"
