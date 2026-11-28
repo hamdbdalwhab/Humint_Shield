@@ -8,14 +8,14 @@ from __future__ import annotations
 import asyncio
 from logging.config import fileConfig
 
-from alembic import context
-from sqlalchemy import pool
+from sqlalchemy import inspect, pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
+import app.models  # noqa: F401  (registers all models on Base.metadata)
+from alembic import context
 from app.config import get_settings
 from app.database import Base
-import app.models  # noqa: F401  (registers all models on Base.metadata)
 
 config = context.config
 
@@ -41,6 +41,7 @@ def run_migrations_offline() -> None:
 
 def do_run_migrations(connection: Connection) -> None:
     """Configure the context and run migrations on a live connection."""
+    _widen_version_table(connection)
     context.configure(
         connection=connection,
         target_metadata=target_metadata,
@@ -49,6 +50,43 @@ def do_run_migrations(connection: Connection) -> None:
     )
     with context.begin_transaction():
         context.run_migrations()
+
+
+def _widen_version_table(connection: Connection) -> None:
+    """Widen ``alembic_version.version_num`` on PostgreSQL.
+
+    Alembic creates the column as ``VARCHAR(32)``.  Several revision ids in this
+    project are longer (``0016_usb_ledger_nullable_employee`` is 33 characters),
+    which SQLite silently accepts but PostgreSQL rejects with
+    ``StringDataRightTruncationError`` — the container would then restart
+    forever on a managed Postgres.  The column is widened in place before
+    Alembic reads or writes it; on SQLite this is a no-op.
+
+    Args:
+        connection: Active (synchronous wrapper) migration connection.
+    """
+    if connection.dialect.name != "postgresql":
+        return
+    # Pre-create the table with a wide column so a *first* migration run never
+    # hits the 32-character default; Alembic skips creation when it exists.
+    connection.exec_driver_sql(
+        "CREATE TABLE IF NOT EXISTS alembic_version ("
+        "version_num VARCHAR(255) NOT NULL, "
+        "CONSTRAINT alembic_version_pkc PRIMARY KEY (version_num))"
+    )
+    columns = {
+        column["name"]: column
+        for column in inspect(connection).get_columns("alembic_version")
+    }
+    version_column = columns.get("version_num")
+    length = getattr(version_column["type"], "length", None) if version_column else None
+    if length is not None and length < 255:
+        connection.exec_driver_sql(
+            "ALTER TABLE alembic_version ALTER COLUMN version_num TYPE VARCHAR(255)"
+        )
+    # SQLAlchemy 2.0 connections start a transaction implicitly: without this
+    # commit both statements are rolled back when the migration run ends.
+    connection.commit()
 
 
 async def run_async_migrations() -> None:

@@ -465,6 +465,22 @@ class Settings(BaseSettings):
     def _upper_level(cls, value: str) -> str:
         return value.upper()
 
+    @field_validator("database_url", mode="after")
+    @classmethod
+    def _force_async_driver(cls, value: str) -> str:
+        """Select the asyncpg driver for managed Postgres URLs.
+
+        Railway, Heroku and Render expose ``DATABASE_URL`` as
+        ``postgresql://...``, which SQLAlchemy maps to the *synchronous*
+        psycopg2 driver.  This application runs on async SQLAlchemy, so the
+        scheme is rewritten to ``postgresql+asyncpg://`` (credentials and query
+        string untouched).
+        """
+        for prefix in ("postgres://", "postgresql://"):
+            if value.startswith(prefix):
+                return "postgresql+asyncpg://" + value[len(prefix) :]
+        return value
+
     @model_validator(mode="after")
     def _enforce_production_secrets(self) -> "Settings":
         """Refuse to start production with generated or default secrets.
