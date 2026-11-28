@@ -1,9 +1,13 @@
 """Pydantic v2 schemas for AI-assisted template generation."""
 from __future__ import annotations
 
+import uuid
+from enum import Enum
 from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
+
+from app.schemas.sanitization import sanitize_plain_text
 
 
 class AIGenerateTemplateRequest(BaseModel):
@@ -44,4 +48,87 @@ class AIGeneratedTemplate(BaseModel):
     model: str = Field(default="", max_length=120)
 
 
-__all__ = ["AIGeneratedTemplate", "AIGenerateTemplateRequest"]
+class PretextType(str, Enum):
+    """The five psychological triggers a training pretext may rely on."""
+
+    authority = "authority"
+    urgency = "urgency"
+    familiarity = "familiarity"
+    scarcity = "scarcity"
+    fear = "fear"
+
+
+#: Arabic label stored alongside the pretext tag (analytics + UI).
+PRETEXT_LABELS_AR: dict[str, str] = {
+    "authority": "السلطة",
+    "urgency": "العجلة",
+    "familiarity": "الألفة",
+    "scarcity": "الندرة",
+    "fear": "الخوف",
+}
+
+
+class PretextGenerateRequest(BaseModel):
+    """The exact inputs the pretext engine needs.
+
+    The organization's industry and name default to the authenticated tenant when
+    the caller omits them, so a campaign can never be written for another
+    organization by supplying a different ``company_name``.
+    """
+
+    employee_name: str = Field(min_length=1, max_length=120)
+    job_title: str = Field(min_length=1, max_length=120)
+    department: str = Field(min_length=1, max_length=120)
+    company_name: str | None = Field(default=None, max_length=160)
+    industry: str | None = Field(default=None, max_length=120)
+    pretext: PretextType
+    channel: Literal["email", "sms", "whatsapp"] = "email"
+    #: ``ar`` = general formal Arabic, ``ar-SA`` = Saudi corporate Arabic.
+    language: Literal["ar", "ar-SA"] = "ar"
+    #: Persist the generated template in the ``templates`` table.
+    save: bool = True
+
+    @field_validator(
+        "employee_name", "job_title", "department", "company_name", "industry", mode="before"
+    )
+    @classmethod
+    def _clean_plain_text(cls, value: object) -> object:
+        """Strip markup and reject active content in every free-text input."""
+        if value is None:
+            return None
+        cleaned = sanitize_plain_text(str(value), "pretext input")
+        if cleaned is not None:
+            cleaned = cleaned.strip()
+            if not cleaned and value:
+                raise ValueError("value must not be blank")
+        return cleaned
+
+
+class PretextTemplatePayload(BaseModel):
+    """The JSON contract the model must return."""
+
+    subject: str = Field(min_length=1, max_length=300)
+    body_text: str = Field(min_length=1, max_length=4000)
+    pretext_used: PretextType
+
+
+class PretextTemplateResult(PretextTemplatePayload):
+    """A validated pretext template plus its provenance."""
+
+    channel: Literal["email", "sms", "whatsapp"] = "email"
+    #: ``ai`` when the model produced it, ``fallback`` for the curated template.
+    source: Literal["ai", "fallback"] = "ai"
+    provider: str = Field(default="", max_length=40)
+    model: str = Field(default="", max_length=120)
+    template_id: uuid.UUID | None = None
+
+
+__all__ = [
+    "AIGeneratedTemplate",
+    "AIGenerateTemplateRequest",
+    "PRETEXT_LABELS_AR",
+    "PretextGenerateRequest",
+    "PretextTemplatePayload",
+    "PretextTemplateResult",
+    "PretextType",
+]

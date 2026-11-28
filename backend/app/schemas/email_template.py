@@ -160,6 +160,7 @@ class EmailTemplatePublic(BaseModel):
     design_json: dict[str, Any] | None = None
     channel: str = "email"
     target_department: str | None = None
+    pretext_used: str | None = None
     difficulty_level: int
     available_variables: list[str]
     is_built_in: bool

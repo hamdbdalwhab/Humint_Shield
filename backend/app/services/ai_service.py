@@ -26,7 +26,12 @@ from pydantic import ValidationError
 
 from app.config import Settings, get_settings
 from app.logging_config import get_logger
-from app.schemas.ai import AIGeneratedTemplate
+from app.schemas.ai import (
+    AIGeneratedTemplate,
+    PretextGenerateRequest,
+    PretextTemplateResult,
+    PretextType,
+)
 
 logger = get_logger(__name__)
 
@@ -56,6 +61,25 @@ SHORT_MESSAGE_MAX_LENGTH = 170
 SAMPLE_SHORT_LINK = "https://hument.link/s/AbCdEf"
 #: Any absolute URL a model invents is replaced by the tracked placeholder.
 _URL_RE = re.compile(r"https?://[^\s<>\"']+")
+
+#: The one URL token the pretext engine allows. The campaign launcher swaps it
+#: for the per-recipient tracking URL, so a model can never emit a real link.
+TRACKING_PLACEHOLDER = "[TRACKING_LINK]"
+#: Hard length ceilings for a generated pretext (per channel).
+EMAIL_WORD_LIMIT = 120
+SHORT_MESSAGE_CHAR_LIMIT = 160
+#: Any HTML tag in generated pretext text (markup is never legitimate there).
+_PRETEXT_HTML_RE = re.compile(r"<\s*/?\s*[a-zA-Z][^>]*>")
+#: Absolute URL or a bare ``www.`` host.
+_PRETEXT_URL_RE = re.compile(r"(?:https?://|www\.)", re.IGNORECASE)
+#: Active-content payloads a text channel must never carry.
+_PRETEXT_ACTIVE_RE = re.compile(
+    r"(?:javascript\s*:|vbscript\s*:|data\s*:\s*text/html|"
+    r"\bon(?:error|load|click|mouseover|focus|submit)\s*=)",
+    re.IGNORECASE,
+)
+#: Robotic phrasing the pretext must never contain (see the style rules).
+_ROBOTIC_PHRASES = ("عزيزي المستخدم", "عزيزتي المستخدمة", "اضغط هنا")
 
 _JSON_FENCE_RE = re.compile(r"^\s*```(?:json)?\s*|\s*```\s*$", re.IGNORECASE)
 #: Some reasoning models wrap their answer in ``<think>...</think>``.  The
@@ -98,6 +122,10 @@ class AIServiceNotConfigured(AIServiceError):
 
 class AIProviderError(AIServiceError):
     """Raised when the provider rejects a request or returns unusable data."""
+
+
+class AITemplateRejected(AIServiceError):
+    """Raised when generated text breaches a safety or format rule."""
 
 
 def sanitize_generated_html(value: str) -> str:
@@ -171,6 +199,127 @@ def _render_short_body(body_text: str) -> str:
     if "{{link}}" not in text:
         text = f"{text} {{{{link}}}}".strip()
     return f"<p>{text}</p>"
+
+
+def build_pretext_prompt(
+    *,
+    employee_name: str,
+    job_title: str,
+    department: str,
+    company_name: str,
+    industry: str,
+    pretext: str,
+    channel: str,
+    language: str = "ar",
+) -> str:
+    """Build the compact English prompt that drives the pretext engine.
+
+    The prompt is written in English to save tokens and steer the model more
+    reliably, while the *output* is constrained to Arabic.  The requested limit
+    is spelled out per channel so the model cannot pick its own length.
+
+    Args:
+        employee_name: Target's display name.
+        job_title: Target's role.
+        department: Target's department.
+        company_name: Organization displayed to the target.
+        industry: Organization industry.
+        pretext: One of ``authority``, ``urgency``, ``familiarity``,
+            ``scarcity`` or ``fear``.
+        channel: ``email``, ``sms`` or ``whatsapp``.
+        language: ``ar`` (general formal) or ``ar-SA`` (Saudi corporate).
+
+    Returns:
+        The exact prompt string sent to the provider.
+    """
+    channel_label = {"email": "Email", "sms": "SMS", "whatsapp": "WhatsApp"}.get(
+        channel.strip().lower(), "Email"
+    )
+    limit = (
+        f"{EMAIL_WORD_LIMIT} words"
+        if channel.strip().lower() == "email"
+        else f"{SHORT_MESSAGE_CHAR_LIMIT} characters"
+    )
+    dialect = "Saudi" if language.strip() == "ar-SA" else "General Formal"
+    return (
+        "You are a Senior Social Engineer creating a training pretext. "
+        f"Write a {channel_label} message in Arabic ({dialect}) for {employee_name}, "
+        f"a {job_title} in the {department} department at {company_name} "
+        f"(Industry: {industry}). "
+        f"Use the {pretext.strip().title()} psychological trigger. "
+        "Rules: 1. Use natural corporate tone and open with مرحباً or أهلاً plus the "
+        "name — never عزيزي المستخدم or اضغط هنا. 2. Invent an internal system name. "
+        f"3. Max length: {limit}. 4. CTA must be subtle. "
+        f"5. Use {TRACKING_PLACEHOLDER} as the URL. "
+        "6. Return JSON only with keys: subject, body_text, pretext_used."
+    )
+
+
+def validate_pretext_output(
+    *,
+    subject: str,
+    body_text: str,
+    channel: str,
+    enforce_length: bool = True,
+) -> None:
+    """Reject generated text that breaks the safety or format contract.
+
+    Zero-trust rules applied to every candidate (AI or curated):
+
+    * no HTML tags, scripts or event handlers;
+    * no absolute URL — only :data:`TRACKING_PLACEHOLDER` is allowed;
+    * the placeholder must be present so the campaign always has a CTA;
+    * email bodies stay within :data:`EMAIL_WORD_LIMIT` words and SMS/WhatsApp
+      within :data:`SHORT_MESSAGE_CHAR_LIMIT` characters.
+
+    Args:
+        subject: Generated subject (or internal label for short channels).
+        body_text: Generated body.
+        channel: ``email``, ``sms`` or ``whatsapp``.
+        enforce_length: Set ``False`` when re-checking a pre-approved database
+            template for an email channel (curated copy is trusted, but a long
+            SMS would still be truncated by the gateway).
+
+    Raises:
+        AITemplateRejected: With every violated rule listed in one message.
+    """
+    problems: list[str] = []
+    for label, value in (("subject", subject), ("body_text", body_text)):
+        text = value if isinstance(value, str) else ""
+        if not text.strip():
+            problems.append(f"{label} is empty")
+        if _PRETEXT_HTML_RE.search(text):
+            problems.append(f"{label} contains HTML markup")
+        if _PRETEXT_URL_RE.search(text):
+            problems.append(f"{label} contains a real URL")
+        if _PRETEXT_ACTIVE_RE.search(text):
+            problems.append(f"{label} contains active content")
+
+    joined = f"{subject}\n{body_text}"
+    for phrase in _ROBOTIC_PHRASES:
+        if phrase in joined:
+            problems.append(f"text uses the robotic phrase {phrase!r}")
+
+    if TRACKING_PLACEHOLDER not in (body_text or ""):
+        problems.append(f"body_text must contain {TRACKING_PLACEHOLDER}")
+
+    short_channel = channel.strip().lower() in SHORT_CHANNELS
+    if short_channel:
+        length = len((body_text or "").strip())
+        if length > SHORT_MESSAGE_CHAR_LIMIT:
+            problems.append(
+                f"{channel.upper()} body is {length} characters; the limit is "
+                f"{SHORT_MESSAGE_CHAR_LIMIT}"
+            )
+    elif enforce_length:
+        words = len(re.findall(r"\S+", body_text or ""))
+        if words > EMAIL_WORD_LIMIT:
+            problems.append(
+                f"email body is {words} words; the limit is {EMAIL_WORD_LIMIT}"
+            )
+
+    if problems:
+        raise AITemplateRejected("; ".join(problems))
 
 
 def _describe_http_error(status_code: int, detail: str) -> str:
@@ -398,6 +547,199 @@ class AIService:
                 raise
 
         raise last_error or AIProviderError("AI generation failed")
+
+    async def generate_pretext(self, request: PretextGenerateRequest) -> PretextTemplateResult:
+        """Generate one validated pretext template through the provider.
+
+        The engine is deliberately strict: the model gets a single, fully
+        specified prompt, its JSON is parsed and validated with Pydantic, and
+        the text is then re-checked against the safety blocklist.  Any
+        deviation raises instead of returning something a campaign could send.
+
+        Args:
+            request: Validated inputs (target profile, organization context,
+                pretext trigger, channel and language).
+
+        Returns:
+            The validated template with the trigger actually used.
+
+        Raises:
+            AIServiceNotConfigured: When the provider settings are incomplete.
+            AIProviderError: When the provider fails or returns unusable data.
+            AITemplateRejected: When the text breaches a safety/format rule.
+        """
+        if not self.settings.llm_configured:
+            missing = ", ".join(self.settings.llm_missing_settings())
+            raise AIServiceNotConfigured(
+                "AI template generation is not configured. Set "
+                f"{missing} in the backend environment."
+            )
+
+        company_name = (request.company_name or "الشركة").strip()
+        industry = (request.industry or "general business").strip()
+        prompt = build_pretext_prompt(
+            employee_name=request.employee_name.strip(),
+            job_title=request.job_title.strip(),
+            department=request.department.strip(),
+            company_name=company_name,
+            industry=industry,
+            pretext=request.pretext.value,
+            channel=request.channel,
+            language=request.language,
+        )
+
+        models = [self.settings.llm_model_resolved]
+        for fallback in self.settings.llm_fallback_model_list:
+            if fallback not in models:
+                models.append(fallback)
+
+        payload: dict[str, Any] = {
+            "model": models[0],
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a senior security-awareness simulation author "
+                        "writing authorized employee-training pretexts. Return "
+                        "only valid JSON. Do not include reasoning or explanations."
+                    ),
+                },
+                {"role": "user", "content": prompt},
+            ],
+            "temperature": 0.7,
+            "max_tokens": min(self.settings.llm_max_tokens, 900),
+            "response_format": {"type": "json_object"},
+        }
+        url = f"{self.settings.llm_base_url_resolved.rstrip('/')}/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {self.settings.llm_api_key.strip()}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+
+        last_error: AIProviderError | None = None
+        for index, model in enumerate(models):
+            payload["model"] = model
+            timeout_seconds = (
+                self.settings.llm_primary_timeout_seconds
+                if index == 0
+                else self.settings.llm_timeout_seconds
+            )
+            try:
+                parsed, data = await self._post_chat(
+                    url=url,
+                    headers=headers,
+                    payload=payload,
+                    timeout_seconds=timeout_seconds,
+                )
+            except AIProviderError as exc:
+                last_error = exc
+                if index + 1 < len(models):
+                    logger.warning(
+                        "ai_pretext_model_fallback",
+                        failed_model=model,
+                        next_model=models[index + 1],
+                        error=str(exc)[:300],
+                    )
+                    continue
+                raise
+            return self._validate_pretext_payload(
+                parsed=parsed,
+                data=data,
+                request=request,
+                served_model=model,
+            )
+
+        raise last_error or AIProviderError("AI generation failed")
+
+    def _validate_pretext_payload(
+        self,
+        *,
+        parsed: dict[str, Any],
+        data: dict[str, Any],
+        request: PretextGenerateRequest,
+        served_model: str,
+    ) -> PretextTemplateResult:
+        """Turn one provider JSON payload into a validated pretext result."""
+        subject = sanitize_subject(str(parsed.get("subject") or ""))
+        body_text = _CONTROL_RE.sub("", str(parsed.get("body_text") or "")).strip()
+        validate_pretext_output(
+            subject=subject,
+            body_text=body_text,
+            channel=request.channel,
+        )
+
+        raw_pretext = str(parsed.get("pretext_used") or "").strip().lower()
+        try:
+            pretext = PretextType(raw_pretext)
+        except ValueError:
+            # The trigger is decided by the caller; a model that mislabels it
+            # must not silently change the experiment's variable.
+            pretext = request.pretext
+
+        result = PretextTemplateResult(
+            subject=subject,
+            body_text=body_text,
+            pretext_used=pretext,
+            channel=request.channel,
+            source="ai",
+            provider=self.settings.llm_provider_slug,
+            model=str(data.get("model") or served_model)[:120],
+        )
+        logger.info(
+            "ai_pretext_generated",
+            provider=result.provider,
+            model=result.model,
+            pretext=result.pretext_used.value,
+            channel=result.channel,
+            words=len(re.findall(r"\S+", body_text)),
+        )
+        return result
+
+    async def _post_chat(
+        self,
+        *,
+        url: str,
+        headers: dict[str, str],
+        payload: dict[str, Any],
+        timeout_seconds: float,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """POST a chat-completions payload and return parsed JSON + envelope."""
+        try:
+            if self._client is not None:
+                response = await self._client.post(
+                    url, json=payload, headers=headers, timeout=timeout_seconds
+                )
+            else:
+                async with httpx.AsyncClient(timeout=timeout_seconds) as client:
+                    response = await client.post(url, json=payload, headers=headers)
+        except httpx.TimeoutException as exc:
+            raise AIProviderError(
+                f"LLM provider timed out after {timeout_seconds:g}s"
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise AIProviderError(_describe_transport_error(exc)) from exc
+
+        if response.status_code >= 400:
+            detail = (response.text or "").strip()[:400]
+            logger.warning(
+                "ai_provider_http_error",
+                provider=self.settings.llm_provider_slug,
+                model=payload.get("model"),
+                status_code=response.status_code,
+                detail=detail,
+            )
+            raise AIProviderError(_describe_http_error(response.status_code, detail))
+
+        try:
+            data = response.json()
+        except ValueError as exc:
+            raise AIProviderError("LLM provider returned a non-JSON response") from exc
+        try:
+            content = data["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, TypeError) as exc:
+            raise AIProviderError("LLM response is missing choices[0].message.content") from exc
+        return _extract_json(content), data
 
     async def _generate_once(
         self,

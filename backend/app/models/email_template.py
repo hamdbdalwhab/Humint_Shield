@@ -50,6 +50,10 @@ class EmailTemplate(Base):
     #: Optional audience: ``IT``, ``Finance``, ``HR``, ``Executive`` or ``All``.
     #: The SMS landing page picks its skin from this value.
     target_department: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    #: Psychological trigger the pretext engine used (``authority``, ``urgency``,
+    #: ``familiarity``, ``scarcity`` or ``fear``). ``NULL`` for hand-authored
+    #: templates, which keeps existing rows untouched.
+    pretext_used: Mapped[str | None] = mapped_column(String(20), nullable=True, index=True)
     difficulty_level: Mapped[int] = mapped_column(Integer, default=5)
     available_variables: Mapped[list] = mapped_column(
         JSONBType, default=lambda: list(DEFAULT_VARIABLES)
