@@ -7,6 +7,7 @@ message was an authorized training exercise.
 """
 from __future__ import annotations
 
+import html
 from typing import Any
 
 from sqlalchemy import func, select
@@ -787,6 +788,196 @@ DEMO_TRAINING_MODULES: list[dict[str, Any]] = [
 
 
 # --------------------------------------------------------------------------- #
+# Built-in SMS (smishing) templates
+# --------------------------------------------------------------------------- #
+# SMS bodies are plain text: the personaliser converts the stored HTML to text
+# and the launcher appends the dedicated ``/api/v1/track/sms/{uuid}`` link.
+def _sms_template(
+    name: str,
+    text: str,
+    difficulty: int,
+    variables: list[str],
+    target_department: str = "All",
+) -> dict[str, Any]:
+    """Assemble a built-in SMS template definition.
+
+    Args:
+        name: Display name in the campaign wizard.
+        text: Plain-text body (``{{link}}`` is the short-link placeholder).
+        difficulty: 1-10 difficulty level.
+        variables: Merge tags the template uses.
+        target_department: ``IT``, ``Finance``, ``HR``, ``Executive`` or ``All``.
+    """
+    return {
+        "name": name,
+        "subject": name,
+        "body_html": f"<p>{html.escape(text)}</p>",
+        "difficulty_level": difficulty,
+        "available_variables": variables,
+        "channel": "sms",
+        "target_department": target_department,
+    }
+
+
+#: High-fidelity smishing lures. Bodies are plain text, contain no simulation
+#: wording, and use ``{{link}}`` (resolved to the per-recipient SMS tracker).
+SMS_TEMPLATE_DEFINITIONS: list[dict[str, Any]] = [
+    _sms_template(
+        name="IT Security Alert",
+        text=(
+            "Dear {{first_name}}, our system detected an unauthorized login "
+            "attempt on your {{company_name}} account from a new device. To "
+            "secure your account, please verify your identity immediately: "
+            "{{link}}"
+        ),
+        difficulty=3,
+        variables=["first_name", "company_name", "link"],
+    ),
+    _sms_template(
+        name="HR Bonus Approval",
+        text=(
+            "Congratulations {{first_name}}! Your performance bonus for this "
+            "quarter has been approved. Please review the breakdown and confirm "
+            "your bank details here: {{link}}"
+        ),
+        difficulty=4,
+        variables=["first_name", "link"],
+    ),
+    _sms_template(
+        name="Courier Delivery Notice",
+        text=(
+            "{{company_name}} Delivery: Your package is on hold at our local "
+            "facility due to incomplete address details. Please update your "
+            "shipping information within 24 hours to avoid return: {{link}}"
+        ),
+        difficulty=2,
+        variables=["company_name", "link"],
+    ),
+    _sms_template(
+        name="Executive Quick Request",
+        text=(
+            "Hi {{first_name}}, I am in a meeting and need a quick favor. Are "
+            "you available? Please click here to view the urgent request: "
+            "{{link}}"
+        ),
+        difficulty=5,
+        variables=["first_name", "link"],
+    ),
+    _sms_template(
+        name="VPN Certificate Expiry",
+        text=(
+            "{{first_name}}, your VPN certificate expires today. Failure to "
+            "renew will result in loss of remote access. Renew now: {{link}}"
+        ),
+        difficulty=3,
+        variables=["first_name", "link"],
+    ),
+    # Department-aware lures (<=170 characters including the link placeholder).
+    _sms_template(
+        name="IT · VPN Session Expiry",
+        text="Your VPN session expires today. Re-authenticate here: {{link}}",
+        difficulty=3,
+        variables=["link"],
+        target_department="IT",
+    ),
+    _sms_template(
+        name="Finance · Invoice Pending Approval",
+        text=(
+            "Invoice #{{invoice_id}} is pending approval. Review here: "
+            "{{link}}"
+        ),
+        difficulty=4,
+        variables=["invoice_id", "link"],
+        target_department="Finance",
+    ),
+    _sms_template(
+        name="HR · Policy Sign-off",
+        text="Mandatory policy update. Please sign here: {{link}}",
+        difficulty=3,
+        variables=["link"],
+        target_department="HR",
+    ),
+    _sms_template(
+        name="Executive · Board Meeting Change",
+        text="Urgent: Board meeting moved. Join here: {{link}}",
+        difficulty=5,
+        variables=["link"],
+        target_department="Executive",
+    ),
+]
+
+#: Built-in SMS templates are seeded alongside the email set.
+BUILT_IN_TEMPLATES.extend(SMS_TEMPLATE_DEFINITIONS)
+
+
+# --------------------------------------------------------------------------- #
+# Built-in WhatsApp templates
+# --------------------------------------------------------------------------- #
+# WhatsApp bodies are plain text with ``{{link}}`` (resolved to the per-recipient
+# ``/api/v1/track/whatsapp/{uuid}`` tracker).  Every body stays under 170
+# characters *including* the link so one message fits the wizard's budget.
+def _whatsapp_template(
+    name: str,
+    text: str,
+    difficulty: int,
+    target_department: str = "All",
+) -> dict[str, Any]:
+    """Assemble a built-in WhatsApp template definition."""
+    definition = _sms_template(
+        name=name,
+        text=text,
+        difficulty=difficulty,
+        variables=["link"],
+        target_department=target_department,
+    )
+    definition["channel"] = "whatsapp"
+    return definition
+
+
+WHATSAPP_TEMPLATE_DEFINITIONS: list[dict[str, Any]] = [
+    _whatsapp_template(
+        name="WhatsApp · IT VPN Re-authentication",
+        text=(
+            "IT helpdesk: your VPN certificate expires tonight. "
+            "Re-authenticate now to keep remote access: {{link}}"
+        ),
+        difficulty=3,
+        target_department="IT",
+    ),
+    _whatsapp_template(
+        name="WhatsApp · HR Bonus Confirmation",
+        text=(
+            "HR: your quarterly bonus is approved and awaiting your "
+            "confirmation today. Review the breakdown: {{link}}"
+        ),
+        difficulty=4,
+        target_department="HR",
+    ),
+    _whatsapp_template(
+        name="WhatsApp · Courier Address Hold",
+        text=(
+            "Courier: your parcel is held at the local depot. Update the "
+            "delivery address within 24h or it returns: {{link}}"
+        ),
+        difficulty=2,
+        target_department="All",
+    ),
+    _whatsapp_template(
+        name="WhatsApp · Executive Quick Favour",
+        text=(
+            "Hi, are you available? I need a discreet favour before the "
+            "board meeting — open here: {{link}}"
+        ),
+        difficulty=5,
+        target_department="Executive",
+    ),
+]
+
+#: Built-in WhatsApp templates are seeded alongside the email and SMS sets.
+BUILT_IN_TEMPLATES.extend(WHATSAPP_TEMPLATE_DEFINITIONS)
+
+
+# --------------------------------------------------------------------------- #
 # Seeding
 # --------------------------------------------------------------------------- #
 async def seed_builtin_templates(db: AsyncSession, organization_id) -> int:
@@ -830,6 +1021,8 @@ async def seed_builtin_templates(db: AsyncSession, organization_id) -> int:
                 upgraded += 1
             if definition.get("channel") and current.channel != definition["channel"]:
                 current.channel = definition["channel"]
+            if definition.get("target_department") and not current.target_department:
+                current.target_department = definition["target_department"]
             if not current.design_json:
                 current.design_json = legacy_design_payload(current.body_html)
             continue
@@ -839,8 +1032,14 @@ async def seed_builtin_templates(db: AsyncSession, organization_id) -> int:
                 name=definition["name"],
                 subject=definition["subject"],
                 body_html=definition["body_html"],
-                design_json=legacy_design_payload(definition["body_html"]),
+                # SMS is plain text: no email design, header or footer.
+                design_json=(
+                    None
+                    if definition.get("channel") == "sms"
+                    else legacy_design_payload(definition["body_html"])
+                ),
                 difficulty_level=definition["difficulty_level"],
+                target_department=definition.get("target_department"),
                 available_variables=list(definition["available_variables"]),
                 channel=definition.get("channel", "email"),
                 is_built_in=True,
@@ -848,6 +1047,20 @@ async def seed_builtin_templates(db: AsyncSession, organization_id) -> int:
             )
         )
         created += 1
+
+    # Retired built-in SMS lures stay in the database (historic campaigns still
+    # reference them) but disappear from the campaign wizard: the definition
+    # list above is authoritative for the active smishing catalogue.
+    active_sms_names = {
+        definition["name"]
+        for definition in BUILT_IN_TEMPLATES
+        if definition.get("channel") == "sms"
+    }
+    retired = 0
+    for row in existing.values():
+        if row.channel == "sms" and row.name not in active_sms_names and row.is_active:
+            row.is_active = False
+            retired += 1
     await db.flush()
     logger.info(
         "builtin_templates_seeded",

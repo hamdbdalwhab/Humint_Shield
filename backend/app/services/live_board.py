@@ -61,6 +61,10 @@ def _status(tracking: EmailTracking, *, launched: bool) -> str:
     """Derive the funnel status, keeping form views as their own stage."""
     if tracking.is_reported_safe:
         return "reported_safe"
+    if tracking.delivery_status == "no_answer":
+        # A real voice call that rang without pickup is an employee outcome, not
+        # a delivery error; show it apart from provider failures.
+        return "no_answer"
     if tracking.completed_at is not None:
         return "completed"
     if tracking.submitted_at is not None:
@@ -74,6 +78,94 @@ def _status(tracking: EmailTracking, *, launched: bool) -> str:
     if tracking.sent_at is not None:
         return "sent"
     return "failed" if launched else "pending"
+
+
+def _telemetry_fields(tracking: EmailTracking) -> dict[str, Any]:
+    """Extract the display fields of the endpoint profile a USB document sent.
+
+    The full packet lives in ``client_context['usb_telemetry']``; the board only
+    needs the forensic headline: which machine, which screen and GPU, how good
+    the connection was, where it came from and which file path was opened.  A
+    document that could not reach the server (offline open) leaves these empty,
+    and the card falls back to IP/User-Agent from the tracking row.
+    """
+    context = tracking.client_context if isinstance(tracking.client_context, dict) else {}
+    packet = context.get("usb_telemetry")
+    packet = packet if isinstance(packet, dict) else {}
+    device = packet.get("device") if isinstance(packet.get("device"), dict) else {}
+    screen = packet.get("screen") if isinstance(packet.get("screen"), dict) else {}
+    network = packet.get("network") if isinstance(packet.get("network"), dict) else {}
+    gpu = packet.get("gpu") if isinstance(packet.get("gpu"), dict) else {}
+    source = packet.get("source") if isinstance(packet.get("source"), dict) else {}
+    server = packet.get("server") if isinstance(packet.get("server"), dict) else {}
+    geo = context.get("geo") if isinstance(context.get("geo"), dict) else {}
+
+    platform = device.get("ua_platform") or device.get("platform")
+    platform_version = device.get("ua_platform_version")
+    browser = device.get("browser")
+    os_name = device.get("os")
+    headline = " ".join(
+        str(part)
+        for part in (os_name or platform, platform_version if not os_name else None, browser)
+        if part
+    ).strip()
+    details: list[str] = []
+    if screen.get("width") and screen.get("height"):
+        details.append(f"{screen['width']}x{screen['height']}")
+    if screen.get("pixel_ratio"):
+        details.append(f"@{screen['pixel_ratio']}x")
+    if device.get("hardware_concurrency"):
+        details.append(f"{device['hardware_concurrency']} CPU")
+    if device.get("device_memory_gb"):
+        details.append(f"{device['device_memory_gb']} GB RAM")
+    if gpu.get("renderer"):
+        details.append(str(gpu["renderer"])[:70])
+    summary = " · ".join(part for part in (headline, " · ".join(details)) if part) or None
+
+    location_parts = [
+        str(value)
+        for value in (
+            server.get("city") or geo.get("city"),
+            server.get("country") or geo.get("country"),
+            server.get("isp") or geo.get("isp"),
+        )
+        if value
+    ]
+    connection = network.get("effective_type")
+    if connection:
+        location_parts.append(f"{connection} link")
+
+    return {
+        "device_summary": summary,
+        "device_platform": os_name or platform,
+        "device_browser": browser,
+        "device_model": server.get("device_model"),
+        "device_screen": (
+            f"{screen.get('width')}x{screen.get('height')}"
+            if screen.get("width") and screen.get("height")
+            else None
+        ),
+        "device_gpu": gpu.get("renderer"),
+        "device_cpu_cores": device.get("hardware_concurrency"),
+        "device_memory_gb": device.get("device_memory_gb"),
+        "device_timezone": device.get("timezone"),
+        "device_language": device.get("language"),
+        "device_battery": packet.get("power") or packet.get("battery") or None,
+        "device_network": network or None,
+        "device_local_ips": (packet.get("webrtc") or {}).get("local_ips") or None,
+        "device_fingerprint": packet.get("fingerprint"),
+        "device_hostname": device.get("hostname") or context.get("hostname"),
+        "device_username": device.get("username") or context.get("username"),
+        "geo_label": " · ".join(location_parts) or None,
+        "geo_city": server.get("city") or geo.get("city"),
+        "geo_country": server.get("country") or geo.get("country"),
+        "geo_isp": server.get("isp") or geo.get("isp"),
+        "geo_latitude": server.get("latitude") if server.get("latitude") is not None else geo.get("latitude"),
+        "geo_longitude": server.get("longitude") if server.get("longitude") is not None else geo.get("longitude"),
+        "source_path": source.get("path") or context.get("source_path"),
+        "opened_from": "usb" if tracking.channel == "usb" else None,
+        "telemetry_received": bool(packet),
+    }
 
 
 def _fallback_last_event(tracking: EmailTracking) -> tuple[str | None, datetime | None]:
@@ -173,15 +265,33 @@ class LiveBoardService:
                 else tracking.last_user_agent
             )
 
+            telemetry = _telemetry_fields(tracking)
+            is_usb = (tracking.channel or "").strip().lower() == "usb"
+            generic_label = "USB drop endpoint" if is_usb else "Unknown QR Visitor"
+
             emp_id = employee.id if employee is not None else tracking.id
             emp_name = (
                 employee.full_name
                 if employee is not None
-                else (tracking.submitted_username or tracking.submitted_email or "Unknown QR Visitor")
+                else (
+                    telemetry.get("device_hostname")
+                    or telemetry.get("device_username")
+                    or tracking.submitted_username
+                    or tracking.submitted_email
+                    or generic_label
+                )
             )
             emp_email = employee.email if employee is not None else (tracking.submitted_email or "—")
-            emp_dept = employee.department if employee is not None else "QR Capture"
-            emp_job = employee.job_title if employee is not None else "External / Mobile"
+            emp_dept = (
+                employee.department
+                if employee is not None
+                else ("Physical USB drop" if is_usb else "QR Capture")
+            )
+            emp_job = (
+                employee.job_title
+                if employee is not None
+                else (telemetry.get("device_summary") or "Unidentified endpoint")
+            )
             immunity = float(employee.immunity_score) if (employee is not None and employee.immunity_score is not None) else None
             behavioral_cat = employee.behavioral_category if employee is not None else "unaware"
 
@@ -227,6 +337,7 @@ class LiveBoardService:
                     "behavioral_category": behavioral_cat,
                     "password_length": tracking.password_length,
                     "submitted_identifier": tracking.submitted_identifier,
+                    **telemetry,
                 }
             )
 
@@ -235,7 +346,10 @@ class LiveBoardService:
             {
                 "id": item.id,
                 "employee_id": item.employee_id,
-                "employee_name": names.get(item.employee_id, "Unknown recipient"),
+                "employee_name": names.get(item.employee_id)
+                or (item.details or {}).get("hostname")
+                or ("USB drop endpoint" if (item.details or {}).get("channel") == "usb" else "Unattributed endpoint"),
+                "device": (item.details or {}).get("device"),
                 "event_type": item.event_type,
                 "label": _label(item.event_type) or item.event_type,
                 "occurred_at": _aware(item.occurred_at),

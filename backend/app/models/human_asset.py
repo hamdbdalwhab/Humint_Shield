@@ -5,7 +5,18 @@ import uuid
 from datetime import date, datetime, timezone
 from decimal import Decimal
 
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, Numeric, String, func
+from sqlalchemy import (
+    Boolean,
+    Date,
+    DateTime,
+    ForeignKey,
+    Integer,
+    LargeBinary,
+    Numeric,
+    String,
+    event,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base, JSONBType, UUIDType, generate_uuid
@@ -29,14 +40,26 @@ class HumanAsset(Base):
         UUIDType, ForeignKey("organizations.id", ondelete="CASCADE"), index=True, nullable=False
     )
     email: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    #: AES-256-GCM sealed copy of :attr:`email` (``BYTEA``).  The plaintext
+    #: column is retained for the unique index and case-insensitive search.
+    email_encrypted: Mapped[bytes | None] = mapped_column(LargeBinary)
     #: Corporate sign-in name, when different from the e-mail local part.
     username: Mapped[str | None] = mapped_column(String(150), index=True)
     #: HR/payroll employee number printed on badges and pay slips.
     employee_id_external: Mapped[str | None] = mapped_column(String(100), index=True)
     phone: Mapped[str | None] = mapped_column(EncryptedString(64))
+    #: AES-256-GCM sealed copy of :attr:`phone` in the byte format used by
+    #: :mod:`app.services.encryption_service`.
+    phone_encrypted: Mapped[bytes | None] = mapped_column(LargeBinary)
     first_name: Mapped[str] = mapped_column(String(100), nullable=False, default="")
     last_name: Mapped[str] = mapped_column(String(100), nullable=False, default="")
     department: Mapped[str | None] = mapped_column(String(100), index=True)
+    #: Canonical department row.  The free-text ``department`` column above is
+    #: kept in sync by the service layer for backwards compatibility, so both
+    #: the normalised master data and the historical string stay available.
+    department_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUIDType, ForeignKey("departments.id", ondelete="SET NULL"), index=True
+    )
     job_title: Mapped[str | None] = mapped_column(String(100))
     access_level: Mapped[int] = mapped_column(Integer, default=1)
     immunity_score: Mapped[Decimal] = mapped_column(Numeric(6, 2), default=Decimal("50.00"))
@@ -57,6 +80,13 @@ class HumanAsset(Base):
     is_on_leave: Mapped[bool] = mapped_column(Boolean, default=False)
     requires_mandatory_training: Mapped[bool] = mapped_column(Boolean, default=False)
     under_enhanced_monitoring: Mapped[bool] = mapped_column(Boolean, default=False)
+    #: Repeated-failure blacklist (module 4).  Blacklisted employees are only
+    #: eligible for campaigns explicitly marked as mandatory training.
+    is_blacklisted: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="0", nullable=False
+    )
+    blacklist_reason: Mapped[str | None] = mapped_column(String(100))
+    blacklisted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     device_profile: Mapped[dict | None] = mapped_column(JSONBType, default=dict)
     risk_profile: Mapped[dict | None] = mapped_column(JSONBType, default=dict)
     behavioral_baseline: Mapped[dict | None] = mapped_column(JSONBType, default=dict)
@@ -68,6 +98,9 @@ class HumanAsset(Base):
     )
 
     organization: Mapped["Organization"] = relationship(back_populates="employees")  # noqa: F821
+    department_ref: Mapped["Department | None"] = relationship(  # noqa: F821
+        back_populates="employees"
+    )
     tracking_events: Mapped[list["EmailTracking"]] = relationship(  # noqa: F821
         back_populates="employee", cascade="all, delete-orphan"
     )
@@ -80,3 +113,31 @@ class HumanAsset(Base):
 
     def __repr__(self) -> str:  # pragma: no cover - debug helper
         return f"<HumanAsset {self.email!r}>"
+
+
+def _seal_sensitive_columns(target: HumanAsset) -> None:
+    """Mirror the plaintext columns into their encrypted ``BYTEA`` copies.
+
+    Running on the ORM flush guarantees that every write path (single create,
+    CSV import, update, seeding) keeps the encrypted columns in sync without
+    each endpoint having to remember it.
+    """
+    from app.services.encryption_service import encrypt_text
+
+    if target.email:
+        target.email_encrypted = encrypt_text(str(target.email))
+    target.phone_encrypted = (
+        encrypt_text(str(target.phone)) if target.phone else None
+    )
+
+
+@event.listens_for(HumanAsset, "before_insert")
+def _seal_on_insert(mapper, connection, target: HumanAsset) -> None:  # noqa: ANN001
+    """Encrypt PII before a new row is written."""
+    _seal_sensitive_columns(target)
+
+
+@event.listens_for(HumanAsset, "before_update")
+def _seal_on_update(mapper, connection, target: HumanAsset) -> None:  # noqa: ANN001
+    """Re-seal PII after an update (new nonce on every write)."""
+    _seal_sensitive_columns(target)

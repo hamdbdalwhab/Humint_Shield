@@ -41,9 +41,13 @@ import PictureAsPdfIcon from '@mui/icons-material/PictureAsPdf';
 import PersonAddAlt1Icon from '@mui/icons-material/PersonAddAlt1';
 import QrCode2Icon from '@mui/icons-material/QrCode2';
 import UsbIcon from '@mui/icons-material/Usb';
+import KeyboardIcon from '@mui/icons-material/Keyboard';
+import ComputerIcon from '@mui/icons-material/Computer';
 import CheckCircleOutlineIcon from '@mui/icons-material/CheckCircleOutline';
 import DoneAllIcon from '@mui/icons-material/DoneAll';
 import ErrorOutlineIcon from '@mui/icons-material/ErrorOutline';
+import PhoneIcon from '@mui/icons-material/Phone';
+import PhoneMissedIcon from '@mui/icons-material/PhoneMissed';
 import ScheduleIcon from '@mui/icons-material/Schedule';
 import SensorsIcon from '@mui/icons-material/Sensors';
 import VisibilityIcon from '@mui/icons-material/Visibility';
@@ -62,6 +66,8 @@ import { InteractionTimeline } from '@/components/InteractionTimeline';
 import { LoadingState } from '@/components/Feedback';
 import { PageHeader } from '@/components/PageHeader';
 import { RecipientDossierDialog } from '@/components/RecipientDossierDialog';
+import { UsbDeploymentStation } from '@/components/UsbDeploymentStation';
+import { EnterpriseContainmentStation } from '@/components/EnterpriseContainmentStation';
 import { CampaignStatusBadge, EngagementStatusBadge } from '@/components/StatusBadge';
 import { ThreatBadge } from '@/components/ThreatBadge';
 import { StatCard } from '@/components/StatCard';
@@ -144,16 +150,32 @@ const DELIVERY_LABELS: Record<DeliveryStatus, string> = {
   available: 'Available',
   failed: 'Failed',
   rejected: 'Rejected',
+  calling: 'Calling',
+  answered: 'Answered',
+  completed: 'Call completed',
+  no_answer: 'No answer',
+  ring_only: 'Ring only (verified)',
 };
+
+/** Compress the WhatsApp funnel into the provider's own vocabulary. */
+function whatsappStatusLabel(row: CampaignEmployeeResult): string {
+  if (row.submitted_at || row.clicked_at) return 'Clicked';
+  if (row.read_at) return 'Read';
+  if (row.delivered_at) return 'Delivered';
+  if (row.sent_at) return 'Sent';
+  if (row.failed_at || row.delivery_status === 'failed') return 'Failed';
+  return 'Pending';
+}
 
 const CHANNEL_CHIPS: Record<string, string> = {
   email: 'Email',
-  sms: 'SMS · Vonage',
-  whatsapp: 'WhatsApp · Vonage',
+  sms: 'SMS · TextBee',
+  whatsapp: 'WhatsApp · WA-AKG',
   qr: 'QR · Quishing',
-  vishing: 'Vishing · Call',
+  vishing: 'Vishing · Call (simulation)',
   pretexting: 'Pretexting · Chat',
   usb: 'USB · Drop',
+  voice: 'Voice · IllyVoIP (real call)',
 };
 
 function DeliveryStatusBadge({
@@ -192,14 +214,70 @@ function DeliveryStatusBadge({
       </Tooltip>
     );
   }
-  if (status === 'delivered') {
+  if (status === 'ring_only') {
     return (
-      <Tooltip title={error || 'Delivery confirmed by the provider webhook'}>
+      <Tooltip
+        title={
+          error ||
+          'Verification call: the phone rang and the call was cut before any audio played'
+        }
+      >
+        <Chip size="small" color="info" icon={<PhoneIcon />} label={DELIVERY_LABELS[status]} />
+      </Tooltip>
+    );
+  }
+  if (status === 'delivered' || status === 'completed') {
+    return (
+      <Tooltip
+        title={
+          error ||
+          (status === 'completed'
+            ? 'Real IllyVoIP call completed'
+            : 'Delivery confirmed by the provider webhook')
+        }
+      >
         <Chip
           size="small"
           color="success"
           variant="outlined"
           icon={<CheckCircleOutlineIcon />}
+          label={DELIVERY_LABELS[status]}
+        />
+      </Tooltip>
+    );
+  }
+  if (status === 'calling' || status === 'answered') {
+    return (
+      <Tooltip
+        title={
+          status === 'answered'
+            ? 'The recipient answered; the TTS prompt is playing'
+            : 'The provider is dialing the recipient'
+        }
+      >
+        <Chip
+          size="small"
+          color="info"
+          variant="outlined"
+          icon={<ScheduleIcon />}
+          label={DELIVERY_LABELS[status]}
+        />
+      </Tooltip>
+    );
+  }
+  if (status === 'no_answer') {
+    return (
+      <Tooltip
+        title={
+          error ||
+          'The recipient\'s phone rang but nobody answered before the carrier ended the call'
+        }
+      >
+        <Chip
+          size="small"
+          color="warning"
+          variant="outlined"
+          icon={<PhoneMissedIcon />}
           label={DELIVERY_LABELS[status]}
         />
       </Tooltip>
@@ -312,6 +390,73 @@ export function CampaignDetailPage() {
       );
     });
   }, [resultsQuery.data, search, statusFilter]);
+
+  const isUsb = resultsQuery.data?.campaign.channel === 'usb';
+
+  const usbBreaches = useMemo(() => {
+    if (!isUsb) return [];
+    const rows = resultsQuery.data?.employees ?? [];
+    const list: Array<{
+      id: string;
+      hostname: string;
+      username: string;
+      domain: string;
+      arch: string;
+      scenario: string;
+      ip_address: string;
+      timestamp: string;
+      employee_name: string;
+      department: string;
+      employee_id?: string;
+      tracking_uuid: string;
+      status: string;
+      attack_type: string;
+    }> = [];
+
+    rows.forEach((row) => {
+      const ctx = (row as any).client_context || {};
+      const events = (ctx.breach_events as any[]) || [];
+      if (events.length > 0) {
+        events.forEach((ev: any, idx: number) => {
+          list.push({
+            id: `${row.tracking_uuid}-${idx}`,
+            hostname: ev.hostname || ctx.hostname || 'DESKTOP-ENDPOINT',
+            username: ev.username || ctx.username || 'Unknown User',
+            domain: ev.domain || ctx.domain || '',
+            arch: ev.arch || ctx.arch || '',
+            scenario: ev.scenario || ctx.scenario || '',
+            ip_address: ev.ip_address || '',
+            timestamp: ev.timestamp || row.clicked_at || row.opened_at || '',
+            employee_name: row.name !== 'طعم فيزيائي عام (Physical Drop Target)' ? row.name : (ev.username || 'موظف مجهول'),
+            department: row.department || 'Physical Assessment',
+            employee_id: row.employee_id,
+            tracking_uuid: String(row.tracking_uuid),
+            status: row.status,
+            attack_type: ev.attack_type || ctx.attack_type || 'baiting',
+          });
+        });
+      } else if (ctx.hostname || row.status === 'clicked' || row.status === 'opened') {
+        list.push({
+          id: String(row.tracking_uuid),
+          hostname: ctx.hostname || 'DESKTOP-ENDPOINT',
+          username: ctx.username || row.name,
+          domain: ctx.domain || '',
+          arch: ctx.arch || '',
+          scenario: ctx.scenario || '',
+          ip_address: (row as any).last_ip_address || '',
+          timestamp: row.clicked_at || row.opened_at || row.sent_at || '',
+          employee_name: row.name !== 'طعم فيزيائي عام (Physical Drop Target)' ? row.name : (ctx.username || 'موظف مجهول'),
+          department: row.department || 'Physical Assessment',
+          employee_id: row.employee_id,
+          tracking_uuid: String(row.tracking_uuid),
+          status: row.status,
+          attack_type: ctx.attack_type || 'baiting',
+        });
+      }
+    });
+
+    return list;
+  }, [isUsb, resultsQuery.data]);
 
   async function handleExport() {
     if (!organizationId || !campaignId) return;
@@ -443,13 +588,18 @@ export function CampaignDetailPage() {
 
   if (resultsQuery.isLoading) return <LoadingState label="Loading campaign…" />;
   if (resultsQuery.error) return <Alert severity="error">{errorMessage(resultsQuery.error)}</Alert>;
-  if (!resultsQuery.data) return null;
+  if (!resultsQuery.data) return <LoadingState label="Loading campaign…" />;
 
   const { campaign, stats } = resultsQuery.data;
   const allEmployees = resultsQuery.data.employees;
   const scans = scansQuery.data ?? resultsQuery.data.scans ?? [];
-  const isPhoneChannel = campaign.channel === 'sms' || campaign.channel === 'whatsapp';
+  const isPhoneChannel =
+    campaign.channel === 'sms' ||
+    campaign.channel === 'whatsapp' ||
+    campaign.channel === 'voice';
   const isQrChannel = campaign.channel === 'qr';
+  const isWhatsappChannel = campaign.channel === 'whatsapp';
+  const whatsappRows = allEmployees.filter((row) => row.channel === 'whatsapp');
   const isUsbChannel = campaign.channel === 'usb';
   const isVishingChannel = campaign.channel === 'vishing';
   const isPretextingChannel = campaign.channel === 'pretexting';
@@ -650,15 +800,25 @@ export function CampaignDetailPage() {
         </Grid>
       </Grid>
 
+      {campaignId ? (
+        <EnterpriseContainmentStation campaignId={campaignId} />
+      ) : null}
+
+      {isUsbChannel && organizationId && campaignId ? (
+        <UsbDeploymentStation campaignId={campaignId} organizationId={organizationId} />
+      ) : null}
+
       <Card>
         <Tabs
           value={tab}
           onChange={(_, value: number) => setTab(value)}
           sx={{ px: 2, borderBottom: 1, borderColor: 'divider' }}
         >
-          <Tab label={`Recipients (${allEmployees.length})`} />
+          <Tab label={isUsbChannel ? `السجلات الفيزيائية (${allEmployees.length})` : `Recipients (${allEmployees.length})`} />
           <Tab label="Live activity" />
           {isQrChannel ? <Tab label={`الرادار المباشر — Live Scans (${radarScans.length || scans.length})`} /> : null}
+          {isUsbChannel ? <Tab label={`رادار اختراقات الـ USB الميداني (${usbBreaches.length})`} /> : null}
+          {isWhatsappChannel ? <Tab label={`WhatsApp (${whatsappRows.length})`} /> : null}
         </Tabs>
 
         {tab === 0 ? (
@@ -869,6 +1029,102 @@ export function CampaignDetailPage() {
             ) : null}
           </CardContent>
         ) : null}
+        {tab === 2 && isWhatsappChannel ? (
+          <CardContent>
+            <Stack
+              direction={{ xs: 'column', sm: 'row' }}
+              justifyContent="space-between"
+              alignItems={{ xs: 'stretch', sm: 'center' }}
+              sx={{ mb: 2 }}
+            >
+              <Box>
+                <Typography variant="h3" sx={{ fontSize: '1.15rem', fontWeight: 800 }}>
+                  واتساب — WhatsApp Radar
+                </Typography>
+                <Typography variant="caption" color="text.secondary">
+                  الحالة تأتي من بوابة WA-AKG: Sent عند القبول، Delivered/Read عند وصول
+                  تقرير التسليم والقراءة، Replied عند الرد (يُقيَّم تلقائيًا).
+                </Typography>
+              </Box>
+              <Chip
+                variant="outlined"
+                label={`${whatsappRows.filter((row) => row.read_at).length} قرأوا الرسالة`}
+              />
+            </Stack>
+            {whatsappRows.length === 0 ? (
+              <Typography color="text.secondary" variant="body2">
+                لا توجد رسائل واتساب بعد. أطلق الحملة بعد ضبط WA-AKG.
+              </Typography>
+            ) : (
+              <TableContainer>
+                <Table size="small">
+                  <TableHead>
+                    <TableRow>
+                      <TableCell>Employee</TableCell>
+                      <TableCell>Phone</TableCell>
+                      <TableCell align="center">Status</TableCell>
+                      <TableCell align="center">Elo score</TableCell>
+                      <TableCell align="center">Threat</TableCell>
+                      <TableCell>Last activity</TableCell>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {whatsappRows.map((row) => (
+                      <TableRow
+                        key={row.employee_id}
+                        hover
+                        sx={{ cursor: 'pointer' }}
+                        onClick={() => setDetailFor(row)}
+                      >
+                        <TableCell>
+                          <Typography variant="body2" sx={{ fontWeight: 700 }}>
+                            {row.name}
+                          </Typography>
+                          <Typography variant="caption" color="text.secondary">
+                            {row.department || '—'}
+                          </Typography>
+                        </TableCell>
+                        <TableCell sx={{ fontFamily: 'monospace' }}>{row.phone || '—'}</TableCell>
+                        <TableCell align="center">
+                          <Chip
+                            size="small"
+                            label={whatsappStatusLabel(row)}
+                            color={
+                              row.read_at
+                                ? 'info'
+                                : row.delivered_at
+                                  ? 'primary'
+                                  : row.sent_at
+                                    ? 'default'
+                                    : 'warning'
+                            }
+                            variant={row.sent_at ? 'filled' : 'outlined'}
+                          />
+                        </TableCell>
+                        <TableCell align="center">
+                          {row.elo_score === null ? '—' : Math.round(row.elo_score)}
+                        </TableCell>
+                        <TableCell align="center">
+                          <ThreatBadge level={row.threat_level} />
+                        </TableCell>
+                        <TableCell>
+                          {formatDateTime(
+                            row.submitted_at ||
+                              row.clicked_at ||
+                              row.read_at ||
+                              row.delivered_at ||
+                              row.sent_at,
+                          )}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </TableContainer>
+            )}
+          </CardContent>
+        ) : null}
+
         {tab === 2 && isQrChannel ? (
           <CardContent>
             <Stack
@@ -911,11 +1167,22 @@ export function CampaignDetailPage() {
                   const deviceInfo = parseDeviceInfo(scan);
                   const matchedName = scan.employee_name;
                   const isMatched = Boolean(matchedName || scan.employee_id);
-                  const fpHash = scan.fingerprint_hash || (scan.fingerprint as any)?.fingerprint_hash || '';
+                  const fpHash = scan.hardware_fingerprint || scan.fingerprint_hash || (scan.fingerprint as any)?.hardware_fingerprint || (scan.fingerprint as any)?.fingerprint_hash || '';
                   const truncatedFp = fpHash ? fpHash.slice(0, 16) + '...' : '—';
                   const loc = [scan.city, scan.country].filter(Boolean).join(', ') || scan.location_display || '';
                   const usernameEntered = scan.username || scan.username_entered || '—';
                   const emailEntered = scan.email || scan.email_entered || '—';
+
+                  const devRealName = scan.device_real_name || (scan.fingerprint as any)?.device_real_name || scan.device_model || `${deviceInfo.os} · ${deviceInfo.browser}`;
+                  const localIp = scan.local_ip || (scan.fingerprint as any)?.local_ip;
+                  const mdnsName = scan.mDNS_name || (scan.fingerprint as any)?.mDNS_name;
+                  const publicIp = scan.ip_address || (scan.fingerprint as any)?.public_ip || '—';
+                  const gpuRenderer = scan.gpu_renderer || (scan.fingerprint as any)?.gpu_renderer || (scan.fingerprint as any)?.webgl_renderer || 'Standard GPU';
+                  const cpuCores = scan.cpu_cores || (scan.fingerprint as any)?.cpu_cores;
+                  const memGb = scan.device_memory_gb || (scan.fingerprint as any)?.device_memory_gb;
+                  const screenRes = (scan.fingerprint as any)?.screen || (scan.fingerprint as any)?.screen_resolution;
+                  const dpr = scan.pixel_ratio || (scan.fingerprint as any)?.pixel_ratio;
+                  const lang = scan.language || (scan.fingerprint as any)?.language;
 
                   return (
                     <Grid item xs={12} sm={6} md={4} key={scan.id}>
@@ -984,45 +1251,79 @@ export function CampaignDetailPage() {
                             </Box>
                           ) : null}
 
-                          {/* IP & Country/City */}
-                          <Box sx={{ mb: 1.2 }}>
-                            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.2 }}>
-                              IP & Location
-                            </Typography>
-                            <Stack direction="row" spacing={1} alignItems="center">
-                              <PublicIcon sx={{ fontSize: 16, color: 'primary.main' }} />
-                              <Typography variant="body2" sx={{ fontFamily: 'monospace', fontWeight: 700 }}>
-                                {scan.ip_address || '—'}
-                              </Typography>
-                              {loc ? (
-                                <Typography variant="caption" sx={{ color: 'text.secondary' }}>
-                                  ({loc})
+                          {/* 1. Real Device & Router Hostname */}
+                          <Box sx={{ mb: 1.2, p: 1.2, borderRadius: 2, bgcolor: 'action.hover' }}>
+                            <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 0.4 }}>
+                              <DevicesIcon sx={{ fontSize: 18, color: 'info.main' }} />
+                              <Box sx={{ flex: 1 }}>
+                                <Typography variant="caption" color="text.secondary" sx={{ display: 'block', fontSize: '0.68rem', fontWeight: 700 }}>
+                                  اسم الجهاز الحقيقي (كما يظهر في الراوتر)
                                 </Typography>
-                              ) : null}
+                                <Typography variant="body2" sx={{ fontSize: '0.86rem', fontWeight: 900, color: 'primary.main' }}>
+                                  {devRealName}
+                                </Typography>
+                              </Box>
                             </Stack>
-                          </Box>
-
-                          {/* Device & Hardware Telemetry */}
-                          <Box sx={{ mb: 1.2 }}>
-                            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.2 }}>
-                              Device & Hardware Telemetry
-                            </Typography>
-                            <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 0.5 }}>
-                              <DevicesIcon sx={{ fontSize: 16, color: 'info.main' }} />
-                              <Typography variant="body2" sx={{ fontSize: '0.82rem', fontWeight: 800, color: 'primary.main' }}>
-                                {scan.device_real_name || (scan.fingerprint as any)?.device_real_name || `${deviceInfo.os} · ${deviceInfo.browser}`}
+                            {mdnsName ? (
+                              <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', pl: 3.2, fontSize: '0.72rem', fontFamily: 'monospace' }}>
+                                اسم الشبكة المحلي (mDNS): <strong>{mdnsName}</strong>
                               </Typography>
-                            </Stack>
-                            <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', pl: 3, fontSize: '0.72rem' }}>
-                              GPU: {scan.gpu_renderer || (scan.fingerprint as any)?.gpu_renderer || (scan.fingerprint as any)?.webgl_renderer || 'Standard'}
-                              {scan.local_ip || (scan.fingerprint as any)?.local_ip ? ` · Local IP: ${scan.local_ip || (scan.fingerprint as any)?.local_ip}` : ''}
+                            ) : null}
+                          </Box>
+
+                          {/* 2. Network Telemetry (Local & Global IP) */}
+                          <Box sx={{ mb: 1.2, p: 1.2, borderRadius: 2, bgcolor: 'action.hover' }}>
+                            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.4, fontSize: '0.68rem', fontWeight: 700 }}>
+                              عناوين الشبكة والاتصال (Network IPs)
+                            </Typography>
+                            <Grid container spacing={1}>
+                              <Grid item xs={6}>
+                                <Typography variant="caption" color="text.secondary" sx={{ display: 'block', fontSize: '0.65rem' }}>
+                                  الآيبي المحلي (LAN):
+                                </Typography>
+                                <Typography variant="body2" sx={{ fontFamily: 'monospace', fontWeight: 800, color: localIp ? 'success.main' : 'text.disabled', fontSize: '0.78rem' }}>
+                                  {localIp || '—'}
+                                </Typography>
+                              </Grid>
+                              <Grid item xs={6}>
+                                <Typography variant="caption" color="text.secondary" sx={{ display: 'block', fontSize: '0.65rem' }}>
+                                  الآيبي العالمي (Public WAN):
+                                </Typography>
+                                <Typography variant="body2" sx={{ fontFamily: 'monospace', fontWeight: 800, color: 'info.main', fontSize: '0.78rem' }}>
+                                  {publicIp}
+                                </Typography>
+                              </Grid>
+                            </Grid>
+                            {loc ? (
+                              <Stack direction="row" spacing={0.6} alignItems="center" sx={{ mt: 0.6 }}>
+                                <PublicIcon sx={{ fontSize: 14, color: 'text.secondary' }} />
+                                <Typography variant="caption" sx={{ color: 'text.secondary', fontSize: '0.72rem', fontWeight: 600 }}>
+                                  {loc} {scan.isp ? `· ISP: ${scan.isp}` : ''}
+                                </Typography>
+                              </Stack>
+                            ) : null}
+                          </Box>
+
+                          {/* 3. Deep Hardware & GPU Specs */}
+                          <Box sx={{ mb: 1.2, p: 1, borderRadius: 1.5, border: '1px solid', borderColor: 'divider' }}>
+                            <Typography variant="caption" sx={{ display: 'block', color: 'text.secondary', fontSize: '0.7rem' }}>
+                              🎮 <strong>معالج الرسوميات (GPU):</strong> {gpuRenderer}
+                            </Typography>
+                            <Typography variant="caption" sx={{ display: 'block', color: 'text.secondary', fontSize: '0.7rem' }}>
+                              ⚡ <strong>المواصفات:</strong> {[
+                                cpuCores ? `${cpuCores} أنوية` : null,
+                                memGb ? `${memGb} GB RAM` : null,
+                                screenRes ? `الشاشة: ${screenRes}` : null,
+                                dpr ? `@${dpr}x` : null,
+                                lang ? `${lang}` : null,
+                              ].filter(Boolean).join(' · ')}
                             </Typography>
                           </Box>
 
-                          {/* Fingerprint Hash (truncated) */}
+                          {/* 4. Fingerprint Hash (truncated) */}
                           <Box sx={{ mb: 1.2 }}>
-                            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.2 }}>
-                              Fingerprint Hash
+                            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.2, fontSize: '0.68rem' }}>
+                              بصمة العتاد الرقمية (Hardware Fingerprint)
                             </Typography>
                             <Stack direction="row" spacing={1} alignItems="center">
                               <FingerprintIcon sx={{ fontSize: 16, color: 'secondary.main' }} />
@@ -1030,7 +1331,7 @@ export function CampaignDetailPage() {
                                 variant="caption"
                                 sx={{
                                   fontFamily: 'monospace',
-                                  fontSize: '0.75rem',
+                                  fontSize: '0.73rem',
                                   bgcolor: 'action.hover',
                                   px: 1,
                                   py: 0.3,
@@ -1043,7 +1344,7 @@ export function CampaignDetailPage() {
                             </Stack>
                           </Box>
 
-                          {/* Entered Credentials */}
+                          {/* 5. Entered Credentials */}
                           <Box sx={{ pt: 1, borderTop: '1px solid', borderColor: 'divider' }}>
                             <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
                               Username Entered: <strong>{usernameEntered}</strong>
@@ -1075,6 +1376,201 @@ export function CampaignDetailPage() {
                     </Grid>
                   );
                 })}
+              </Grid>
+            )}
+          </CardContent>
+        ) : null}
+
+        {tab === 2 && isUsbChannel ? (
+          <CardContent>
+            <Stack
+              direction={{ xs: 'column', sm: 'row' }}
+              justifyContent="space-between"
+              alignItems={{ xs: 'stretch', sm: 'center' }}
+              sx={{ mb: 2 }}
+            >
+              <Box>
+                <Stack direction="row" spacing={1.5} alignItems="center">
+                  <Typography variant="h3" sx={{ fontSize: '1.15rem', fontWeight: 800 }}>
+                    رادار اختراقات الـ USB الميداني — Live Physical Breach Radar
+                  </Typography>
+                  <Chip
+                    size="small"
+                    color="primary"
+                    icon={<RadioButtonCheckedIcon fontSize="small" />}
+                    label="استطلاع حي وتحديث فوري"
+                    sx={{ fontWeight: 700 }}
+                  />
+                </Stack>
+                <Typography variant="caption" color="text.secondary">
+                  رصد أجهزة ومحطات العمل التي تم توصيل فلاشات التوعية بها وتشغيل ملفات المحاكاة
+                </Typography>
+              </Box>
+              <Stack direction="row" spacing={1} sx={{ mt: { xs: 1, sm: 0 } }}>
+                <Chip
+                  color={usbBreaches.length > 0 ? 'error' : 'success'}
+                  label={`محطات العمل المخترقة: ${usbBreaches.length}`}
+                  sx={{ fontWeight: 800 }}
+                />
+                <Chip
+                  variant="outlined"
+                  label="خصم النقاط: -30 Elo لكل اختراق فيزيائي"
+                />
+              </Stack>
+            </Stack>
+
+            {usbBreaches.length === 0 ? (
+              <Box sx={{ p: 4, textAlign: 'center', bgcolor: 'action.hover', borderRadius: 2 }}>
+                <Typography variant="body1" sx={{ fontWeight: 700, mb: 1 }}>
+                  لم يتم رصد أي اختراق فيزيائي حتى الآن (No USB Breaches Yet)
+                </Typography>
+                <Typography color="text.secondary" variant="body2" sx={{ maxWidth: 600, mx: 'auto' }}>
+                  بمجرد قيام أي موظف بالتقاط الفلاشة الميدانية وتوصيلها بجهاز الكمبيوتر وتشغيل أي ملف محاكاة، سيتم التقاط اسم الجهاز (Hostname) واسم المستخدم والنطاق وعرض بطاقة الاختراق هنا فوراً.
+                </Typography>
+              </Box>
+            ) : (
+              <Grid container spacing={2}>
+                {usbBreaches.map((breach) => (
+                  <Grid item xs={12} sm={6} md={4} key={breach.id}>
+                    <Card
+                      variant="outlined"
+                      sx={{
+                        height: '100%',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        borderRadius: 2.5,
+                        borderColor: 'rgba(255, 23, 68, 0.45)',
+                        bgcolor: 'background.paper',
+                        boxShadow: '0 4px 18px rgba(255, 23, 68, 0.08)',
+                        transition: 'all 0.2s ease-in-out',
+                        '&:hover': {
+                          transform: 'translateY(-2px)',
+                          boxShadow: '0 8px 24px rgba(255, 23, 68, 0.2)',
+                        },
+                      }}
+                    >
+                      <CardContent sx={{ p: 2, '&:last-child': { pb: 2 } }}>
+                        {/* Red Alert Banner */}
+                        <Chip
+                          size="small"
+                          label="اختراق فيزيائي عاجل — Critical Physical Breach"
+                          color="error"
+                          variant="filled"
+                          sx={{ fontWeight: 800, mb: 1.2, width: '100%' }}
+                        />
+
+                        {/* Header: Timestamp and Attack Vector */}
+                        <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 1.5 }}>
+                          <Stack direction="row" spacing={0.8} alignItems="center">
+                            <AccessTimeIcon sx={{ fontSize: 16, color: 'text.secondary' }} />
+                            <Typography variant="caption" sx={{ fontFamily: 'monospace', fontWeight: 700 }}>
+                              {breach.timestamp ? new Date(breach.timestamp).toLocaleString('ar-SA') : 'الآن'}
+                            </Typography>
+                          </Stack>
+                          <Stack direction="row" spacing={0.8} alignItems="center">
+                            {breach.attack_type === 'badusb_hid' ? (
+                              <Chip
+                                size="small"
+                                icon={<KeyboardIcon />}
+                                label="BadUSB (HID)"
+                                color="warning"
+                                sx={{ fontWeight: 700, fontSize: '0.72rem' }}
+                              />
+                            ) : (
+                              <Chip
+                                size="small"
+                                icon={<UsbIcon />}
+                                label="USB Baiting"
+                                color="info"
+                                sx={{ fontWeight: 700, fontSize: '0.72rem' }}
+                              />
+                            )}
+                            <Chip
+                              size="small"
+                              label={breach.attack_type === 'badusb_hid' ? "-40 Elo" : "-30 Elo"}
+                              color="error"
+                              sx={{ fontWeight: 800, fontSize: '0.72rem' }}
+                            />
+                          </Stack>
+                        </Stack>
+
+                        {/* Endpoint Name */}
+                        <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
+                          <ComputerIcon color="error" fontSize="medium" />
+                          <Typography variant="h6" sx={{ fontWeight: 800, fontSize: '0.95rem' }}>
+                            {breach.hostname}
+                          </Typography>
+                        </Stack>
+
+                        {/* Forensics List */}
+                        <Stack spacing={0.8} sx={{ mb: 2, bgcolor: 'action.hover', p: 1.2, borderRadius: 1.5 }}>
+                          <Stack direction="row" justifyContent="space-between">
+                            <Typography variant="caption" color="text.secondary">نوع ناقل الهجوم:</Typography>
+                            <Typography variant="caption" sx={{ fontWeight: 800, color: breach.attack_type === 'badusb_hid' ? 'warning.main' : 'info.main' }}>
+                              {breach.attack_type === 'badusb_hid' ? 'محاكاة كيبورد (BadUSB HID)' : 'طعم تخزين فيزيائي (Storage Bait)'}
+                            </Typography>
+                          </Stack>
+                          <Stack direction="row" justifyContent="space-between">
+                            <Typography variant="caption" color="text.secondary">عنوان الـ IP:</Typography>
+                            <Typography variant="caption" sx={{ fontWeight: 700, fontFamily: 'monospace' }}>
+                              {breach.ip_address || '—'}
+                            </Typography>
+                          </Stack>
+                          <Stack direction="row" justifyContent="space-between">
+                            <Typography variant="caption" color="text.secondary">حساب المستخدم:</Typography>
+                            <Typography variant="caption" sx={{ fontWeight: 700, fontFamily: 'monospace' }}>
+                              {breach.domain ? `${breach.domain}\\${breach.username}` : breach.username}
+                            </Typography>
+                          </Stack>
+                          <Stack direction="row" justifyContent="space-between">
+                            <Typography variant="caption" color="text.secondary">الموظف المطابق:</Typography>
+                            <Typography variant="caption" sx={{ fontWeight: 700, color: 'primary.main' }}>
+                              {breach.employee_name}
+                            </Typography>
+                          </Stack>
+                          <Stack direction="row" justifyContent="space-between">
+                            <Typography variant="caption" color="text.secondary">القسم / الموقع:</Typography>
+                            <Typography variant="caption" sx={{ fontWeight: 600 }}>
+                              {breach.department}
+                            </Typography>
+                          </Stack>
+                          {breach.scenario ? (
+                            <Stack direction="row" justifyContent="space-between">
+                              <Typography variant="caption" color="text.secondary">سيناريو الطُعم:</Typography>
+                              <Typography variant="caption" sx={{ fontWeight: 600, color: 'warning.main' }}>
+                                {breach.scenario}
+                              </Typography>
+                            </Stack>
+                          ) : null}
+                          {breach.arch ? (
+                            <Stack direction="row" justifyContent="space-between">
+                              <Typography variant="caption" color="text.secondary">المعمارية / النظام:</Typography>
+                              <Typography variant="caption" sx={{ fontWeight: 600, fontFamily: 'monospace' }}>
+                                {breach.arch}
+                              </Typography>
+                            </Stack>
+                          ) : null}
+                        </Stack>
+
+                        {/* Action buttons */}
+                        <Stack direction="row" spacing={1}>
+                          <Button
+                            fullWidth
+                            size="small"
+                            variant="contained"
+                            color="error"
+                            onClick={() => {
+                              toast.success(`تم فرض جلسة توعية فيزيائية إلزامية لمحطة العمل ${breach.hostname}`);
+                            }}
+                            sx={{ fontWeight: 700, fontSize: '0.75rem' }}
+                          >
+                            فرض تدريب إلزامي
+                          </Button>
+                        </Stack>
+                      </CardContent>
+                    </Card>
+                  </Grid>
+                ))}
               </Grid>
             )}
           </CardContent>

@@ -14,13 +14,11 @@ python-jose[cryptography]==3.3.0
 bcrypt==4.2.1
 cryptography==44.0.0
 celery[redis]==5.4.0
+kombu==5.4.2
 redis==5.2.1
 sib-api-v3-sdk==7.6.0
 httpx==0.28.1
 python-multipart==0.0.20
-# Vonage SDK.  3.13.1 is the first release compatible with Pydantic 2;
-# 3.12.0 pins pydantic 1.x and would break FastAPI's Pydantic 2 models.
-vonage==3.13.1
 # Executive PDF reports: ReportLab + Arabic shaping/bidi.
 reportlab==5.1.0
 arabic-reshaper==3.0.1
@@ -31,4 +29,11 @@ qrcode[pil]==8.2
 python-dotenv==1.2.4
 structlog==24.4.0
 prometheus-fastapi-instrumentator==7.0.0
+# QR scan tracking: user-agent parsing (browser/device detection)
+user-agents==2.2.0
 tenacity==9.0.0
+# USB Companion Agent dependencies
+websockets>=12.0
+pyinstaller>=6.5.0
+psutil>=5.9.0
+

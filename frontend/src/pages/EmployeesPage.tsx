@@ -354,12 +354,27 @@ export function EmployeesPage() {
                     <TableCell align="center">{employee.total_clicks}</TableCell>
                     <TableCell align="center">{employee.total_reports}</TableCell>
                     <TableCell align="center">
-                      <Chip
-                        size="small"
-                        label={employee.is_active ? 'active' : 'inactive'}
-                        color={employee.is_active ? 'success' : 'default'}
-                        variant="outlined"
-                      />
+                      <Stack
+                        direction="row"
+                        spacing={0.5}
+                        justifyContent="center"
+                        sx={{ flexWrap: 'wrap', gap: 0.5 }}
+                      >
+                        <Chip
+                          size="small"
+                          label={employee.is_active ? 'active' : 'inactive'}
+                          color={employee.is_active ? 'success' : 'default'}
+                          variant="outlined"
+                        />
+                        {employee.is_blacklisted ? (
+                          <Chip
+                            size="small"
+                            color="error"
+                            label="BLACKLISTED: Repeated Failure"
+                            sx={{ fontWeight: 800 }}
+                          />
+                        ) : null}
+                      </Stack>
                     </TableCell>
                     <TableCell align="right">
                       <Tooltip title="Send simulation">
@@ -525,18 +540,60 @@ export function EmployeesPage() {
           ) : (timelineQuery.data ?? []).length === 0 ? (
             <Typography color="text.secondary">No activity recorded yet.</Typography>
           ) : (
-            <Stack spacing={1.5}>
-              {timelineQuery.data?.map((event, index) => (
-                <Box
-                  key={`${event.event_type}-${index}`}
-                  sx={{
-                    borderLeft: '3px solid',
-                    borderColor: timelineColor(event.event_type),
-                    pl: 1.5,
-                    py: 0.25,
-                  }}
-                >
-                  <Typography variant="subtitle2">
+            <Stack spacing={1.25}>
+              {(timelineQuery.data ?? []).map((event, index, all) => (
+                <Box key={`${event.event_type}-${index}`} sx={{ display: 'flex', gap: 1.25 }}>
+                  <Box
+                    sx={{
+                      display: 'flex',
+                      flexDirection: 'column',
+                      alignItems: 'center',
+                      pt: 0.6,
+                      width: 14,
+                      flex: '0 0 auto',
+                    }}
+                  >
+                    <Box
+                      sx={{
+                        width: 10,
+                        height: 10,
+                        borderRadius: '50%',
+                        flex: '0 0 auto',
+                        bgcolor: timelineColor(event.event_type),
+                        boxShadow: `0 0 0 3px ${timelineColor(event.event_type)}22, 0 0 12px ${timelineColor(event.event_type)}66`,
+                      }}
+                    />
+                    {index < all.length - 1 ? (
+                      <Box
+                        sx={{
+                          width: 2,
+                          flex: 1,
+                          minHeight: 12,
+                          my: 0.5,
+                          borderRadius: 1,
+                          background: `linear-gradient(180deg, ${timelineColor(event.event_type)}66, rgba(255,255,255,.05))`,
+                        }}
+                      />
+                    ) : null}
+                  </Box>
+                  <Box
+                    sx={{
+                      flex: 1,
+                      minWidth: 0,
+                      px: 1.5,
+                      py: 1,
+                      borderRadius: 2.5,
+                      border: '1px solid rgba(255,255,255,.06)',
+                      background:
+                        'linear-gradient(135deg, rgba(255,255,255,.035), rgba(255,255,255,.008))',
+                      transition: 'border-color .2s ease, transform .2s ease',
+                      '&:hover': {
+                        borderColor: `${timelineColor(event.event_type)}66`,
+                        transform: 'translateX(-2px)',
+                      },
+                    }}
+                  >
+                  <Typography variant="subtitle2" sx={{ fontWeight: 700, lineHeight: 1.5 }}>
                     {TIMELINE_LABELS[event.event_type] ?? event.event_type.replace(/_/g, ' ')}
                     {event.campaign_name ? ` — ${event.campaign_name}` : ''}
                   </Typography>
@@ -569,6 +626,7 @@ export function EmployeesPage() {
                       ) : null}
                     </Box>
                   ) : null}
+                  </Box>
                 </Box>
               ))}
             </Stack>

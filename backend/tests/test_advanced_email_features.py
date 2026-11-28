@@ -83,9 +83,9 @@ async def test_otp_submission_applies_elo_penalty(client, db, organization, empl
     assert tracking.otp_submitted is True
     assert tracking.otp_submitted_at is not None
 
-    # Verify employee Elo score dropped by 15
+    # OTP submission is an email submission-level failure under smart scoring.
     await db.refresh(employee)
-    assert employee.elo_score == 1000 + OTP_SUBMISSION_ELO_DELTA  # 985
+    assert employee.elo_score == 865
 
     # Verify TrainingInteraction recorded
     interactions = (
@@ -98,7 +98,7 @@ async def test_otp_submission_applies_elo_penalty(client, db, organization, empl
     ).scalars().all()
     assert len(interactions) == 1
     assert interactions[0].details["otp_length"] == 6
-    assert interactions[0].details["elo_delta"] == -15
+    assert interactions[0].details["elo_delta"] == -135
 
     # Context now returns otp_submitted=True
     ctx_res_after = await client.get(f"/api/v1/track/context/{tracking.tracking_uuid}")

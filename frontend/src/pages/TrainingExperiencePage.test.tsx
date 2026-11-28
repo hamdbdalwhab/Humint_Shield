@@ -14,6 +14,7 @@ import type { TrackingContext } from '@/types';
 jest.mock('@/api/endpoints', () => ({
   trackingApi: {
     context: jest.fn(),
+    formViewed: jest.fn().mockResolvedValue(undefined),
     complete: jest.fn(),
     report: jest.fn(),
   },

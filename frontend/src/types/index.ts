@@ -2,12 +2,20 @@
  * Shared API types. These mirror the backend Pydantic schemas exactly.
  */
 
-export type Role = 'admin' | 'manager' | 'viewer';
+export type Role = 'admin' | 'manager' | 'viewer' | 'custom';
 
 export type CampaignStatus = 'draft' | 'active' | 'completed' | 'aborted';
 
 /** Delivery channels supported by the campaign engine. */
-export type CampaignChannel = 'email' | 'sms' | 'whatsapp' | 'qr' | 'vishing' | 'pretexting' | 'usb';
+export type CampaignChannel =
+  | 'email'
+  | 'sms'
+  | 'whatsapp'
+  | 'qr'
+  | 'vishing'
+  | 'pretexting'
+  | 'usb'
+  | 'voice';
 
 /** Channels delivered outside an email/SMS provider. */
 export type SimulationChannel = 'qr' | 'vishing' | 'pretexting' | 'usb';
@@ -23,7 +31,9 @@ export type EngagementStatus =
   | 'submitted'
   | 'completed'
   | 'reported_safe'
-  | 'failed';
+  | 'failed'
+  /** Real voice call that rang but was not picked up. */
+  | 'no_answer';
 
 /** Provider delivery receipt state for SMS/WhatsApp. */
 export type DeliveryStatus =
@@ -34,7 +44,14 @@ export type DeliveryStatus =
   | 'read'
   | 'available'
   | 'failed'
-  | 'rejected';
+  | 'rejected'
+  | 'calling'
+  | 'answered'
+  | 'completed'
+  /** Real voice call: the phone rang and nobody picked up (not a system error). */
+  | 'no_answer'
+  /** Ring-only verification: dialled, rang, cut before any audio played. */
+  | 'ring_only';
 
 export type BehavioralCategory = 'unaware' | 'hesitant' | 'competent' | 'critical_risk';
 
@@ -49,6 +66,61 @@ export interface User {
   organization_id: string | null;
   is_active: boolean;
   created_at: string;
+  /** Explicit grants stored on the account (on top of the role preset). */
+  permissions?: string[];
+  /** Role preset ∪ grants — the set every UI gate must use. */
+  effective_permissions?: string[];
+}
+
+/** An operator account as returned by the administration API. */
+export interface UserAdmin extends User {
+  permissions: string[];
+  effective_permissions: string[];
+  failed_login_attempts: number;
+  locked_until: string | null;
+  last_login_at: string | null;
+}
+
+export interface PermissionItem {
+  key: string;
+  label_ar: string;
+  label_en: string;
+}
+
+export interface PermissionGroup {
+  key: string;
+  label_ar: string;
+  label_en: string;
+  permissions: PermissionItem[];
+}
+
+export interface RolePreset {
+  key: Role;
+  label_ar: string;
+  label_en: string;
+  default_permissions: string[];
+}
+
+export interface PermissionCatalog {
+  roles: RolePreset[];
+  groups: PermissionGroup[];
+  total_permissions: number;
+}
+
+export interface UserCreatePayload {
+  username: string;
+  email: string;
+  password: string;
+  role: Role;
+  permissions: string[];
+  is_active?: boolean;
+}
+
+export interface UserUpdatePayload {
+  email?: string;
+  role?: Role;
+  permissions?: string[];
+  is_active?: boolean;
 }
 
 export interface TokenResponse {
@@ -89,6 +161,10 @@ export interface Employee {
   is_on_leave: boolean;
   requires_mandatory_training: boolean;
   under_enhanced_monitoring: boolean;
+  /** Repeated-failure blacklist (module 4). */
+  is_blacklisted: boolean;
+  blacklist_reason: string | null;
+  blacklisted_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -388,6 +464,7 @@ export interface QRScan {
   device_model?: string | null;
   device_real_name?: string | null;
   local_ip?: string | null;
+  mDNS_name?: string | null;
   gpu_renderer?: string | null;
   hardware_fingerprint?: string | null;
   country?: string | null;
@@ -434,6 +511,13 @@ export interface QRSubmissionPayload {
   fields?: Record<string, string>;
 }
 
+export interface QRProbePayload {
+  campaign_id: string;
+  tracking_uuid?: string;
+  fingerprint_data: Record<string, unknown>;
+  telemetry?: Record<string, unknown>;
+}
+
 export interface QRSubmissionResult {
   status?: string;
   redirect_url?: string | null;
@@ -452,6 +536,15 @@ export interface QRSubmissionResult {
 export interface CampaignChannelConfig {
   /** Credential-page skin used by the email landing page. */
   credential_provider?: CredentialProvider;
+  /** SMS copy and landing-page routing (TextBee). */
+  sms?: {
+    /** Operator-written body; replaces the template text when present. */
+    custom_message?: string;
+    /** Audience hint shown in the wizard (it / finance / hr / executive). */
+    target_department?: string;
+    /** Explicit landing page; `auto` lets keywords/department decide. */
+    selected_landing_page?: string;
+  };
   /** Quishing poster copy, lure type and branding. */
   qr?: {
     pretext_key?: string;
@@ -472,6 +565,16 @@ export interface CampaignChannelConfig {
     caller_name?: string;
     script?: string;
   };
+  /** Real outbound voice call through IllyVoIP native TTS. */
+  voice?: {
+    script?: string;
+    language?: string;
+    voice?: string;
+    /** Dial, hang up at the first ring: verifies the path without spending TTS. */
+    ring_only?: boolean;
+    answer_timeout_seconds?: number;
+    record?: boolean;
+  };
   /** Optional pretexting scenario copy; the fixed CEO message is used when absent. */
   pretexting?: {
     sender_name?: string;
@@ -481,6 +584,11 @@ export interface CampaignChannelConfig {
   usb?: {
     document_name?: string;
     month_label?: string;
+    scenario?: string;
+    drop_location?: string;
+    volume_label?: string;
+    /** Drive letter (e.g. ``H:``) the documents are copied to on launch. */
+    drive?: string;
   };
 }
 
@@ -493,6 +601,7 @@ export interface Campaign {
   channel_config: CampaignChannelConfig | null;
   status: CampaignStatus;
   auto_retest_failed?: boolean;
+  is_mandatory_training?: boolean;
   target_employee_ids: string[];
   total_targets: number;
   sent_count: number;
@@ -514,7 +623,72 @@ export interface CampaignCreate {
   channel_config?: CampaignChannelConfig | null;
   difficulty_level: number;
   auto_retest_failed?: boolean;
+  is_mandatory_training?: boolean;
   target_employee_ids: string[];
+}
+
+export interface CooldownBlockedEmployee {
+  employee_id: string;
+  email: string;
+  name: string;
+  status: string;
+  reason: 'cooldown_active' | 'blacklisted_repeated_failure' | string;
+  last_campaign_id: string | null;
+  last_campaign_name: string | null;
+  last_campaign_at: string | null;
+  days_remaining: number | null;
+}
+
+export interface CooldownCheckResponse {
+  cooldown_days: number;
+  blocked: CooldownBlockedEmployee[];
+}
+
+export interface CampaignGuardrails {
+  campaign_cooldown_days: number;
+}
+
+export interface MonthlyArchiveRow {
+  employee_id: string;
+  employee_name: string;
+  email: string;
+  department: string | null;
+  month_year: string;
+  final_elo_score: number;
+  total_reports: number;
+  total_clicks: number;
+  total_submissions: number;
+  awareness_level: string;
+  awareness_level_ar: string;
+  is_blacklisted: boolean;
+}
+
+export interface MonthlyArchiveMonth {
+  month_year: string;
+  employee_count: number;
+  average_elo: number;
+}
+
+export interface MonthlyArchiveResponse {
+  month: string | null;
+  months: MonthlyArchiveMonth[];
+  rows: MonthlyArchiveRow[];
+  average_elo: number | null;
+}
+
+export interface MonthlyEloPoint {
+  month_year: string;
+  average_elo: number;
+  employee_count: number;
+}
+
+export interface MonthlyArchiveRunResult {
+  status: string;
+  month: string;
+  archived: number;
+  blacklisted: number;
+  reset: number;
+  reason?: string | null;
 }
 
 export interface LaunchFailure {
@@ -529,6 +703,11 @@ export interface LaunchResult {
   sent: number;
   failed: number;
   failures: LaunchFailure[];
+  blocked: CooldownBlockedEmployee[];
+  blocked_count: number;
+  /** True when a real voice campaign was accepted by the Celery queue. */
+  queued?: boolean;
+  message?: string | null;
 }
 
 export interface CampaignStats {
@@ -676,6 +855,32 @@ export interface LiveRecipient {
   behavioral_category: BehavioralCategory | null;
   password_length: number | null;
   submitted_identifier: string | null;
+  /** Endpoint profile captured by a USB awareness document. */
+  device_summary?: string | null;
+  device_platform?: string | null;
+  device_browser?: string | null;
+  device_model?: string | null;
+  device_screen?: string | null;
+  device_gpu?: string | null;
+  device_cpu_cores?: number | null;
+  device_memory_gb?: number | null;
+  device_timezone?: string | null;
+  device_language?: string | null;
+  device_battery?: { level?: number; charging?: boolean } | null;
+  device_network?: Record<string, unknown> | null;
+  device_local_ips?: string[] | null;
+  device_fingerprint?: string | null;
+  device_hostname?: string | null;
+  device_username?: string | null;
+  geo_label?: string | null;
+  geo_city?: string | null;
+  geo_country?: string | null;
+  geo_isp?: string | null;
+  geo_latitude?: number | null;
+  geo_longitude?: number | null;
+  source_path?: string | null;
+  opened_from?: string | null;
+  telemetry_received?: boolean;
 }
 
 export interface LiveEvent {
@@ -688,6 +893,8 @@ export interface LiveEvent {
   seconds_ago: number;
   ip_address: string | null;
   user_agent: string | null;
+  /** Present on endpoint events (USB): the captured device profile. */
+  device?: Record<string, unknown> | null;
 }
 
 export interface LiveBoard {
@@ -890,9 +1097,12 @@ export interface HealthReport {
   redis: { ok: boolean; error: string | null };
   brevo_configured: boolean;
   email_dry_run: boolean;
-  vonage_configured?: boolean;
-  vonage_sms_configured?: boolean;
-  vonage_whatsapp_configured?: boolean;
+  textbee_configured?: boolean;
+  sms_provider?: 'textbee' | 'none';
+  illyvoip_configured?: boolean;
+  illyvoip_api_key_configured?: boolean;
+  illyvoip_missing_settings?: string[];
+  illyvoip_identity_warnings?: string[];
 }
 
 export interface BrevoVerification {
@@ -906,22 +1116,34 @@ export interface BrevoVerification {
   hint?: string | null;
 }
 
-export interface VonageVerification extends BrevoVerification {
+export interface SmsVerification extends BrevoVerification {
   configured?: boolean;
+  provider?: 'textbee';
   channel?: 'sms' | 'whatsapp';
+  device_id?: string | null;
   from?: string;
   missing?: string[];
   sms_ready?: boolean;
   whatsapp_ready?: boolean;
-  vonage_configured?: boolean;
-  vonage_application_configured?: boolean;
-  application_configured?: boolean;
-  messages_base_url?: string;
-  webhook_urls?: {
-    sms_dlr: string;
-    whatsapp_status: string;
-  };
-  webhook_token_required?: boolean;
+}
+
+export interface IllyVoIPVerification extends BrevoVerification {
+  provider?: 'illyvoip';
+  configured?: boolean;
+  missing?: string[];
+  warnings?: string[];
+  base_url?: string;
+  sip_user_id?: string | null;
+  caller_id?: string | null;
+  caller_id_valid?: boolean;
+  tts_language?: string;
+  tts_voice?: string;
+  record_calls?: boolean;
+  sandbox?: boolean;
+  api_reachable?: boolean;
+  backend_status?: Record<string, unknown> | null;
+  error_code?: string | null;
+  status_code?: number | null;
 }
 
 export interface TrackingCompleteResponse {
@@ -1018,16 +1240,86 @@ export interface RuntimeConfig {
   brevo_configured: boolean;
   smtp_configured: boolean;
   email_dry_run: boolean;
-  vonage_configured?: boolean;
-  vonage_sms_configured?: boolean;
-  vonage_whatsapp_configured?: boolean;
-  vonage_application_configured?: boolean;
-  vonage_sms_from?: string;
-  vonage_whatsapp_from?: string;
-  vonage_webhook_paths?: {
-    sms_dlr: string;
-    whatsapp_status: string;
-  };
+  textbee_configured?: boolean;
+  textbee_device_id?: string | null;
+  textbee_missing_settings?: string[];
+  sms_provider?: 'textbee' | 'none';
+  illyvoip_configured?: boolean;
+  illyvoip_api_key_configured?: boolean;
+  illyvoip_missing_settings?: string[];
+  illyvoip_identity_warnings?: string[];
+  illyvoip_sip_user_id?: string | null;
+  illyvoip_caller_id?: string | null;
+  illyvoip_tts_language?: string;
+  illyvoip_tts_voice?: string;
+  illyvoip_record_calls?: boolean;
   rate_limit_enabled: boolean;
   environment: string;
+}
+
+/** One monthly certificate row shown in the intelligence hub. */
+export interface EmployeeIntelligenceCertificate {
+  month_year: string;
+  final_elo_score: number;
+  total_reports: number;
+  total_clicks: number;
+  total_submissions: number;
+  level_ar: string;
+  level_en: string;
+  download_url: string;
+}
+
+/** One campaign journey the employee belongs to. */
+export interface EmployeeIntelligenceJourney {
+  campaign_id: string;
+  journey_id: string | null;
+  campaign_name: string;
+  channel: string;
+  status: CampaignStatus;
+  sent_at: string | null;
+  clicked_at: string | null;
+  submitted_at: string | null;
+  completed_at: string | null;
+}
+
+/**
+ * The single aggregated payload behind the Employee Intelligence Hub.
+ * One request returns profile, Elo, the last 50 events, captured data and
+ * every certificate, read in one transaction so the numbers always agree.
+ */
+export interface EmployeeIntelligence {
+  employee: {
+    id: string;
+    organization_id: string;
+    full_name: string;
+    first_name: string;
+    last_name: string;
+    email: string;
+    phone: string | null;
+    job_title: string | null;
+    department: string | null;
+    department_id: string | null;
+    department_name: string | null;
+    is_active: boolean;
+    is_blacklisted: boolean;
+    blacklist_reason: string | null;
+    under_enhanced_monitoring: boolean;
+    requires_mandatory_training: boolean;
+    created_at: string;
+  };
+  elo: {
+    score: number;
+    level_en: string;
+    level_ar: string;
+    category: string | null;
+    immunity_score: number | null;
+    total_clicks: number;
+    total_reports: number;
+    total_submissions: number;
+  };
+  summary: EmployeeSummary;
+  journeys: EmployeeIntelligenceJourney[];
+  events: InteractionEvent[];
+  submissions: Submission[];
+  certificates: EmployeeIntelligenceCertificate[];
 }

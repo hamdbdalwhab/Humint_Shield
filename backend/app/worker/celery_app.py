@@ -48,6 +48,14 @@ celery_app.conf.beat_schedule = {
         "task": "app.worker.tasks.purge_expired_tracking",
         "schedule": crontab(hour=3, minute=0),
     },
+    "archive-monthly-elo-scores": {
+        "task": "app.worker.tasks.archive_monthly_scores",
+        "schedule": crontab(hour=23, minute=59),
+    },
+    "check-smart-alerts-hourly": {
+        "task": "app.worker.tasks.check_smart_alerts",
+        "schedule": crontab(minute=5),
+    },
 }
 
 

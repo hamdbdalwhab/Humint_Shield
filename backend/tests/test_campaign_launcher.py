@@ -63,6 +63,7 @@ async def _make_campaign(
     employees: list[HumanAsset],
     *,
     status: str = "draft",
+    channel_config: dict | None = None,
 ) -> EmailCampaign:
     """Persist a campaign targeting ``employees``."""
     campaign = EmailCampaign(
@@ -70,6 +71,7 @@ async def _make_campaign(
         template_id=template_id,
         name="Launcher Campaign",
         status=status,
+        channel_config=channel_config or {},
         target_employee_ids=[str(e.id) for e in employees],
         total_targets=len(employees),
     )
@@ -430,7 +432,13 @@ async def test_adaptive_selection_uses_easy_band_for_low_elo(
     employee = employees[0]
     employee.elo_score = 850
     await db.commit()
-    campaign = await _make_campaign(db, organization, medium.id, [employee])
+    campaign = await _make_campaign(
+        db,
+        organization,
+        medium.id,
+        [employee],
+        channel_config={"adaptive_templates": True},
+    )
     service = FakeEmailService()
 
     await _launcher(service).launch_campaign(campaign.id, db)
@@ -462,7 +470,13 @@ async def test_adaptive_selection_uses_hard_band_for_high_elo(
     employee = employees[0]
     employee.elo_score = 1200
     await db.commit()
-    campaign = await _make_campaign(db, organization, medium.id, [employee])
+    campaign = await _make_campaign(
+        db,
+        organization,
+        medium.id,
+        [employee],
+        channel_config={"adaptive_templates": True},
+    )
     service = FakeEmailService()
 
     await _launcher(service).launch_campaign(campaign.id, db)
@@ -475,6 +489,33 @@ async def test_adaptive_selection_uses_hard_band_for_high_elo(
     assert tracking.template_id == hard.id
 
 
+async def test_campaign_template_is_sent_verbatim_without_adaptive_opt_in(
+    db: AsyncSession, organization, employees
+) -> None:
+    """Without the opt-in flag the chosen template is sent, never a band swap."""
+    await _adaptive_template(
+        db, organization, name="Easy", subject="Easy {{first_name}}", difficulty=2
+    )
+    medium = await _adaptive_template(
+        db, organization, name="Medium", subject="Medium {{first_name}}", difficulty=5
+    )
+    employee = employees[0]
+    employee.elo_score = 850
+    await db.commit()
+    campaign = await _make_campaign(db, organization, medium.id, [employee])
+    service = FakeEmailService()
+
+    await _launcher(service).launch_campaign(campaign.id, db)
+
+    assert len(service.sent) == 1
+    assert "Medium" in service.sent[0]["subject"]
+    tracking = await db.scalar(
+        select(EmailTracking).where(EmailTracking.campaign_id == campaign.id)
+    )
+    assert tracking is not None
+    assert tracking.template_id == medium.id
+
+
 async def test_adaptive_selection_falls_back_when_band_is_empty(
     db: AsyncSession, organization, employees
 ) -> None:
@@ -485,7 +526,13 @@ async def test_adaptive_selection_falls_back_when_band_is_empty(
     employee = employees[0]
     employee.elo_score = 850
     await db.commit()
-    campaign = await _make_campaign(db, organization, medium.id, [employee])
+    campaign = await _make_campaign(
+        db,
+        organization,
+        medium.id,
+        [employee],
+        channel_config={"adaptive_templates": True},
+    )
     service = FakeEmailService()
 
     await _launcher(service).launch_campaign(campaign.id, db)
@@ -510,14 +557,22 @@ async def test_adaptive_selection_rotates_between_equally_suitable_templates(
     )
     employee = employees[0]
     employee.elo_score = 850
+    # This test exercises template rotation, not the cooldown guardrail, so
+    # disable the cooldown for the two back-to-back launches.
+    organization.campaign_cooldown_days = 0
     await db.commit()
 
-    first_campaign = await _make_campaign(db, organization, easy_a.id, [employee])
+    adaptive = {"adaptive_templates": True}
+    first_campaign = await _make_campaign(
+        db, organization, easy_a.id, [employee], channel_config=adaptive
+    )
     first_service = FakeEmailService()
     await _launcher(first_service).launch_campaign(first_campaign.id, db)
     first_subject = first_service.sent[0]["subject"]
 
-    second_campaign = await _make_campaign(db, organization, easy_a.id, [employee])
+    second_campaign = await _make_campaign(
+        db, organization, easy_a.id, [employee], channel_config=adaptive
+    )
     second_service = FakeEmailService()
     await _launcher(second_service).launch_campaign(second_campaign.id, db)
     second_subject = second_service.sent[0]["subject"]

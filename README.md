@@ -1,802 +1,502 @@
 # HUMINT Shield
 
-**Consent-based security awareness training platform with a real multi-channel phishing simulation engine.**
+منصة تدريب توعية أمنية قائمة على الموافقة، مع محاكاة هجمات تصيّد متعددة القنوات
+وبيانات قياس سلوكي قابلة للتدقيق. صُمّمت للاستخدام الداخلي المصرّح به فقط،
+ضد عناوين وأصول تملكها المؤسسة أو لديها تفويض كتابي باستخدامها.
 
-HUMINT Shield combines a complete learning-management backend (training library,
-assignments, report inbox, behavioural scoring) with an additive **campaign
-module** that sends real authorized simulation messages through
-[Brevo](https://www.brevo.com/) for email and [Vonage](https://www.vonage.com/)
-for SMS and WhatsApp, tracks delivery, opening, clicking and training completion,
-and delivers immediate micro-learning to anyone who takes the bait.
-
-Everything runs on company-owned addresses under an explicit, auditable
-authorization model. Every simulated message contains a transparent disclosure
-page; no credentials are ever harvested, and no user is redirected to a malicious
-site — a click always lands on the training page.
+> **تنبيه استخدام:** هذا المشروع ليس أداة هجوم. لا ترسل بريدًا أو SMS أو
+> WhatsApp أو مكالمة صوتية إلى أي شخص دون تفويض موثّق. جميع القنوات تبقى
+> معطّلة عندما لا تُضبط مفاتيحها، والبريد الافتراضي في التطوير يعمل بوضع
+> `EMAIL_DRY_RUN`.
 
 ---
 
-## Table of contents
+## المحتويات
 
-- [Feature overview](#feature-overview)
-- [Architecture](#architecture)
-- [Quick start (Docker Compose)](#quick-start-docker-compose)
-- [Local development](#local-development)
-- [Configuration](#configuration)
-- [The campaign system](#the-campaign-system)
-- [Tracking flow](#tracking-flow)
-- [Publishing the training pages](#publishing-the-training-pages)
-- [Built-in templates](#built-in-templates)
-- [API reference](#api-reference)
-- [Testing](#testing)
-- [Security notes](#security-notes)
-- [Operations](#operations)
-- [Compliance basis](#compliance-basis)
-- [License](#license)
-
----
-
-## Feature overview
-
-### Campaign module (new)
-
-- **Template authoring** — rich HTML templates with `{{variable}}` interpolation,
-  live preview against real employee data, per-template difficulty level.
-- **Real email delivery through Brevo** — transactional send API, exponential
-  backoff retries, per-recipient commit so one failure never loses a batch.
-- **Real SMS and WhatsApp delivery through Vonage** — the SMS API uses the
-  `unicode` message type so Arabic content is encoded correctly, while WhatsApp
-  uses the Messages API. Every message embeds the same click-tracking link and
-  is accepted only after Vonage returns a provider message id.
-- **Delivery receipts, not assumptions** — Vonage SMS DLR and WhatsApp status
-  webhooks update `delivered`, `read` and failure states with idempotent,
-  channel-scoped writes. A launch records `submitted`; delivered/read are only
-  set by a real provider callback.
-- **Deterministic tracking** — a transparent 1×1 pixel for opens, rewritten links
-  for clicks, and a server-rendered training page that captures what the recipient
-  typed and awards awareness points.
-- **Interaction capture** — the training page presents a simulated sign-in form.
-  Every field the recipient submits — identifier, password and any extra field —
-  is transmitted, serialised to JSON and stored with AES-256-GCM. A secret-free
-  snapshot remains available for quick tables and CSV, while the full payload is
-  only readable through the authenticated dossier.
-- **Second-by-second ledger** — every open, click, form render, submission,
-  phishing report and completion is appended to `training_interactions` with a
-  microsecond timestamp, IP address, User-Agent and optional encrypted payload.
-  Repeats are preserved, not collapsed into counters.
-- **Per-recipient dossier** — every campaign row opens a full report: a
-  chronological timeline, delivery references, every submission with the values
-  typed, the immunity score and the behavioural category. The same dossier is
-  available per employee across every campaign.
-- **Live monitoring board** — launching a campaign redirects straight to
-  `/campaigns/{id}/live`: one card per targeted employee with the current funnel
-  status, every transition timestamp to the second, the elapsed time between
-  transitions, the last event with IP and device, and a live activity ticker.
-  The board polls the dedicated `/live` endpoint every two seconds, so an open or
-  a submission appears while the recipient is still on the page. Cards flash when
-  a status changes and open the full dossier on click.
-- **Campaign lifecycle** — `draft → active → completed` (plus `aborted`), with
-  target selection, launch, live results and CSV export.
-- **Inline or background launch** — send synchronously for small batches, or
-  offload to Celery (`?background=true`) with automatic inline fallback when the
-  broker is unavailable.
-- **Eight built-in templates** seeded idempotently on first startup.
-
-### Learning management (existing)
-
-- Employee directory with AES-256-GCM encryption of sensitive fields at rest.
-- Training library of micro-modules; assignments with due dates and completion.
-- Phishing report inbox with triage workflow (filing a report is rewarded).
-- Immunity scoring and behavioural classification.
-
-### Platform
-
-- JWT access/refresh authentication, bcrypt (cost 12) password hashing.
-- Structured JSON logging, Prometheus metrics, request correlation IDs.
-- Rate limiting, parameterized queries, typed settings, no mocks or placeholders.
+- [نظرة سريعة](#نظرة-سريعة)
+- [آخر إصدار](#آخر-إصدار)
+- [المعمارية](#المعمارية)
+- [التشغيل السريع بـ Docker](#التشغيل-السريع-بـ-docker)
+- [التشغيل المحلي للتطوير](#التشغيل-المحلي-للتطوير)
+- [الإعدادات](#الإعدادات)
+- [قنوات المحاكاة](#قنوات-المحاكاة)
+- [الصلاحيات والأدوار](#الصلاحيات-والأدوار)
+- [قاعدة البيانات والترحيلات](#قاعدة-البيانات-والترحيلات)
+- [الاختبارات](#الاختبارات)
+- [النشر على Cloudflare](#النشر-على-cloudflare)
+- [الأمان والتشغيل](#الأمان-والتشغيل)
+- [بنية المشروع](#بنية-المشروع)
+- [استكشاف الأخطاء](#استكشاف-الأخطاء)
+- [الترخيص](#الترخيص)
 
 ---
 
-## Architecture
+## نظرة سريعة
 
-```
-                    ┌───────────────────────────────────────────────┐
-  Mail client ─────►│ Brevo transactional API                        │
-                    └───────────────────────────────────────────────┘
-                                    ▲
-                                    │ sib-api-v3-sdk
-   ┌────────────────────────────────┴──────────────────────────────┐
-   │ FastAPI (gunicorn + uvicorn workers)                          │
-   │   /api/v1/...         REST API (JWT)                          │
-   │   /api/v1/track/...   unauthenticated tracking endpoints      │
-   │   /training/{uuid}    standalone micro-learning page          │
-   │   /metrics            Prometheus                              │
-   └───────┬───────────────────────────────────────┬───────────────┘
-           │ SQLAlchemy 2 async                    │ Celery
-   ┌───────▼────────┐                      ┌───────▼────────┐
-   │ PostgreSQL 16  │                      │ Redis 7.2      │
-   └────────────────┘                      └───────┬────────┘
-                                                   │
-                                          ┌────────▼────────┐
-                                          │ Celery worker   │
-                                          │ Celery beat     │
-                                          └─────────────────┘
+HUMINT Shield يجمع بين:
 
-   ┌───────────────────────────────────────────────────────────────┐
-   │ nginx (frontend container)                                    │
-   │   /            React 18 SPA                                   │
-   │   /api/        → backend:8000                                 │
-   │   /training/   → backend:8000 (standalone page)               │
-   └───────────────────────────────────────────────────────────────┘
+- **إدارة التوعية (LMS):** مكتبة وحدات تدريبية، إسنادات، مواعيد استحقاق،
+  صندوق بلاغات التصيّد، ودرجات مناعة وسلوك.
+- **حملات محاكاة حقيقية:** بريد إلكتروني، SMS، WhatsApp، مكالمات صوتية
+  (vishing)، رموز QR، ووسائط USB — كل ذلك ضمن حملة واحدة قابلة للتدقيق.
+- **تتبّع دقيق:** فتح، نقر، عرض صفحة، إدخال بيانات في نموذج محاكاة، بلاغ عن
+  التصيّد، وإكمال التدريب، مع طوابع زمنية وأحداث متعددة لا تُدمج.
+- **ملف تحقيق لكل مستهدف:** خط زمني كامل، مراجع التسليم، الحمولات المشفّرة،
+  درجة المناعة، والتصنيف السلوكي.
+- **لوحة مراقبة حيّة:** تحديث كل ثانيتين، بطاقة لكل مستهدف، وتنبيهات فورية.
+- **إدارة صلاحيات دقيقة:** 24 صلاحية في 9 مجموعات، وأدوار `admin` و`manager`
+  و`viewer` و`custom`، مع منح فردي فوق الدور.
+
+**لا تُجمع كلمات مرور حقيقية ولا تُوجّه الروابط إلى مواقع خارجية:** النقر
+ينتهي دائمًا إلى صفحة تدريب توعوي شفافة.
+
+---
+
+## آخر إصدار
+
+**2026-11-26 — الإصدار 1.0.0**
+
+- ترحيل `0019_user_permissions`: أعمدة `users.permissions` و
+  `users.last_login_at`، وصلاحيات فردية دقيقة.
+- إدارة المستخدمين والصلاحيات من الواجهة، مع كتالوج صلاحيات موحّد يُعرض من
+  الـAPI بدل تكراره في الواجهة.
+- صفحة تغيير كلمة المرور، وسياسة كلمات مرور قابلة للضبط، وتدقيق الدخول.
+- تحصين أمني مؤسسي: رؤوس أمان، حدّ لمعدل الطلبات، تدقيق، وتنقية مدخلات.
+- قناة SMS عبر **TextBee**، وقناة WhatsApp عبر **WA-AKG**، وقناة صوتية عبر
+  **IllyVoIP**، مع تعطيل صريح عند غياب الإعدادات.
+- دعم البريد عبر **Brevo** أو **SMTP**.
+- تتبّع QR/USB، تسجيل أحداث الجهاز، ولوحة أدلة قابلة للتصدير.
+
+راجع [`CHANGELOG.md`](CHANGELOG.md) لسجل التغييرات.
+
+---
+
+## المعمارية
+
+```text
+                         ┌─────────────────────────────────────────────┐
+  Brevo / SMTP ─────────►│  FastAPI (API + standalone training pages)  │
+  TextBee (SMS) ────────►│                                             │
+  WA-AKG (WhatsApp) ────►│  /api/v1/*       REST + JWT + permissions   │
+  IllyVoIP (voice) ─────►│  /api/v1/track/* unauthenticated tracking    │
+                         │  /training/*     micro-learning              │
+                         │  /healthz        liveness                   │
+                         └───────┬───────────────────────┬─────────────┘
+                                 │ SQLAlchemy 2 async    │ Celery
+                         ┌───────▼────────┐      ┌───────▼────────┐
+                         │ PostgreSQL 16  │      │ Redis 7.2      │
+                         │ or SQLite      │      │ worker + beat  │
+                         └────────────────┘      └────────────────┘
+
+  React 18 SPA (Vite) ──► nginx (same-origin) ──► FastAPI
+  Cloudflare Tunnel / Worker ──► public HTTPS ──► FastAPI
 ```
 
-### Technology stack
+### التقنيات
 
-| Layer    | Technology                                                                 |
-| -------- | -------------------------------------------------------------------------- |
-| Backend  | FastAPI, SQLAlchemy 2 (async), Alembic, Pydantic v2, python-jose, bcrypt   |
-| Jobs     | Celery + Redis (broker/result backend)                                     |
-| Email    | Brevo (`sib-api-v3-sdk`)                                                   |
-| SMS / WhatsApp | Vonage (`vonage` SDK, SMS API + Messages API)                        |
-| Crypto   | AES-256-GCM (`cryptography`), SHA-256 key stretching for passphrases       |
-| Frontend | React 18, TypeScript (strict), Vite, MUI 5, Redux Toolkit, React Query 5   |
-| Forms    | React Hook Form + Zod                                                      |
-| Charts   | Chart.js via react-chartjs-2                                               |
-| Tests    | pytest (+ coverage), Jest + Testing Library, Playwright                    |
-| Ops      | Docker Compose, nginx, Prometheus, structured logging                      |
+| الطبقة | التقنية |
+|---|---|
+| الواجهة | React 18، TypeScript، Vite، MUI 5، React Query 5، Redux Toolkit |
+| الخلفية | FastAPI، SQLAlchemy 2 async، Pydantic 2، Alembic |
+| قاعدة البيانات | PostgreSQL 16 (إنتاج) أو SQLite (تطوير) |
+| المهام | Celery + Redis |
+| البريد | Brevo API أو SMTP |
+| SMS | TextBee Android Gateway |
+| WhatsApp | WA-AKG (واتساب مستضاف ذاتيًا) |
+| الصوت | IllyVoIP Voice API |
+| الأمان | JWT، bcrypt، AES-256-GCM، صلاحيات دقيقة، تدقيق، Rate limiting |
+| الاختبارات | pytest، Jest + Testing Library، Playwright |
+| النشر | Docker Compose، nginx، Cloudflare Tunnel/Worker |
 
 ---
 
-## Quick start (Docker Compose)
+## التشغيل السريع بـ Docker
 
-### 1. Prerequisites
+### المتطلبات
 
-- Docker Engine 24+ with the Compose v2 plugin.
-- A Brevo account with a **verified sender** address (only needed for real sends).
+- Docker Engine 24+ وDocker Compose v2.
+- 2 vCPU و4 GB RAM على الأقل.
+- مفاتيح مزوّدي القنوات اختيارية؛ اتركها فارغة لتعطيل القنوات.
 
-### 2. Configure
+### 1) الإعداد
 
 ```bash
 cp .env.example .env
 ```
 
-Edit `.env` and set at minimum:
+حرّر `.env` في **جذر المشروع** (هذا هو الملف الذي يقرأه Docker Compose) واضبط
+على الأقل:
 
-```bash
-# openssl rand -hex 32   (run twice)
-SECRET_KEY=<64 hex chars>
-ENCRYPTION_KEY=<64 hex chars>
-
-BREVO_API_KEY=xkeysib-...
-FROM_EMAIL=security-training@your-domain.com
-FROM_NAME=Security Training
-
-# Must be reachable from recipients' mail clients (port 8080 by default).
+```dotenv
+SECRET_KEY=<سلسلة عشوائية 64 حرفًا على الأقل>
+ENCRYPTION_KEY=<سلسلة عشوائية 64 حرفًا على الأقل>
+BOOTSTRAP_ADMIN_USERNAME=admin
+BOOTSTRAP_ADMIN_EMAIL=admin@example.com
+BOOTSTRAP_ADMIN_PASSWORD=<كلمة مرور قوية>
 BASE_URL=http://localhost:8080
 FRONTEND_URL=http://localhost:8080
 CORS_ORIGINS=http://localhost:8080
+EMAIL_DRY_RUN=true
 ```
 
-Leave `EMAIL_DRY_RUN=true` if you want to validate the pipeline **without**
-sending real messages.
+توليد المفاتيح:
 
-### 3. Start
+```bash
+python -c "import secrets; print(secrets.token_hex(32))"
+```
+
+> لا تفقد `ENCRYPTION_KEY`: بدونه لا يمكن فك الحقول المشفّرة في قاعدة البيانات.
+> احتفظ به في مدير أسرار، وليس في Git.
+
+### 2) التشغيل
 
 ```bash
 docker compose up -d --build
 docker compose ps
+curl -fsS http://127.0.0.1:8000/healthz
 ```
 
-| Service    | URL / purpose                                        |
-| ---------- | ---------------------------------------------------- |
-| `frontend` | http://localhost:8080 — SPA + API reverse proxy       |
-| `backend`  | http://localhost:8000 — API, docs at `/api/docs`      |
-| `postgres` | internal only                                        |
-| `redis`    | internal only                                        |
-
-Sign in with the bootstrap administrator (`BOOTSTRAP_ADMIN_USERNAME` /
-`BOOTSTRAP_ADMIN_PASSWORD`, default `admin` / `ChangeMe123!`) and **change the
-password immediately**.
-
-### 4. Verify
-
-```bash
-# dependency health
-curl -s http://localhost:8000/healthz
-curl -s -H "Authorization: Bearer $TOKEN" http://localhost:8000/api/v1/test/health
-
-# validate the Brevo API key without sending
-curl -s -H "Authorization: Bearer $TOKEN" http://localhost:8000/api/v1/test/brevo/verify
-
-# send one test message
-curl -s -X POST http://localhost:8000/api/v1/test/brevo \
-  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"to_email":"you@your-domain.com"}'
-```
-
-### 5. End-to-end Brevo verification
-
-`scripts/verify_brevo.py` performs the complete acceptance sequence against a
-live deployment — authentication, configuration, dependency health, API-key
-validation, a real test email, then a one-recipient campaign and the full
-open → click → complete tracking chain, reconciling every counter:
-
-```bash
-python scripts/verify_brevo.py --to you@your-domain.com \
-  --base-url http://localhost:8000
-```
-
-It exits non-zero unless delivery and all tracking counters reconcile.
-
-#### If Brevo rejects the sender (401 / "unrecognised IP address")
-
-Brevo only accepts API calls from addresses on the account allowlist. When the
-server's public IP is not listed, every send fails with
-`401 Unauthorized` and a body naming the address, for example:
-
-```
-We have detected you are using an unrecognised IP address 80.253.185.154.
-... add the new IP address in this link:
-https://app.brevo.com/security/authorised_ips
-```
-
-The platform turns that into an exact instruction instead of a dead end:
-
-* **Settings → Email deliverability test → “Check Brevo now”** calls
-  `GET /api/v1/test/brevo/verify`, shows the blocked IP and links straight to the
-  Brevo page where it can be authorised;
-* the API response carries `action_required: "ip_allowlist"`, `blocked_ip` and
-  `action_url` so scripts can act on it;
-* from the command line: `cd backend && python test_brevo.py --check`.
-
-Fix it once by adding that address in Brevo (or by deactivating the IP
-restriction), then re-run the check. On a home/dynamic connection the address
-changes whenever the ISP reassigns it, so repeat the step when the message
-reappears. Nothing else blocks delivery.
-
----
-
-## Local development
-
-### Backend
-
-```bash
-cd backend
-python -m venv .venv && . .venv/Scripts/activate     # Windows: .venv\Scripts\activate
-pip install -r requirements.txt -r requirements-dev.txt
-cp ../.env.example .env                              # adjust DATABASE_URL if desired
-alembic upgrade head
-uvicorn app.main:app --reload
-```
-
-Run the worker (optional — the launcher falls back to inline sending):
-
-```bash
-celery -A app.worker.celery_app:celery_app worker --loglevel=INFO
-```
-
-### Frontend
-
-```bash
-cd frontend
-cp .env.example .env
-npm install
-npm run dev        # http://localhost:5173, /api proxied to :8000
-```
-
-### Quality gates
-
-```bash
-# backend (309 tests, >=80% coverage enforced; currently ~89%)
-cd backend && python -m pytest -q
-# frontend unit tests, types and lint
-cd frontend && npm run typecheck && npm run lint && npm test
-# browser end-to-end (needs the stack running; read-only)
-cd frontend && npx playwright test e2e/smoke.spec.ts e2e/dossier.spec.ts
-# live proof over the public tunnel (creates and deletes its own data)
-cd backend && python test_interaction_live.py
-```
-
-`test_interaction_live.py` drives the real recipient flow over the public URL,
-prints every assertion and the raw SQLite row it inspected, and deletes the
-temporary employee/campaign/tracking/ledger rows afterwards.
-
----
-
-## Configuration
-
-All settings are environment variables (see `backend/app/config.py` and
-`.env.example`). Highlights:
-
-| Variable                    | Default                | Notes                                                         |
-| --------------------------- | ---------------------- | ------------------------------------------------------------- |
-| `DATABASE_URL`              | sqlite (dev)           | Use `postgresql+asyncpg://…` in production.                   |
-| `SECRET_KEY`                | random per process     | **Must** be set in production (JWT signing).                  |
-| `ENCRYPTION_KEY`            | random per process     | **Must** be set (AES-256-GCM). 64 hex chars or a passphrase.  |
-| `AUTO_CREATE_SCHEMA`        | `true`                 | Set `false` in production; Alembic owns the schema.           |
-| `AUTO_SEED`                 | `true`                 | Seeds org, admin, 13 templates, training catalogue.           |
-| `BREVO_API_KEY`             | empty                  | When empty/placeholder, sending is disabled.                  |
-| `EMAIL_DRY_RUN`             | `false`                | `true` validates and logs without dispatching.                |
-| `EMAIL_MAX_RETRIES`         | `3`                    | Exponential backoff attempts per recipient.                   |
-| `VONAGE_API_KEY`            | empty                  | Vonage API key; empty disables SMS and WhatsApp.              |
-| `VONAGE_API_SECRET`         | empty                  | Vonage API secret (never log or commit it).                   |
-| `VONAGE_SMS_FROM`           | `Vonage APIs`          | Approved SMS sender ID or virtual number.                     |
-| `VONAGE_WHATSAPP_FROM`      | empty                  | WhatsApp business/sandbox sender number (E.164 digits).       |
-| `VONAGE_APPLICATION_ID`     | empty                  | Optional application ID for JWT-authenticated WhatsApp.       |
-| `VONAGE_PRIVATE_KEY`        | empty                  | Optional PEM path/content; must be paired with the app ID.    |
-| `VONAGE_MESSAGES_BASE_URL`  | empty                  | Set to `https://messages-sandbox.nexmo.com` for Sandbox tests.|
-| `VONAGE_WEBHOOK_TOKEN`      | empty                  | Shared secret required on delivery/read webhooks.             |
-
-For WhatsApp, create or select a Vonage application with the Messages
-capability, link the WhatsApp sender, and configure its **Status URL** to
-`https://YOUR_HOST/api/v1/webhooks/vonage/whatsapp-status`. The Sandbox also
-requires the destination phone to join the Sandbox before a free-form text can
-be delivered. Set `VONAGE_APPLICATION_ID` and `VONAGE_PRIVATE_KEY` to send with
-JWT; leaving both blank uses API key/secret authentication. A private key may be
-a path to the downloaded PEM file or the PEM content itself.
-| `BASE_URL`                  | `http://localhost:8000`| Public base URL embedded in tracking links.                   |
-| `SERVE_FRONTEND`            | `true`                 | Serve `frontend/dist` from the API process (one public URL).  |
-| `FRONTEND_DIST`             | empty                  | Absolute path override; empty means `<repo>/frontend/dist`.    |
-| `RATE_LIMIT_ENABLED`        | `true`                 | Per-scope request limiting (tracking is more permissive).     |
-| `DATA_RETENTION_DAYS`       | `365`                  | Retention window surfaced to the housekeeping task.           |
-
-> **Note on `BASE_URL`:** it is the address written into every tracking link,
-> the training-page redirect, and the Vonage SMS delivery-receipt callback. It
-> must be publicly reachable by recipients and by Vonage, or opens/clicks and
-> delivery receipts cannot be recorded. Configure the Vonage dashboard (or the
-> per-message callback written by the service) with:
->
-> - `https://YOUR_HOST/api/v1/webhooks/vonage/dlr?token=YOUR_TOKEN`
-> - `https://YOUR_HOST/api/v1/webhooks/vonage/whatsapp-status?token=YOUR_TOKEN`
-
----
-
-## The campaign system
-
-### Data model
-
-Three campaign tables (existing LMS tables are untouched):
-
-- **`templates`** — `id`, `organization_id`, `name`, `subject`, `body_html`,
-  `channel`, `difficulty_level`, `available_variables`, `is_built_in`,
-  `is_active`, timestamps.
-- **`campaigns`** — `id`, `organization_id`, `template_id`, `name`, `channel`,
-  `status`, `target_employee_ids`, `total_targets`, `sent_count`, `failed_count`,
-  `opened_count`, `clicked_count`, `completed_count`, `launched_at`,
-  `completed_at`, `created_by`, timestamps.
-- **`tracking_events`** — one row per (campaign, employee) with a unique
-  `tracking_uuid`, channel/provider metadata (`channel`, `provider`,
-  `provider_message_id`), delivery metadata (`sent_at`, `delivered_at`,
-  `delivery_status`, `delivery_error`, `failed_at`, `read_at`, `opened_at`,
-  `clicked_at`, `completed_at`), repeat counters (`open_count`, `click_count`),
-  client context (IP, user agent) and the training-page interaction
-  (`viewed_at`, `submitted_at`, `submission_count`,
-  `submitted_identifier`, `submitted_fields`, `password_length`, `reported_at`,
-  `submitted_password_encrypted`, `submitted_payload_encrypted`,
-  `client_context`).
-- **`training_interactions`** — the append-only ledger: one row per event with
-  `tracking_id`, `campaign_id`, `employee_id`, `event_type`, `occurred_at`
-  (microseconds), `ip_address`, `user_agent`, non-secret `details` and an
-  optional `payload_encrypted` for submissions.
-
-Indexes cover organization scoping, campaign lookups, the unique tracking UUID,
-`provider_message_id` (delivery-webhook lookup), and
-`(campaign_id, occurred_at)` / `(employee_id, occurred_at)` for the dossiers.
-
-Rows created before the ledger existed are **not lost**: the dossier service
-reconstructs their history from the timestamps already on `tracking_events` and
-marks those entries `"synthetic": true`.
-
-### Campaign lifecycle
-
-1. **Create** a template (or use a built-in one).
-2. **Create** a campaign (`draft`) with `template_id`, `channel` and
-   `target_employee_ids`. SMS/WhatsApp targets must have an E.164 phone number.
-3. **Launch** — the launcher renders each message, rewrites links/pixel, sends via
-   Brevo (email) or Vonage (SMS/WhatsApp) with retries, and commits per
-   recipient. An email recipient is marked `sent` after Brevo accepts it; a
-   phone recipient is marked `submitted` after Vonage returns a message id.
-   Delivered/read states only follow a real Vonage webhook.
-4. **Track** — opens, clicks, form interaction and completions increment counters
-   exactly once where appropriate (repeat opens/clicks are counted but
-   de-duplicated for timestamps).
-5. **Monitor live** — the UI redirects to `/campaigns/{id}/live` immediately after
-   launch. Every two seconds it reads `GET …/email-campaigns/{id}/live`, which
-   returns one row per recipient with the derived status (`sent`, `opened`,
-   `clicked`, `form_viewed`, `submitted`, `completed`, `failed`), every transition
-   timestamp, the seconds between transitions, the newest event (IP + device),
-   aggregate rates and a 20-event ticker. No polling query touches encrypted
-   payloads.
-6. **Report** — live per-recipient report, an aggregate funnel and a CSV export.
-
-### Delivering in the background
-
-```bash
-POST /api/v1/organizations/{org_id}/email-campaigns/{id}/launch?background=true
-```
-
-Dispatches a Celery task. If the broker is unreachable the API logs a warning and
-falls back to inline sending, so a campaign launch never silently disappears.
-
----
-
-## Tracking flow
-
-```
-Recipient opens email
-  └─► GET  /api/v1/track/open/{uuid}        → 1×1 transparent GIF (opened_count++)
-Recipient clicks a link
-  └─► GET  /api/v1/track/click/{uuid}?url=… → 302 → {BASE_URL}/training/{uuid}
-Recipient lands on the training page
-  └─► GET  /training/{uuid}                 → simulated sign-in form
-                                              (form_viewed_at)
-Recipient submits the form
-  └─► POST /api/v1/track/submit/{uuid}      → identifier + password + every
-                                              named field, verbatim
-                                              → AES-256-GCM payload stored,
-                                                open/click backfilled,
-                                                submission_count++,
-                                                total_credential_submissions++,
-                                                reclassification
-Recipient (optionally) reports the message
-  └─► POST /api/v1/track/report/{uuid}      → report inbox row, total_reports++,
-                                              reported_at, +12 awareness points
-Recipient finishes the micro-learning
-  └─► POST /api/v1/track/complete/{uuid}    → completed_count++, +5 awareness points
-```
-
-Every step above also appends a row to `training_interactions`, so the exact
-moment (to the microsecond), the source IP and the device are preserved even
-when an action repeats.
-
-The reveal screen is rendered server-side and only after the recipient interacts,
-so the simulation is never disclosed before the form has been used.
-
-- Tracking endpoints are **unauthenticated**; the unguessable `tracking_uuid`
-  is the only credential.
-- Click endpoints **never** redirect to the original (attacker) URL; they always
-  redirect to the training page.
-- Unknown UUIDs receive the tracking GIF / a neutral message so probes cannot
-  distinguish real recipients.
-- Responses carry `Cache-Control: no-store` so proxies and clients never cache a
-  tracking hit.
-
-### Where the interaction surfaces
-
-Every event above is exposed three ways, so an operator can start from either end:
-
-* **Per campaign** — `Campaigns → <campaign>` shows the funnel as KPI cards
-  (total / sent / opened / clicked / form submitted / completed), a searchable
-  recipients table with the exact time of every step, a campaign-wide live
-  activity feed, and a per-row dossier (overview, chronological timeline, every
-  submission verbatim, delivery references). `Export CSV` downloads the same data
-  as UTF-8 CSV, including the captured values.
-* **Per employee** — `Employees → <dossier icon>` opens
-  `/employees/{employee_id}`: aggregate counters, every campaign with its
-  timestamps, the merged ledger across campaigns, every submission and the full
-  employee profile.
-* **API** — `GET .../employees/{id}/dossier`,
-  `GET .../email-campaigns/{id}/recipients/{employee_id}` and
-  `GET .../email-campaigns/{id}/activity`.
-
-### What is captured
-
-| Captured                                              | Stored how                        |
-| ----------------------------------------------------- | --------------------------------- |
-| Whether the form was shown (every render)              | ledger + `form_viewed_at`         |
-| Whether/how often it was submitted                     | ledger + `submission_count`       |
-| The identifier typed                                   | plaintext `submitted_identifier`  |
-| Every other named field, verbatim                      | encrypted payload                 |
-| The password value, verbatim                           | **encrypted payload only**        |
-| The password length                                    | `password_length`                 |
-| IP address, User-Agent and browser context             | ledger + `client_context`         |
-| Exact time of every event (microseconds)               | ledger `occurred_at`              |
-
-The training page serialises every named input (`input`, `textarea`, `select`),
-adds non-secret client timings (time on form, fill time, timezone, language,
-viewport, referrer) and posts them. The server keeps:
-
-* `submitted_fields` — a **secret-free snapshot** (keys containing `password`,
-  `passwd`, `pwd`, `passphrase`, `secret`, `token`, `credential`, `otp`, `pin`,
-  `cvv`, `cvc`, `cardnumber`, `creditcard` or `securitycode` are omitted) used
-  for compact tables and quick CSV scans;
-* `submitted_payload_encrypted` — the **complete verbatim mapping**, encrypted
-  with AES-256-GCM (`enc:v1:` prefix), which is what the dossier shows.
-
-> **Policy note.** Capturing the submitted password is deliberate: it is the
-> evidence that defeats the “I knowingly typed fake data” defence. Treat the
-> database as a high-sensitivity asset, restrict access to administrators, keep
-> `ENCRYPTION_KEY` out of Git, and delete engagement data after the retention
-> window. If your legal or works-council agreement forbids capturing secrets, do
-> not run this build against real employees.
-
----
-
-## Publishing the training pages
-
-Recipients must be able to reach `/training/{uuid}` from anywhere, and operators
-usually want to open the dashboard from the same place. The backend can serve the
-built React app itself (`SERVE_FRONTEND=true`, the default), so a single tunnel
-exposes **both** the dashboard and the API — no second tunnel, no CORS setup.
-
-```powershell
-cd frontend; npm run build; cd ..
-powershell -ExecutionPolicy Bypass -File scripts\public-link.ps1
-```
-
-It then:
-
-1. stops any tunnel left over from a previous run;
-2. opens a new quick tunnel to `http://localhost:8000`;
-3. reads the assigned `https://<random>.trycloudflare.com` address;
-4. writes it into `backend\.env` as `BASE_URL` and appends it to `CORS_ORIGINS`;
-5. restarts the backend so the new address takes effect;
-6. polls the public URL and prints the result.
-
-After that, `https://<random>.trycloudflare.com/` opens the dashboard and
-`https://<random>.trycloudflare.com/api/docs` the API documentation. The SPA
-route `/employees/{id}` also resolves on a hard refresh because the backend falls
-back to `index.html` for any non-API path.
-
-Because a quick tunnel is anonymous, its hostname is **ephemeral**: it changes on
-every run and dies when the process stops. Re-run the script after a reboot (or
-schedule it) to publish again. Any campaign launched after a re-run embeds the
-new link automatically — previously delivered emails keep pointing at their old
-(now dead) hostname.
-
-For a **stable** hostname you need an account-based tunnel (Cloudflare named
-tunnel, ngrok reserved domain, …). Those require interactive sign-up, so the
-script deliberately uses the anonymous variant. To use a permanent URL, set
-`BASE_URL` in `backend\.env` to it and restart the backend.
-
----
-
-## Built-in templates
-
-Seeded once per organization (idempotent, matched by name):
-
-| # | Name                         | Subject                                                    | Level |
-| - | ---------------------------- | ---------------------------------------------------------- | ----- |
-| 1 | Urgent Password Change       | Urgent: Your password must be changed within 24 hours       | 3     |
-| 2 | Message from Direct Manager  | Please review this document before our meeting              | 6     |
-| 3 | Suspicious Login Alert       | Security Alert: Unusual login detected on your account      | 4     |
-| 4 | HR Data Update Required      | Action Required: Update your employee information           | 5     |
-| 5 | Overdue Invoice              | Invoice overdue — Immediate review required                 | 7     |
-| 6 | Employee Bonus Announcement  | Congratulations! You've been selected for a performance bonus | 8   |
-| 7 | Emergency Meeting Notice     | Emergency meeting — Your presence is required               | 5     |
-| 8 | Mandatory Software Update    | Mandatory security update for your device                   | 4     |
-
-Available placeholders: `{{first_name}}`, `{{last_name}}`, `{{email}}`,
-`{{department}}`, `{{company_name}}`, `{{manager_name}}`, `{{invoice_number}}`,
-`{{meeting_time}}`, `{{current_year}}`, `{{tracking_url}}`.
-
-Every built-in body is wrapped in a table-based, 600 px branded shell (header with
-the organization name, detail table, colour-coded callout, primary button and a
-compliance footer) so the message renders correctly in Gmail, Outlook and Apple
-Mail. On startup, built-ins still carrying the legacy plain wrapper are upgraded
-in place; templates an administrator has edited are never overwritten.
-
-The landing page (`/training/{uuid}`) is a full corporate single sign-on screen:
-a branded split layout, pre-filled work email, password reveal toggle and a
-low-key "Report this page" action. After submission the same page switches to the
-educational reveal, listing the red flags and the exact values that were recorded.
-
----
-
-## API reference
-
-Interactive documentation: `http://<host>/api/docs` (OpenAPI at `/api/openapi.json`).
-
-### Authentication
-
-| Method | Path                     | Description                        |
-| ------ | ------------------------ | ---------------------------------- |
-| POST   | `/api/v1/auth/login`     | Obtain access + refresh tokens     |
-| POST   | `/api/v1/auth/refresh`   | Refresh an access token            |
-| POST   | `/api/v1/auth/logout`    | Client-side session teardown       |
-| GET    | `/api/v1/auth/me`        | Current user                       |
-
-### Campaign module
-
-| Method | Path                                                              |
-| ------ | ----------------------------------------------------------------- |
-| GET    | `/api/v1/organizations/{org_id}/email-templates`                   |
-| POST   | `/api/v1/organizations/{org_id}/email-templates`                   |
-| PUT    | `/api/v1/organizations/{org_id}/email-templates/{id}`              |
-| DELETE | `/api/v1/organizations/{org_id}/email-templates/{id}`              |
-| POST   | `/api/v1/organizations/{org_id}/email-templates/{id}/preview`      |
-| GET    | `/api/v1/organizations/{org_id}/email-campaigns`                   |
-| POST   | `/api/v1/organizations/{org_id}/email-campaigns`                   |
-| GET    | `/api/v1/organizations/{org_id}/email-campaigns/{id}`              |
-| DELETE | `/api/v1/organizations/{org_id}/email-campaigns/{id}`              |
-| POST   | `/api/v1/organizations/{org_id}/email-campaigns/{id}/launch`       |
-| GET    | `/api/v1/organizations/{org_id}/email-campaigns/{id}/results`      |
-| GET    | `/api/v1/organizations/{org_id}/email-campaigns/{id}/live`         | Live monitoring board (poll every 2s) |
-| GET    | `/api/v1/organizations/{org_id}/email-campaigns/{id}/export`       |
-| GET    | `/api/v1/organizations/{org_id}/email-campaigns/{id}/recipients/{employee_id}` | One recipient's full dossier |
-| GET    | `/api/v1/organizations/{org_id}/email-campaigns/{id}/activity`     | Campaign-wide interaction ledger |
-| GET    | `/api/v1/organizations/{org_id}/employees/{id}/dossier`            | Employee dossier across campaigns |
-
-### Tracking (unauthenticated)
-
-| Method | Path                                     | Description                              |
-| ------ | ---------------------------------------- | ---------------------------------------- |
-| GET    | `/api/v1/track/open/{tracking_uuid}`     | Transparent GIF, records an open         |
-| GET    | `/api/v1/track/click/{tracking_uuid}`    | Records a click, 302 to the training page|
-| POST   | `/api/v1/track/submit/{tracking_uuid}`   | Records the simulated form submission    |
-| POST   | `/api/v1/track/report/{tracking_uuid}`   | Records that the recipient spotted it    |
-| POST   | `/api/v1/track/complete/{tracking_uuid}` | Records micro-learning completion        |
-| GET    | `/training/{tracking_uuid}`              | Sign-in form, then the educational reveal|
-
-### LMS and diagnostics
-
-`/api/v1/organizations/{org_id}/dashboard`, `/employees` (+`/bulk`,
-`/{id}/timeline`), `/training-modules`, `/assignments` (+`/{id}/complete`),
-`/reports` (+`/{id}`), `/api/v1/test/{health,config,brevo,brevo/verify,
-vonage/verify}`, and the provider receipt endpoints
-`POST /api/v1/webhooks/vonage/dlr` and
-`POST /api/v1/webhooks/vonage/whatsapp-status` (GET is also accepted for
-dashboard-compatible SMS callbacks). Webhook URLs can carry
-`?token=VONAGE_WEBHOOK_TOKEN`, or present the token in
-`X-Vonage-Webhook-Token` / `Authorization: Bearer …`.
-
----
-
-## Testing
-
-### Backend
-
-```bash
-cd backend
-python -m pytest -q                       # full suite
-python -m pytest --cov=app --cov-report=term-missing
-```
-
-- Runs against SQLite (`aiosqlite`) for hermetic, dependency-free execution; the
-  dialect-aware Alembic migration is verified on both SQLite and PostgreSQL.
-- `pyproject.toml` enforces `--cov-fail-under=80`.
-
-### Frontend
-
-```bash
-cd frontend
-npm run typecheck      # tsc --noEmit, strict mode
-npm run lint           # eslint, zero warnings allowed
-npm test               # jest + testing-library
-npm run build          # tsc -b && vite build
-```
-
-### End-to-end
-
-```bash
-cd frontend
-E2E_BASE_URL=http://localhost:8080 E2E_ADMIN_USER=admin E2E_ADMIN_PASSWORD=... \
-  npx playwright test
-```
-
-`npx playwright test e2e/screenshots.spec.ts` additionally writes full-page PNGs
-to `docs/screenshots/` (browser documentation and release evidence). Pass
-`E2E_BACKEND_URL` and `E2E_TRACKING_UUID` to also capture the recipient
-micro-learning page. `docs/screenshots/preview.html` is a self-contained gallery
-of that output.
-
-> **Two implementations of the micro-learning page.** The recipient link in every
-> campaign email points at `GET /training/{tracking_uuid}` served by the backend
-> as plain HTML, because mail clients do not run JavaScript. The React route
-> `frontend/src/pages/TrainingPage.tsx` implements the same flow for deployments
-> that serve the SPA statically without the `/training/` reverse-proxy rule. Both
-> are covered by tests.
-
----
-
-## Security notes
-
-- **Authorization first.** Only send to addresses covered by your acceptable-use
-  policy and an approved awareness program. Record that authorization.
-- **Credential capture is deliberate and encrypted.** The training page
-  transmits every value typed, including the password, so the record is complete
-  and cannot be disputed. Plaintext secrets are never written to the database
-  (only `enc:v1:` AES-256-GCM tokens), never logged, and never returned by
-  unauthenticated endpoints. The secret-free `submitted_fields` snapshot is used
-  for tables; the dossier reveals the encrypted payload only after authentication.
-  Treat the database and `ENCRYPTION_KEY` as high-sensitivity assets, restrict
-  dashboard access, and honour your retention policy. If capturing secrets is not
-  permitted in your jurisdiction, do not run this build against employees.
-- **Secrets.** `SECRET_KEY` and `ENCRYPTION_KEY` must be strong and unique per
-  environment. Rotate them via your secret manager, not in Git.
-- **Encryption at rest.** Sensitive employee fields use AES-256-GCM
-  (`enc:v1:<base64(nonce‖ciphertext‖tag)>`); submitted form payloads use the same
-  scheme.
-- **Least privilege.** Roles are `admin`, `manager`, `viewer`; destructive and
-  configuration endpoints require `admin`/`manager`. Dossiers are scoped to the
-  caller's organization.
-- **Rate limiting.** Per-scope limits protect auth and API endpoints; tracking is
-  throttled more permissively to tolerate mail-client prefetching.
-- **Supply chain.** Dependencies are pinned; run `pip-audit` / `npm audit` in CI.
-- **Data retention.** `DATA_RETENTION_DAYS` bounds how long engagement data is
-  kept; align it with your privacy notice and applicable law.
-
----
-
-## Operations
-
-### Backups (PostgreSQL)
-
-Use [pgBackRest](https://pgbackrest.org/) for physical backups, WAL archiving and
-point-in-time recovery of the `pgdata` volume:
-
-```ini
-# /etc/pgbackrest/pgbackrest.conf
-[global]
-repo1-path=/var/lib/pgbackrest
-repo1-retention-full=4
-start-fast=y
-
-[humint]
-pg1-path=/var/lib/postgresql/data/pgdata
-```
-
-```bash
-pgbackrest --stanza=humint stanza-create
-pgbackrest --stanza=humint --type=full backup
-pgbackrest --stanza=humint --type=incr backup
-pgbackrest --stanza=humint --delta --type=time \
-  --target="2026-01-31 12:00:00+00" restore
-```
-
-Schedule full backups weekly and incremental backups daily; store `repo1-path`
-off-host. Test restores quarterly.
-
-### Migrations
+- الواجهة: `http://localhost:8080`
+- الـAPI: `http://localhost:8000`
+- التوثيق التفاعلي: `http://localhost:8000/api/docs`
+
+إذا لم تُشغّل الترحيلات تلقائيًا:
 
 ```bash
 docker compose exec backend alembic upgrade head
-docker compose exec backend alembic downgrade -1
 ```
 
-`AUTO_CREATE_SCHEMA=false` is recommended in production so Alembic is the single
-source of truth for schema changes.
+### 3) أول دخول
 
-Applied revisions:
-
-| Revision | Purpose                                                        |
-| -------- | -------------------------------------------------------------- |
-| `0001_initial_lms` | Organizations, users, employees, LMS tables           |
-| `0002_email_campaigns` | `email_templates`, `email_campaigns`, `email_tracking` |
-| `0003_training_interactions` | training-page interaction columns on `email_tracking` |
-| `0004_interaction_ledger` | encrypted submission payloads + `training_interactions` ledger |
-| `0005_unified_channels` | channel-neutral `templates`, `campaigns`, `tracking_events`, phone support |
-| `0006_vonage_delivery` | delivery/read receipt columns + `provider_message_id` index |
-| `0007_delivery_failed_at` | provider failure timestamp for audit exports |
-
-### Observability
-
-- Structured JSON logs with `request_id` correlation on every request.
-- Prometheus metrics at `/metrics`; scrape from your monitoring stack.
-- Health: `/healthz` (liveness) and `/api/v1/test/health` (dependency probe).
+استخدم بيانات `BOOTSTRAP_ADMIN_*`، ثم غيّر كلمة المرور فورًا من
+**الإعدادات ← تغيير كلمة المرور**. لا تُطبع كلمات المرور في السجلات.
 
 ---
 
-## Compliance basis
+## التشغيل المحلي للتطوير
 
-HUMINT Shield supports (and documents evidence for) the awareness-training
-requirements of:
+### المتطلبات
 
-- **ISO/IEC 27001:2022 A.7.2.2** — information security awareness, education and
-  training.
-- **NIST SP 800-50** & **NIST SP 800-53 AT-2** — literacy training and awareness.
-- **PCI-DSS v4.0 requirement 12.6** — security awareness program.
-- **HIPAA Security Rule §164.308(a)(5)** — workforce security awareness training.
-- **GDPR Article 32** — security of processing, including staff awareness.
+- Python 3.12 (المشروع مبني على `python:3.12-slim`).
+- Node.js 20 وnpm.
+- Redis اختياري (يلزم فقط للمهام الخلفية وCelery).
 
-Retain campaign results and CSV exports as training records for your auditors.
+### الخلفية
+
+```powershell
+cd backend
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+Copy-Item .env.example .env
+```
+
+حرّر `backend/.env` واضبط `SECRET_KEY` و`ENCRYPTION_KEY` وبيانات المدير، ثم:
+
+```powershell
+alembic upgrade head
+uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+```
+
+### الواجهة
+
+```powershell
+cd frontend
+npm ci
+npm run dev
+```
+
+- Vite: `http://localhost:5173`
+- API proxy الافتراضي: `http://localhost:8000`
+- إذا أردت تقديم الواجهة والـAPI من أصل واحد:
+
+```powershell
+cd frontend
+npm run build
+cd ..\backend
+uvicorn app.main:app --host 127.0.0.1 --port 8000
+```
+
+ثم افتح `http://127.0.0.1:8000`. يجب أن يكون `SERVE_FRONTEND=true`، وأن
+يشير `BASE_URL` و`FRONTEND_URL` إلى نفس الأصل العام.
+
+### Docker مقابل التشغيل المحلي
+
+| السياق | ملف الإعداد | الواجهة |
+|---|---|---|
+| Docker Compose | `.env` في جذر المشروع | nginx على `8080` |
+| تشغيل محلي | `backend/.env` | Vite على `5173` أو `frontend/dist` |
+| Cloudflare | متغيرات بيئة العملية | `frontend/dist` من FastAPI |
 
 ---
 
-## License
+## الإعدادات
 
-Released under the [MIT License](LICENSE).
+كل الإعدادات موثّقة في:
 
-> **Ethical use.** HUMINT Shield is intended solely for authorized security
-> awareness training against your own organization's addresses. Deploying it to
-> deceive or harm people who have not consented is prohibited and may be illegal.
+- [`.env.example`](.env.example) — قالب Docker Compose.
+- [`backend/.env.example`](backend/.env.example) — قالب التشغيل المحلي.
+- [`frontend/.env.example`](frontend/.env.example) — إعدادات Vite.
+
+### أهم المتغيرات
+
+| المتغير | الافتراضي | الوظيفة |
+|---|---|---|
+| `DATABASE_URL` | SQLite محلي / PostgreSQL في Compose | اتصال قاعدة البيانات |
+| `SECRET_KEY` | — | توقيع JWT؛ مطلوب في الإنتاج |
+| `ENCRYPTION_KEY` | — | تشفير الحقول الحساسة AES-256-GCM |
+| `BASE_URL` | `http://localhost:8000` | الأصل العام في روابط التتبّع |
+| `FRONTEND_URL` | `http://localhost:5173` | أصل الواجهة |
+| `CORS_ORIGINS` | `http://localhost:5173` | الأصول المسموحة |
+| `SERVE_FRONTEND` | `true` | تقديم `frontend/dist` من FastAPI |
+| `AUTO_CREATE_SCHEMA` | `true` | إنشاء الجداول عند البدء (تطوير) |
+| `AUTO_SEED` | `true` | إنشاء المدير والبيانات الأولية |
+| `EMAIL_TRANSPORT` | `brevo` | `brevo` أو `smtp` |
+| `EMAIL_DRY_RUN` | `false` | منع الإرسال الفعلي في التطوير |
+| `TEXTBEE_API_KEY` | فارغ | تعطيل/تشغيل SMS |
+| `WA_AKG_API_URL` | `http://localhost:3000/api` | خادم WA-AKG |
+| `ILLYVOIP_API_KEY` | فارغ | تعطيل/تشغيل المكالمات |
+| `RATE_LIMIT_ENABLED` | `true` | حدّ الطلبات |
+| `METRICS_ENABLED` | `false` | مقاييس Prometheus |
+
+> في الإنتاج اضبط `AUTO_CREATE_SCHEMA=false` و`AUTO_SEED=false` بعد أول
+> تهيئة، واجعل Alembic هو المسؤول عن المخطط.
+
+---
+
+## قنوات المحاكاة
+
+### البريد الإلكتروني
+
+- **Brevo:** `EMAIL_TRANSPORT=brevo` مع `BREVO_API_KEY` و`FROM_EMAIL`.
+- **SMTP:** `EMAIL_TRANSPORT=smtp` مع `SMTP_HOST` و`SMTP_PORT`
+  و`SMTP_USERNAME` و`SMTP_PASSWORD`.
+- استخدم `EMAIL_DRY_RUN=true` للتطوير؛ تُسجّل الرسالة ولا تُرسل.
+
+### SMS — TextBee
+
+- أنشئ جهاز Android عبر TextBee، ثم اضبط `TEXTBEE_API_KEY`.
+- `TEXTBEE_DEVICE_ID` اختياري؛ يُستخدم الجهاز الافتراضي عند تركه فارغًا.
+- القناة تبقى معطّلة إذا كان المفتاح فارغًا أو غير صالح.
+
+### WhatsApp — WA-AKG
+
+- شغّل نسخة WA-AKG وامسح رمز QR لإنشاء جلسة.
+- اضبط `WA_AKG_API_URL` و`WA_AKG_API_KEY` و`WA_AKG_SESSION_ID`.
+- `WA_AKG_WEBHOOK_SECRET` يحمي Webhook حالات القراءة والردود.
+
+### الصوت — IllyVoIP
+
+- `ILLYVOIP_API_KEY` مطلوب لتمكين القناة.
+- `ILLYVOIP_SIP_USER_ID` و`ILLYVOIP_CALLER_ID` اختياريان؛ عند تركهما
+  يستخدم المزوّد الهوية الافتراضية.
+- `ILLYVOIP_RECORD_CALLS=false` افتراضيًا.
+- لا تُجرِ مكالمات إلا لأرقام مصرّح بها، وضمن نطاق اختبار موثّق.
+
+### QR وUSB
+
+- حملات QR تولّد ملصقات عالية الدقة وتتبّع مسح الجهاز.
+- قناة USB تدعم محاكاة توصيل وسيط مادي، مع تسجيل الأحداث ولوحة أدلة.
+- راجع `docs/` و`backend/app/services/` للتفاصيل.
+
+---
+
+## الصلاحيات والأدوار
+
+الصلاحيات معرّفة في [`backend/app/permissions.py`](backend/app/permissions.py)
+وتُعرض آليًا في إعدادات المستخدمين. الصلاحيات الفعلية = صلاحيات الدور + المنح
+الفردية، مع تجاهل أي مفتاح غير معروف.
+
+| الدور | الوصف |
+|---|---|
+| `admin` | كل الصلاحيات |
+| `manager` | إدارة الموظفين والقوالب والحملات والتقارير والتدريب |
+| `viewer` | قراءة فقط |
+| `custom` | لا صلاحيات افتراضية؛ تُمنح فرديًا |
+
+أمثلة على الصلاحيات: `employees.view`، `campaigns.launch`،
+`reports.export`، `settings.guardrails`، `users.manage`، `audit.view`.
+
+---
+
+## قاعدة البيانات والترحيلات
+
+- آخر ترحيل: **`0019_user_permissions`**.
+- التحقق من الحالة:
+
+```bash
+cd backend
+alembic current
+alembic heads
+```
+
+- تطبيق الترحيلات:
+
+```bash
+alembic upgrade head
+```
+
+- SQLite للتطوير:
+
+```dotenv
+DATABASE_URL=sqlite+aiosqlite:///./humint_shield.db
+```
+
+- PostgreSQL للإنتاج:
+
+```dotenv
+DATABASE_URL=postgresql+asyncpg://humint:<password>@postgres:5432/humint_shield
+```
+
+- لا تُرفع قاعدة البيانات أو نسخ `.db` إلى Git؛ تحتوي بيانات شخصية.
+- للنسخ الاحتياطي راجع [`scripts/backup_db.sh`](scripts/backup_db.sh).
+
+---
+
+## الاختبارات
+
+### الخلفية
+
+```bash
+cd backend
+pytest -q
+# بدون قياس التغطية (أسرع):
+pytest -q --no-cov
+```
+
+### الواجهة
+
+```bash
+cd frontend
+npm run typecheck
+npm run build
+npm test
+npm run test:e2e
+```
+
+> اختبارات Playwright تحتاج تثبيت المتصفحات: `npx playwright install`.
+
+---
+
+## النشر على Cloudflare
+
+### خيار العرض السريع: Quick Tunnel
+
+مناسب للعرض المؤقت فقط. شغّل الخلفية محليًا ثم:
+
+```bash
+cloudflared tunnel --url http://127.0.0.1:8000
+```
+
+ثم أعد تشغيل الخلفية مع عنوان النفق:
+
+```bash
+BASE_URL=https://<tunnel-host> \
+FRONTEND_URL=https://<tunnel-host> \
+SERVE_FRONTEND=true \
+uvicorn app.main:app --host 127.0.0.1 --port 8000
+```
+
+- الرابط مؤقت ويتغير عند إعادة تشغيل النفق.
+- لا تضع رابط النفق داخل الكود أو Git.
+- للاستخدام الدائم استخدم Named Tunnel ونطاقًا تملكه.
+
+### خيار Worker + Assets
+
+يوجد في [`cloudflare/`](cloudflare/) Worker يقدّم الواجهة المبنية ويوكّل
+`/api/*` و`/s/*` و`/healthz` و`/metrics` إلى الخلفية.
+
+1. ابنِ الواجهة ثم انسخها إلى مجلد الأصول (المجلد غير مُتعقَّب في Git):
+
+```bash
+cd frontend && npm run build && cd ..
+rm -rf cloudflare/assets && mkdir -p cloudflare/assets
+cp -r frontend/dist/. cloudflare/assets/
+```
+
+2. انشر `cloudflare/assets` (نسخة `frontend/dist`) مع Worker.
+3. اضبط متغير/سر `BACKEND_ORIGIN` على أصل FastAPI العام.
+4. انشر باستخدام Wrangler:
+
+```bash
+cd cloudflare
+npx wrangler deploy
+```
+
+> FastAPI/Python لا يعمل داخل Cloudflare Workers. Worker هنا واجهة أمامية
+> وProxy فقط، ويجب تشغيل الخلفية على خادم أو نفق يمكن الوصول إليه.
+
+---
+
+## الأمان والتشغيل
+
+- لا تُرفع `.env` أو `.db` أو مفاتيح المزوّدين أو `node_modules` أو `.venv`.
+- استخدم `SECRET_KEY` و`ENCRYPTION_KEY` عشوائيين وقويين، واحتفظ بنسخة آمنة
+  من `ENCRYPTION_KEY`.
+- غيّر كلمة مرور المدير الأولية فورًا.
+- راجع [`SECURITY.md`](SECURITY.md) و[`COMPLIANCE.md`](COMPLIANCE.md).
+- للتحصين والنشر راجع [`DEPLOYMENT.md`](DEPLOYMENT.md).
+- إعدادات الإنتاج: TLS، HSTS، Rate limiting، تعطيل `/metrics` العام،
+  وتدوير السجلات.
+- كل حدث حساس يجب أن يمر عبر صلاحية صريحة وسجل تدقيق.
+- أي قناة خارجية (بريد/SMS/WhatsApp/صوت) تتطلب تفويضًا مكتوبًا وأرقامًا
+  وعناوين مملوكة للمؤسسة.
+
+---
+
+## بنية المشروع
+
+```text
+backend/
+  app/
+    api/v1/            مسارات REST والتتبّع والـWebhooks
+    models/            نماذج SQLAlchemy
+    schemas/           مخططات Pydantic
+    services/          البريد، SMS، WhatsApp، الصوت، التتبّع، الأدلة
+    permissions.py     كتالوج الصلاحيات والأدوار
+    config.py          الإعدادات
+  alembic/versions/    ترحيلات حتى 0019
+  tests/               اختبارات pytest
+frontend/
+  src/
+    pages/             صفحات React
+    components/        مكوّنات الواجهة
+    api/               عميل Axios
+    hooks/             Hooks
+  dist/                ناتج البناء (غير مرفوع)
+cloudflare/
+  worker.js            Proxy + SPA
+  assets/              نسخة الواجهة المنشورة مع Worker
+docs/                  وثائق ورسومات
+scripts/               أدوات تشغيل ونسخ احتياطي
+```
+
+---
+
+## استكشاف الأخطاء
+
+| المشكلة | السبب المرجّح | الحل |
+|---|---|---|
+| `bootstrap_failed` / `decryption_failed` | `ENCRYPTION_KEY` مختلف عن المفتاح المستخدم سابقًا | استخدم المفتاح الأصلي؛ لا تولّد مفتاحًا جديدًا على قاعدة موجودة |
+| الواجهة تظهر لكن API يفشل | `BASE_URL`/`FRONTEND_URL` أو CORS غير مطابق | اضبطهما على الأصل العام الفعلي |
+| الصفحة تعمل من Vite ولا تعمل من FastAPI | `frontend/dist` غير مبني | `cd frontend && npm run build` |
+| فشل تحميل الصلاحيات | ترحيل `0019` غير مطبّق | `alembic upgrade head` |
+| SMS لا يُرسل | `TEXTBEE_API_KEY` فارغ أو الجهاز غير متصل | اضبط المفتاح وتحقق من TextBee |
+| WhatsApp لا يُرسل | جلسة WA-AKG غير متصلة | امسح QR وأعد ضبط `WA_AKG_SESSION_ID` |
+| المكالمة لا تُنفّذ | `ILLYVOIP_API_KEY` غير صالح | تحقق من المفتاح و`ILLYVOIP_API_URL` |
+| 429 عند الدخول | حدّ المحاولات | انتظر أو راجع إعدادات Rate limit |
+| 502 من Cloudflare | الخلفية غير مشغّلة أو النفق مغلق | شغّل FastAPI وتأكد من `healthz` |
+
+---
+
+## الترخيص
+
+MIT — راجع [`LICENSE`](LICENSE).
+
+## وثائق إضافية
+
+- [`PROJECT_ARCHITECTURE_AND_DEFENSE.html`](PROJECT_ARCHITECTURE_AND_DEFENSE.html) — تقرير المعمارية والدفاع.
+- [`SECURITY.md`](SECURITY.md) — نموذج التهديد والضوابط.
+- [`COMPLIANCE.md`](COMPLIANCE.md) — أساس الامتثال والتفويض.
+- [`DEPLOYMENT.md`](DEPLOYMENT.md) — النشر والتشغيل والإنتاج.
+- [`CHANGELOG.md`](CHANGELOG.md) — سجل الإصدارات.

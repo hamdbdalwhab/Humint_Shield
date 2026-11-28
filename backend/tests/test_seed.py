@@ -15,8 +15,8 @@ from app.services.seed import (
 
 
 async def test_eight_builtin_templates_defined() -> None:
-    """Exactly thirteen built-in templates are defined."""
-    assert len(BUILT_IN_TEMPLATES) == 18
+    """Eighteen email/QR templates, nine SMS lures and four WhatsApp lures."""
+    assert len(BUILT_IN_TEMPLATES) == 31
 
 
 async def test_required_templates_present() -> None:
@@ -36,9 +36,22 @@ async def test_required_templates_present() -> None:
         "ترشيح لأفضل موظف",
         "تحديث بيانات HR",
         "شبكة الواي فاي",
+        "IT Security Alert",
+        "HR Bonus Approval",
+        "Courier Delivery Notice",
+        "Executive Quick Request",
+        "VPN Certificate Expiry",
+        "IT · VPN Session Expiry",
+        "Finance · Invoice Pending Approval",
+        "HR · Policy Sign-off",
+        "Executive · Board Meeting Change",
+        "WhatsApp · IT VPN Re-authentication",
+        "WhatsApp · HR Bonus Confirmation",
+        "WhatsApp · Courier Address Hold",
+        "WhatsApp · Executive Quick Favour",
     }
     assert required <= names
-    assert len(names) == 18
+    assert len(names) == 31
 
 
 async def test_every_template_has_tracking_link() -> None:
@@ -48,7 +61,11 @@ async def test_every_template_has_tracking_link() -> None:
             # QR lures are printed posters; they contain no tracking link.
             assert template["subject"]
             continue
-        assert "{{tracking_url}}" in template["body_html"]
+        if template.get("channel") in {"sms", "whatsapp"}:
+            # Mobile-message lures use the {{link}} call-to-action alias.
+            assert "{{link}}" in template["body_html"]
+        else:
+            assert "{{tracking_url}}" in template["body_html"]
         assert template["subject"]
         assert 1 <= template["difficulty_level"] <= 10
 
@@ -61,12 +78,12 @@ async def test_seed_builtin_templates_is_idempotent(
     await db.commit()
     second = await seed_builtin_templates(db, organization.id)
     await db.commit()
-    assert first == 18
+    assert first == 31
     assert second == 0
     count = await db.scalar(
         select(func.count(EmailTemplate.id)).where(EmailTemplate.organization_id == organization.id)
     )
-    assert count == 18
+    assert count == 31
 
 
 async def test_seed_training_modules_idempotent(
@@ -117,7 +134,7 @@ async def test_phone_is_encrypted_at_rest(
 async def test_ensure_bootstrap_data_creates_everything(db: AsyncSession) -> None:
     """Bootstrap creates the org, admin, templates and modules."""
     summary = await ensure_bootstrap_data(db)
-    assert summary["templates_created"] == 18
+    assert summary["templates_created"] == 31
     assert summary["modules_created"] == 4
 
     org_count = await db.scalar(select(func.count(Organization.id)))
@@ -126,7 +143,7 @@ async def test_ensure_bootstrap_data_creates_everything(db: AsyncSession) -> Non
     module_count = await db.scalar(select(func.count(TrainingModule.id)))
     assert org_count == 1
     assert user_count == 1
-    assert template_count == 18
+    assert template_count == 31
     assert module_count == 4
 
 
@@ -195,7 +212,23 @@ async def test_diagnostics_require_privilege(client, viewer_headers) -> None:
     assert response.status_code == 403
 
 
-async def test_metrics_endpoint(client) -> None:
-    """Prometheus metrics are exposed."""
+async def test_metrics_endpoint_disabled_by_default(client) -> None:
+    """``/metrics`` is off unless the deployment explicitly enables it."""
     response = await client.get("/metrics")
+    assert response.status_code == 404
+
+
+async def test_metrics_endpoint_when_enabled() -> None:
+    """Enabling the flag exposes Prometheus metrics for the internal scraper."""
+    from httpx import ASGITransport, AsyncClient
+
+    from app.config import get_settings
+    from app.main import create_app
+
+    settings = get_settings().model_copy(update={"metrics_enabled": True})
+    application = create_app(settings)
+    async with AsyncClient(
+        transport=ASGITransport(app=application), base_url="http://testserver"
+    ) as probe:
+        response = await probe.get("/metrics")
     assert response.status_code == 200

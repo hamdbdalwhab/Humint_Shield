@@ -220,3 +220,30 @@ def test_helper_url_builders() -> None:
     assert build_click_url("http://x", uid, "https://y.example").startswith(
         f"http://x/api/v1/track/click/{uid}?url="
     )
+
+
+def test_render_voice_script_substitutes_merge_tags() -> None:
+    """An operator-written voice script resolves its tags per recipient."""
+    tracking_id = uuid.uuid4()
+    script = (
+        "Hello {{first_name}} from {{company_name}}. "
+        "Open {{vishing_url}} now."
+    )
+    rendered = _personalizer().render_voice_script(
+        script, _template(), _employee(), _org(), tracking_id
+    )
+    assert "Hello Jane from Acme Test Corporation." in rendered
+    assert f"http://testserver/simulation/vishing/{tracking_id}" in rendered
+    assert "{{" not in rendered
+
+
+def test_render_voice_script_leaves_unknown_tags_intact() -> None:
+    """Unknown tags survive so a typo is visible instead of silently dropped."""
+    rendered = _personalizer().render_voice_script(
+        "Hello {{first_name}} {{unmapped_field}}",
+        _template(),
+        _employee(),
+        _org(),
+        uuid.uuid4(),
+    )
+    assert "Hello Jane {{unmapped_field}}" == rendered

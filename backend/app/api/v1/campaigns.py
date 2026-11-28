@@ -6,13 +6,19 @@ import io
 import json
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.database import get_db
-from app.deps import get_current_user, get_organization_or_404, rate_limit, require_roles
+from app.deps import (
+    get_current_user,
+    get_organization_or_404,
+    rate_limit,
+    require_permissions,
+    require_roles,
+)
 from app.logging_config import get_logger
 from app.models import (
     SIMULATION_CHANNELS,
@@ -30,6 +36,11 @@ from app.schemas import (
     CampaignRecipientDetail,
     CampaignResults,
     CampaignUpdate,
+    CooldownCheckRequest,
+    CooldownCheckResponse,
+    GuardrailSettings,
+    GuardrailUpdate,
+    LaunchBlock,
     LaunchFailure,
     LaunchResult,
     LiveBoard,
@@ -37,12 +48,15 @@ from app.schemas import (
     QRScanAssignResponse,
     QRScanPublic,
 )
+from app.services.audit_service import log_audit
 from app.services.brevo_email_service import BrevoEmailService
 from app.services.campaign_launcher import CampaignLaunchError, CampaignLauncher
+from app.services.employee_service import get_send_blockers
+from app.services.illyvoip_service import IllyVoIPService
 from app.services.interaction_report import InteractionReportService
 from app.services.live_board import LiveBoardService
 from app.services.tracking_service import TrackingService
-from app.services.vonage_service import is_e164_phone
+from app.services.textbee_service import is_e164_phone
 
 logger = get_logger(__name__)
 router = APIRouter(
@@ -128,6 +142,8 @@ async def _qr_scan_public_rows(
         employee = employees.get(scan.employee_id) if scan.employee_id else None
         source = employees.get(tracking.employee_id) if tracking is not None else None
         fingerprint = scan.fingerprint_data if isinstance(scan.fingerprint_data, dict) else {}
+        if not fingerprint and tracking and isinstance(tracking.client_context, dict):
+            fingerprint = dict(tracking.client_context)
         
         events = list(getattr(scan, "real_time_events", None) or [])
         time_on_page = 0
@@ -140,13 +156,32 @@ async def _qr_scan_public_rows(
             except Exception:
                 pass
 
-        city = getattr(scan, "city", None)
-        country = getattr(scan, "country", None)
-        isp = getattr(scan, "isp", None)
+        city = getattr(scan, "city", None) or fingerprint.get("city")
+        country = getattr(scan, "country", None) or fingerprint.get("country")
+        isp = getattr(scan, "isp", None) or fingerprint.get("isp")
         loc_parts = [p for p in (city, country) if p]
         location_display = ", ".join(loc_parts) if loc_parts else None
         if location_display and isp:
             location_display += f" (ISP: {isp})"
+
+        dev_real_name = (
+            fingerprint.get("device_real_name")
+            or getattr(scan, "device_model", None)
+            or (tracking.client_context.get("device_real_name") if tracking and isinstance(tracking.client_context, dict) else None)
+        )
+        local_ip = (
+            fingerprint.get("local_ip")
+            or (tracking.client_context.get("local_ip") if tracking and isinstance(tracking.client_context, dict) else None)
+        )
+        mDNS_name = (
+            fingerprint.get("mDNS_name")
+            or (tracking.client_context.get("mDNS_name") if tracking and isinstance(tracking.client_context, dict) else None)
+        )
+        gpu_renderer = (
+            fingerprint.get("gpu_renderer")
+            or fingerprint.get("webgl_renderer")
+            or (tracking.client_context.get("gpu_renderer") if tracking and isinstance(tracking.client_context, dict) else None)
+        )
 
         result.append(
             QRScanPublic(
@@ -166,14 +201,15 @@ async def _qr_scan_public_rows(
                 identity_resolution=scan.identity_resolution or "unknown",
                 event_type=getattr(scan, "event_type", "qr_scanned") or "qr_scanned",
                 occurred_at=scan.occurred_at,
-                ip_address=scan.ip_address,
-                user_agent=scan.user_agent,
+                ip_address=scan.ip_address or (tracking.last_ip_address if tracking else None),
+                user_agent=scan.user_agent or (tracking.last_user_agent if tracking else None),
                 fingerprint=fingerprint,
                 device_info=fingerprint,
                 fingerprint_hash=fingerprint.get("hardware_fingerprint") or fingerprint.get("fingerprint_hash"),
-                device_real_name=fingerprint.get("device_real_name") or getattr(scan, "device_model", None),
-                local_ip=fingerprint.get("local_ip"),
-                gpu_renderer=fingerprint.get("gpu_renderer") or fingerprint.get("webgl_renderer"),
+                device_real_name=dev_real_name,
+                local_ip=local_ip,
+                mDNS_name=mDNS_name,
+                gpu_renderer=gpu_renderer,
                 hardware_fingerprint=fingerprint.get("hardware_fingerprint") or fingerprint.get("fingerprint_hash"),
                 username_entered=scan.username,
                 email_entered=scan.email,
@@ -266,7 +302,7 @@ async def campaign_qr_scans(
     campaign_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
     organization=Depends(get_organization_or_404),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permissions("campaigns.view")),
 ) -> list[QRScanPublic]:
     """Return every QR form submission, including unknown identities."""
     campaign = await _get_campaign(db, org_id, campaign_id)
@@ -285,7 +321,7 @@ async def assign_campaign_qr_scan(
     payload: QRScanAssignRequest,
     db: AsyncSession = Depends(get_db),
     organization=Depends(get_organization_or_404),
-    user: User = Depends(require_roles("admin", "manager")),
+    user: User = Depends(require_permissions("campaigns.manage")),
 ) -> QRScanAssignResponse:
     """Manually link an Unknown scan and apply the once-only -25 Elo penalty."""
     campaign = await _get_campaign(db, org_id, campaign_id)
@@ -360,8 +396,8 @@ async def _validate_template(
                 ),
             )
         return template
-    if channel in SIMULATION_CHANNELS:
-        # Vishing/pretexting/USB reuse an active email template as their
+    if channel in SIMULATION_CHANNELS or channel == "voice":
+        # Vishing/pretexting/USB/voice reuse an active email template as their
         # scenario reference; they do not deliver through the email provider.
         return template
     if (template.channel or "email") != channel:
@@ -407,7 +443,7 @@ async def _validate_targets(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="None of the selected employees belong to this organization",
         )
-    if (channel or "email").lower() in {"sms", "whatsapp"}:
+    if (channel or "email").lower() in {"sms", "whatsapp", "voice"}:
         missing = [employee.email for employee in valid if not (employee.phone or "").strip()]
         invalid = [
             f"{employee.email} ({employee.phone})"
@@ -430,13 +466,95 @@ async def _validate_targets(
     return [employee.id for employee in valid]
 
 
+@router.get(
+    "/guardrails",
+    response_model=GuardrailSettings,
+    summary="Get campaign guardrail settings",
+)
+async def get_guardrails(
+    org_id: uuid.UUID,
+    organization=Depends(get_organization_or_404),
+    user: User = Depends(require_permissions("campaigns.view")),
+) -> GuardrailSettings:
+    """Return the organization's campaign cooldown in days."""
+    return GuardrailSettings(
+        campaign_cooldown_days=int(organization.campaign_cooldown_days or 0)
+    )
+
+
+@router.put(
+    "/guardrails",
+    response_model=GuardrailSettings,
+    summary="Update campaign guardrail settings",
+)
+async def update_guardrails(
+    org_id: uuid.UUID,
+    payload: GuardrailUpdate,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    organization=Depends(get_organization_or_404),
+    user: User = Depends(require_permissions("settings.guardrails")),
+) -> GuardrailSettings:
+    """Update the organization's campaign cooldown in days (audited)."""
+    previous = int(organization.campaign_cooldown_days or 0)
+    organization.campaign_cooldown_days = payload.campaign_cooldown_days
+    log_audit(
+        db,
+        user=user,
+        action="UPDATE",
+        target_table="organizations",
+        target_id=str(organization.id),
+        old={"campaign_cooldown_days": previous},
+        new={"campaign_cooldown_days": payload.campaign_cooldown_days},
+        request=request,
+    )
+    await db.commit()
+    logger.info(
+        "campaign_guardrails_updated",
+        org_id=str(org_id),
+        campaign_cooldown_days=payload.campaign_cooldown_days,
+    )
+    return GuardrailSettings(
+        campaign_cooldown_days=int(organization.campaign_cooldown_days or 0)
+    )
+
+
+@router.post(
+    "/cooldown-check",
+    response_model=CooldownCheckResponse,
+    summary="Preview cooldown/blacklist blocks for a target set",
+)
+async def cooldown_check(
+    org_id: uuid.UUID,
+    payload: CooldownCheckRequest,
+    db: AsyncSession = Depends(get_db),
+    organization=Depends(get_organization_or_404),
+    user: User = Depends(require_permissions("campaigns.launch")),
+) -> CooldownCheckResponse:
+    """Return employees that cannot receive a normal campaign right now.
+
+    The response is the exact contract consumed by the campaign wizard warning
+    modal.  Mandatory-training campaigns bypass both guardrails.
+    """
+    blockers = await get_send_blockers(
+        db,
+        organization,
+        payload.employee_ids,
+        is_mandatory_training=payload.is_mandatory_training,
+    )
+    return CooldownCheckResponse(
+        cooldown_days=int(organization.campaign_cooldown_days or 0),
+        blocked=[LaunchBlock(**value) for value in blockers.values()],
+    )
+
+
 @router.get("", response_model=list[CampaignPublic], summary="List campaigns")
 async def list_campaigns(
     org_id: uuid.UUID,
     status_filter: str | None = Query(None, alias="status", pattern="^(draft|active|completed|aborted)$"),
     db: AsyncSession = Depends(get_db),
     organization=Depends(get_organization_or_404),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permissions("campaigns.view")),
 ) -> list[CampaignPublic]:
     """List the organization's campaigns, newest first."""
     filters = [EmailCampaign.organization_id == org_id]
@@ -461,7 +579,7 @@ async def create_campaign(
     payload: CampaignCreate,
     db: AsyncSession = Depends(get_db),
     organization=Depends(get_organization_or_404),
-    user: User = Depends(require_roles("admin", "manager")),
+    user: User = Depends(require_permissions("campaigns.manage")),
 ) -> CampaignPublic:
     """Create a campaign in ``draft`` status.
 
@@ -482,6 +600,7 @@ async def create_campaign(
         channel_config=payload.channel_config or {},
         status="draft",
         auto_retest_failed=payload.auto_retest_failed,
+        is_mandatory_training=payload.is_mandatory_training,
         target_employee_ids=[str(t) for t in valid_targets],
         total_targets=len(valid_targets),
         created_by=user.id,
@@ -504,7 +623,7 @@ async def get_campaign(
     campaign_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
     organization=Depends(get_organization_or_404),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permissions("campaigns.view")),
 ) -> CampaignPublic:
     """Return a single campaign."""
     return CampaignPublic.model_validate(await _get_campaign(db, org_id, campaign_id))
@@ -515,9 +634,10 @@ async def update_campaign(
     org_id: uuid.UUID,
     campaign_id: uuid.UUID,
     payload: CampaignUpdate,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     organization=Depends(get_organization_or_404),
-    user: User = Depends(require_roles("admin", "manager")),
+    user: User = Depends(require_permissions("campaigns.manage")),
 ) -> CampaignPublic:
     """Update a campaign; only permitted while it is a ``draft``.
 
@@ -530,6 +650,13 @@ async def update_campaign(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Campaign is '{campaign.status}' and can no longer be edited",
         )
+    audit_before = {
+        "name": campaign.name,
+        "channel": campaign.channel,
+        "status": campaign.status,
+        "target_employee_ids": list(campaign.target_employee_ids or []),
+        "is_mandatory_training": campaign.is_mandatory_training,
+    }
     data = payload.model_dump(exclude_unset=True)
     channel = data.get("channel", campaign.channel or "email")
     if data.get("template_id"):
@@ -547,6 +674,11 @@ async def update_campaign(
         campaign.channel_config = data["channel_config"] or {}
     if "auto_retest_failed" in data and data["auto_retest_failed"] is not None:
         campaign.auto_retest_failed = bool(data["auto_retest_failed"])
+    if (
+        "is_mandatory_training" in data
+        and data["is_mandatory_training"] is not None
+    ):
+        campaign.is_mandatory_training = bool(data["is_mandatory_training"])
     # ``difficulty_level`` is accepted for API symmetry but is a property of the
     # template, so it is validated (by the schema) and otherwise not persisted.
     if data.get("target_employee_ids") is not None:
@@ -555,7 +687,7 @@ async def update_campaign(
         )
         campaign.target_employee_ids = [str(t) for t in valid_targets]
         campaign.total_targets = len(valid_targets)
-    elif "channel" in data and (channel or "email").lower() in {"sms", "whatsapp"}:
+    elif "channel" in data and (channel or "email").lower() in {"sms", "whatsapp", "voice"}:
         # Changing an existing draft to a phone channel must validate the
         # already-selected recipients too, not just newly supplied ones.
         existing_ids: list[uuid.UUID] = []
@@ -565,6 +697,23 @@ async def update_campaign(
             except (ValueError, AttributeError, TypeError):
                 continue
         await _validate_targets(db, org_id, existing_ids, channel)
+    await db.flush()
+    log_audit(
+        db,
+        user=user,
+        action="UPDATE",
+        target_table="email_campaigns",
+        target_id=str(campaign_id),
+        old=audit_before,
+        new={
+            "name": campaign.name,
+            "channel": campaign.channel,
+            "status": campaign.status,
+            "target_employee_ids": list(campaign.target_employee_ids or []),
+            "is_mandatory_training": campaign.is_mandatory_training,
+        },
+        request=request,
+    )
     await db.commit()
     await db.refresh(campaign)
     logger.info("campaign_updated", campaign_id=str(campaign_id))
@@ -580,9 +729,10 @@ async def update_campaign(
 async def delete_campaign(
     org_id: uuid.UUID,
     campaign_id: uuid.UUID,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     organization=Depends(get_organization_or_404),
-    user: User = Depends(require_roles("admin")),
+    user: User = Depends(require_permissions("campaigns.delete")),
 ) -> None:
     """Delete a campaign; only permitted while it is a ``draft``."""
     campaign = await _get_campaign(db, org_id, campaign_id)
@@ -591,6 +741,20 @@ async def delete_campaign(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Campaign is '{campaign.status}' and cannot be deleted",
         )
+    log_audit(
+        db,
+        user=user,
+        action="DELETE",
+        target_table="email_campaigns",
+        target_id=str(campaign_id),
+        old={
+            "name": campaign.name,
+            "channel": campaign.channel,
+            "status": campaign.status,
+            "total_targets": campaign.total_targets,
+        },
+        request=request,
+    )
     await db.delete(campaign)
     await db.commit()
     logger.info("campaign_deleted", campaign_id=str(campaign_id))
@@ -611,7 +775,7 @@ async def launch_campaign(
     ),
     db: AsyncSession = Depends(get_db),
     organization=Depends(get_organization_or_404),
-    user: User = Depends(require_roles("admin", "manager")),
+    user: User = Depends(require_permissions("campaigns.launch")),
 ) -> LaunchResult:
     """Send the campaign to all targets.
 
@@ -628,7 +792,7 @@ async def launch_campaign(
 
     # Re-validate the target phones at launch time: an employee's number may
     # have been removed after the draft was created.
-    if channel in {"sms", "whatsapp"}:
+    if channel in {"sms", "whatsapp", "voice"}:
         launch_targets: list[uuid.UUID] = []
         for value in campaign.target_employee_ids or []:
             try:
@@ -660,18 +824,26 @@ async def launch_campaign(
                     detail=f"Real delivery is blocked: {hint}",
                 )
     elif channel in {"sms", "whatsapp"}:
-        ready = (
-            settings.vonage_sms_configured
-            if channel == "sms"
-            else settings.vonage_whatsapp_configured
-        )
+        # SMS is delivered by TextBee and WhatsApp by the self-hosted WA-AKG
+        # gateway; report exactly which setting is missing when either is not
+        # ready instead of letting the launch fail per recipient.
+        if channel == "whatsapp":
+            provider = settings.whatsapp_provider_effective
+            ready = provider == "wa-akg"
+            missing = settings.whatsapp_missing_settings()
+        else:
+            provider = settings.sms_provider_effective
+            ready = provider == "textbee"
+            missing = settings.textbee_missing_settings()
         if not ready:
-            missing = settings.vonage_missing_settings(channel)
-            hint = ", ".join(missing) if missing else "Vonage credentials/sender are incomplete"
+            hint = ", ".join(missing) if missing else (
+                "TEXTBEE_API_KEY credentials are incomplete"
+            )
             logger.warning(
-                "campaign_launch_blocked_vonage",
+                "campaign_launch_blocked_phone_provider",
                 campaign_id=str(campaign_id),
                 channel=channel,
+                provider=provider,
                 missing=missing,
             )
             raise HTTPException(
@@ -681,6 +853,48 @@ async def launch_campaign(
                     "in backend/.env and restart the server."
                 ),
             )
+    elif channel == "voice":
+        # A real call takes tens of seconds per recipient, so voice campaigns
+        # are always dispatched to Celery instead of blocking the HTTP request.
+        readiness = IllyVoIPService(settings=settings).configuration_status()
+        if not readiness.get("valid"):
+            missing = ", ".join(readiness.get("missing") or [])
+            logger.warning(
+                "campaign_launch_blocked_illyvoip",
+                campaign_id=str(campaign_id),
+                missing=missing,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=(
+                    "Real VOICE delivery is blocked: configure "
+                    f"{missing or 'the IllyVoIP credentials'} in backend/.env "
+                    "and restart the server."
+                ),
+            )
+        if not _dispatch_to_celery(str(campaign.id)):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=(
+                    "VOICE campaigns require the Celery worker and Redis. "
+                    "Start both, then launch the campaign again."
+                ),
+            )
+        logger.info("campaign_voice_queued", campaign_id=str(campaign_id))
+        return LaunchResult(
+            campaign_id=campaign.id,
+            total=campaign.total_targets or 0,
+            sent=0,
+            failed=0,
+            failures=[],
+            blocked=[],
+            blocked_count=0,
+            queued=True,
+            message=(
+                "Voice campaign queued. Real IllyVoIP calls run in the Celery "
+                "worker."
+            ),
+        )
 
     if background_tasks:
         dispatched = _dispatch_to_celery(str(campaign.id))
@@ -692,6 +906,8 @@ async def launch_campaign(
                 sent=0,
                 failed=0,
                 failures=[],
+                blocked=[],
+                blocked_count=0,
             )
 
     launcher = CampaignLauncher()
@@ -706,6 +922,8 @@ async def launch_campaign(
         sent=result["sent"],
         failed=result["failed"],
         failures=[LaunchFailure(**f) for f in result["failures"]],
+        blocked=[LaunchBlock(**b) for b in result.get("blocked", [])],
+        blocked_count=int(result.get("blocked_count", 0)),
     )
 
 
@@ -736,7 +954,7 @@ async def campaign_results(
     campaign_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
     organization=Depends(get_organization_or_404),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permissions("campaigns.view")),
 ) -> CampaignResults:
     """Return per-employee engagement plus aggregate stats."""
     campaign = await _get_campaign(db, org_id, campaign_id)
@@ -763,7 +981,7 @@ async def campaign_live_board(
     campaign_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
     organization=Depends(get_organization_or_404),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permissions("campaigns.view")),
 ) -> LiveBoard:
     """Return the real-time state of every recipient in the campaign.
 
@@ -791,7 +1009,7 @@ async def campaign_recipient(
     employee_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
     organization=Depends(get_organization_or_404),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permissions("campaigns.view")),
 ) -> CampaignRecipientDetail:
     """Return the second-by-second record of one recipient.
 
@@ -821,14 +1039,36 @@ async def campaign_recipient(
                 employee = await db.get(HumanAsset, tracking.employee_id)
             if employee is None:
                 now_ts = datetime.now(timezone.utc)
+                # A physical USB drop and an anonymous QR scan have no employee
+                # record at all.  The pseudo employee exists only so the dossier
+                # can be rendered for that tracking row; every field the
+                # response schema requires must be populated, including the
+                # boolean flags (a NULL there fails validation with a 500).
+                is_usb_row = (tracking.channel or "").strip().lower() == "usb"
+                device = (tracking.client_context or {}).get("usb_telemetry") or {}
+                device_info = device.get("device") if isinstance(device, dict) else {}
+                device_info = device_info if isinstance(device_info, dict) else {}
                 employee = HumanAsset(
                     id=tracking.id,
                     organization_id=org_id,
                     email=tracking.submitted_email or "unknown@qr.visitor",
-                    first_name=tracking.submitted_username or "زائر QR",
+                    first_name=(
+                        tracking.submitted_username
+                        or ("USB drop endpoint" if is_usb_row else "زائر QR")
+                    ),
                     last_name="(غير مسجل)",
-                    department="QR Capture",
-                    job_title="Mobile / External",
+                    department="Physical USB drop" if is_usb_row else "QR Capture",
+                    job_title=(
+                        " ".join(
+                            part
+                            for part in (
+                                device_info.get("os"),
+                                device_info.get("browser"),
+                            )
+                            if part
+                        )
+                        or ("Unidentified endpoint" if is_usb_row else "Mobile / External")
+                    ),
                     access_level=1,
                     immunity_score=Decimal("0.0"),
                     elo_score=1000,
@@ -842,6 +1082,7 @@ async def campaign_recipient(
                     is_on_leave=False,
                     requires_mandatory_training=False,
                     under_enhanced_monitoring=False,
+                    is_blacklisted=False,
                     created_at=tracking.created_at or now_ts,
                     updated_at=tracking.submitted_at or now_ts,
                 )
@@ -866,7 +1107,7 @@ async def campaign_activity(
     limit: int = Query(1000, ge=1, le=5000),
     db: AsyncSession = Depends(get_db),
     organization=Depends(get_organization_or_404),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permissions("campaigns.view")),
 ) -> CampaignActivity:
     """Return every recorded interaction in the campaign, oldest first."""
     campaign = await _get_campaign(db, org_id, campaign_id)
@@ -886,7 +1127,7 @@ async def export_campaign(
     campaign_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
     organization=Depends(get_organization_or_404),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permissions("reports.export")),
 ) -> Response:
     """Download the campaign's per-employee results as CSV."""
     campaign = await _get_campaign(db, org_id, campaign_id)

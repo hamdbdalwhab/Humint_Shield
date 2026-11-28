@@ -103,6 +103,25 @@ function ValuesPreview({ record }: { record: EmployeeCampaignRecord }) {
   );
 }
 
+/** Human label for the network telemetry block (battery/connection). */
+function describeNetwork(network: unknown): string {
+  if (!network || typeof network !== 'object') return '—';
+  const net = network as {
+    effective_type?: string;
+    downlink_mbps?: number;
+    online?: boolean;
+  };
+  return (
+    [
+      net.effective_type,
+      net.downlink_mbps ? `${net.downlink_mbps} Mbps` : null,
+      net.online === false ? 'offline' : null,
+    ]
+      .filter(Boolean)
+      .join(' · ') || '—'
+  );
+}
+
 export function RecipientDossierDialog({
   open,
   onClose,
@@ -287,10 +306,71 @@ export function RecipientDossierDialog({
                             🖥️ تفاصيل العتاد والمواصفات (Hardware)
                           </Typography>
                           <Stack spacing={0.6} sx={{ fontSize: '0.78rem' }}>
-                            <div><strong>اسم الجهاز الحقيقي:</strong> {String(record.client_context.device_real_name || record.client_context.device_model || '—')}</div>
-                            <div><strong>معالج الرسوميات (GPU):</strong> {String(record.client_context.gpu_renderer || record.client_context.webgl_renderer || 'Standard')}</div>
-                            <div><strong>أنوية المعالج (CPU Cores):</strong> {String(record.client_context.cpu_cores || '—')}</div>
-                            <div><strong>ذاكرة الجهاز (RAM):</strong> {record.client_context.device_memory_gb ? `${record.client_context.device_memory_gb} GB` : '—'}</div>
+                            <div>
+                              <strong>اسم الجهاز الحقيقي:</strong>{' '}
+                              {String(
+                                record.client_context.device_real_name ||
+                                  record.client_context.hostname ||
+                                  (record.client_context.mDNS_name
+                                    ? 'مخفي بواسطة المتصفح — يظهر كاسم mDNS عشوائي أدناه'
+                                    : 'غير متاح — المتصفح لا يكشف اسم الجهاز'),
+                              )}
+                            </div>
+                            <div>
+                              <strong>حساب Windows المسجّل:</strong>{' '}
+                              {record.client_context.username ? (
+                                String(record.client_context.username)
+                              ) : (
+                                <Typography component="span" variant="caption" color="text.secondary">
+                                  غير متاح — صفحة HTML لا تستطيع قراءة اسم حساب النظام؛ شغّل أداة الهوية
+                                  المحلية (HUMINT_Identity_Check.cmd) لتعبئته
+                                </Typography>
+                              )}
+                            </div>
+                            {String(record.client_context.identity_source || '') === 'local_tool' ? (
+                              <Chip
+                                size="small"
+                                color="success"
+                                variant="outlined"
+                                label="الهوية من الأداة المحلية — قرأها السكربت على الجهاز نفسه"
+                                sx={{ alignSelf: 'flex-start', fontWeight: 700, fontSize: '0.7rem' }}
+                              />
+                            ) : null}
+                            <div><strong>المستخدم المسجّل على الجهاز:</strong> {String(record.client_context.windows_logged_on_user || '—')}</div>
+                            <div><strong>النطاق / مجموعة العمل:</strong> {String(record.client_context.device_domain || '—')}</div>
+                            <div><strong>نظام التشغيل:</strong> {String(record.client_context.os || '—')}</div>
+                            <div><strong>إصدار النظام (Build):</strong> {String(record.client_context.os_build || '—')}</div>
+                            <div>
+                              <strong>الشركة المصنّعة / الطراز:</strong>{' '}
+                              {[record.client_context.device_manufacturer, record.client_context.device_model]
+                                .filter(Boolean)
+                                .map(String)
+                                .join(' — ') || '—'}
+                            </div>
+                            <div><strong>الرقم التسلسلي للجهاز:</strong> {String(record.client_context.device_serial || '—')}</div>
+                            <div><strong>اسم المعالج:</strong> {String(record.client_context.cpu_model || '—')}</div>
+                            <div>
+                              <strong>صلاحيات الأداة:</strong>{' '}
+                              {record.client_context.probe_elevated === true
+                                ? 'مسؤول (Administrator)'
+                                : record.client_context.probe_elevated === false
+                                  ? 'مستخدم عادي'
+                                  : '—'}
+                            </div>
+                            {String(record.client_context.identity_source || '') !== 'local_tool' ? (
+                              <Typography variant="caption" color="text.secondary">
+                                لم تُشغَّل الأداة المحلية على هذا الجهاز، لذلك اسم الحساب واسم الجهاز غير
+                                متاحين من المتصفح. شغّل HUMINT_Identity_Check.cmd من الفلاشة لتعبئتهما.
+                              </Typography>
+                            ) : null}
+                            <div><strong>معالج الرسوميات (GPU):</strong> {String(record.client_context.gpu_renderer || record.client_context.webgl_renderer || 'غير متاح')}</div>
+                            <div><strong>أنوية المعالج (CPU Cores):</strong> {String(record.client_context.cpu_cores ?? 'غير متاح')}</div>
+                            <div>
+                              <strong>ذاكرة الجهاز (RAM):</strong>{' '}
+                              {record.client_context.device_memory_gb
+                                ? `${record.client_context.device_memory_gb} GB`
+                                : 'غير متاح — هذا المتصفح لا يكشف الذاكرة'}
+                            </div>
                             <div><strong>بصمة العتاد:</strong> <span style={{ fontFamily: 'monospace', wordBreak: 'break-all', fontSize: '0.72rem' }}>{String(record.client_context.hardware_fingerprint || record.client_context.fingerprint_hash || '—')}</span></div>
                           </Stack>
                         </Box>
@@ -303,10 +383,25 @@ export function RecipientDossierDialog({
                             🌐 بيانات الشبكة والاتصال (Network)
                           </Typography>
                           <Stack spacing={0.6} sx={{ fontSize: '0.78rem' }}>
-                            <div><strong>الآيبي المحلي (Local IP):</strong> {String(record.client_context.local_ip || '—')}</div>
+                            <div>
+                              <strong>الآيبي المحلي (Local IP):</strong>{' '}
+                              {String(
+                                record.client_context.local_ip ||
+                                  (record.client_context.mDNS_name
+                                    ? 'مخفي بواسطة المتصفح (mDNS)'
+                                    : record.client_context.public_ip || '—'),
+                              )}
+                            </div>
                             <div><strong>اسم الجهاز بالشبكة (mDNS):</strong> {String(record.client_context.mDNS_name || '—')}</div>
+                            <div><strong>الآيبي العام (WAN):</strong> {String(record.client_context.public_ip || '—')}</div>
                             <div><strong>الموقع الجغرافي:</strong> {[record.client_context.city, record.client_context.country].filter(Boolean).join(', ') || '—'}</div>
                             <div><strong>مزود الخدمة (ISP):</strong> {String(record.client_context.isp || '—')}</div>
+                            {record.client_context.network ? (
+                              <div>
+                                <strong>نوع الاتصال:</strong>{' '}
+                                {describeNetwork(record.client_context.network)}
+                              </div>
+                            ) : null}
                           </Stack>
                         </Box>
                       </Grid>
@@ -319,9 +414,11 @@ export function RecipientDossierDialog({
                           </Typography>
                           <Stack spacing={0.6} sx={{ fontSize: '0.78rem' }}>
                             <div><strong>دقة الشاشة:</strong> {String(record.client_context.screen_resolution || '—')}</div>
-                            <div><strong>نسبة البكسل:</strong> {String(record.client_context.pixel_ratio || '—')}</div>
+                            <div><strong>نسبة البكسل:</strong> {String(record.client_context.pixel_ratio ?? '—')}</div>
                             <div><strong>لغة الجهاز:</strong> {String(record.client_context.language || '—')}</div>
-                            <div><strong>المتصفح:</strong> <span style={{ fontSize: '0.72rem', wordBreak: 'break-all' }}>{String(record.client_context.user_agent || '—')}</span></div>
+                            <div><strong>المنطقة الزمنية:</strong> {String(record.client_context.timezone || '—')}</div>
+                            <div><strong>المتصفح:</strong> {String(record.client_context.browser || '—')}</div>
+                            <div><strong>User-Agent:</strong> <span style={{ fontSize: '0.72rem', wordBreak: 'break-all' }}>{String(record.client_context.user_agent || '—')}</span></div>
                           </Stack>
                         </Box>
                       </Grid>
@@ -353,7 +450,10 @@ export function RecipientDossierDialog({
                     Browser context recorded with the submission:{' '}
                     {Object.entries(record.client_context)
                       .filter(([, value]) => value !== null && value !== '')
-                      .map(([key, value]) => `${key}=${String(value)}`)
+                      .map(
+                        ([key, value]) =>
+                          `${key}=${typeof value === 'object' ? JSON.stringify(value) : String(value)}`,
+                      )
                       .join(' · ')}
                   </Alert>
                 ) : null}

@@ -106,7 +106,8 @@ async def test_employee_dossier_contains_every_event_and_typed_value(
     }
     # The plain snapshot stays secret-free.
     assert record["submitted_fields"] == {"department": "Finance"}
-    assert record["client_context"] == {"seconds_on_form": 14, "timezone": "Africa/Cairo"}
+    assert record["client_context"]["seconds_on_form"] == 14
+    assert record["client_context"]["timezone"] == "Africa/Cairo"
     assert record["submission_count"] == 1
 
     event_types = [event["event_type"] for event in record["events"]]

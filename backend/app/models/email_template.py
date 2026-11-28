@@ -18,8 +18,8 @@ DEFAULT_VARIABLES = [
     "manager_name",
 ]
 
-#: Channels supported by the unified campaign schema. ``sms`` and ``whatsapp``
-#: are reserved for the Vonage transport; ``qr`` templates carry the printed
+#: Channels supported by the unified campaign schema. ``sms`` templates are
+#: delivered by the TextBee gateway; ``qr`` templates carry the printed
 #: quishing lure (one generic poster per campaign) and are never emailed.
 CHANNELS = ("email", "sms", "whatsapp", "qr")
 DEFAULT_CHANNEL = "email"
@@ -47,6 +47,13 @@ class EmailTemplate(Base):
     #: Visual-editor source document (Unlayer-style JSON).  ``body_html`` is the
     #: compiled, sanitised output that is actually sent.
     design_json: Mapped[dict | None] = mapped_column(JSONBType, nullable=True)
+    #: Optional audience: ``IT``, ``Finance``, ``HR``, ``Executive`` or ``All``.
+    #: The SMS landing page picks its skin from this value.
+    target_department: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    #: Psychological trigger the pretext engine used (``authority``, ``urgency``,
+    #: ``familiarity``, ``scarcity`` or ``fear``). ``NULL`` for hand-authored
+    #: templates, which keeps existing rows untouched.
+    pretext_used: Mapped[str | None] = mapped_column(String(20), nullable=True, index=True)
     difficulty_level: Mapped[int] = mapped_column(Integer, default=5)
     available_variables: Mapped[list] = mapped_column(
         JSONBType, default=lambda: list(DEFAULT_VARIABLES)

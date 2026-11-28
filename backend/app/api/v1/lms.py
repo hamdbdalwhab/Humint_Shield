@@ -14,7 +14,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.database import get_db
-from app.deps import get_current_user, get_organization_or_404, rate_limit, require_roles
+from app.deps import (
+    get_current_user,
+    get_organization_or_404,
+    rate_limit,
+    require_permissions,
+    require_roles,
+)
 from app.logging_config import get_logger
 from app.models import (
     EmailCampaign,
@@ -60,7 +66,7 @@ async def dashboard(
     org_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
     organization=Depends(get_organization_or_404),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permissions("lms.view")),
 ) -> DashboardSummary:
     """Aggregate headline metrics for the dashboard page."""
     total_employees = await db.scalar(
@@ -251,7 +257,7 @@ async def list_modules(
     org_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
     organization=Depends(get_organization_or_404),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permissions("lms.view")),
 ) -> list[TrainingModulePublic]:
     """Return the training-library catalogue."""
     rows = (
@@ -275,7 +281,7 @@ async def create_module(
     payload: TrainingModuleCreate,
     db: AsyncSession = Depends(get_db),
     organization=Depends(get_organization_or_404),
-    user: User = Depends(require_roles("admin", "manager")),
+    user: User = Depends(require_permissions("lms.manage")),
 ) -> TrainingModulePublic:
     """Add a module to the training library."""
     module = TrainingModule(organization_id=org_id, **payload.model_dump())
@@ -333,7 +339,7 @@ async def list_assignments(
     employee_id: uuid.UUID | None = Query(None),
     db: AsyncSession = Depends(get_db),
     organization=Depends(get_organization_or_404),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permissions("lms.view")),
 ) -> list[AssignmentPublic]:
     """List assignments, optionally filtered by status/employee."""
     filters = [TrainingAssignment.organization_id == org_id]
@@ -366,7 +372,7 @@ async def create_assignment(
     payload: AssignmentCreate,
     db: AsyncSession = Depends(get_db),
     organization=Depends(get_organization_or_404),
-    user: User = Depends(require_roles("admin", "manager")),
+    user: User = Depends(require_permissions("lms.manage")),
 ) -> AssignmentPublic:
     """Create an assignment.
 
@@ -405,7 +411,7 @@ async def complete_assignment(
     assignment_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
     organization=Depends(get_organization_or_404),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permissions("lms.manage")),
 ) -> AssignmentPublic:
     """Mark an assignment as completed.
 
@@ -431,7 +437,7 @@ async def list_reports(
     status_filter: str | None = Query(None, alias="status", max_length=20),
     db: AsyncSession = Depends(get_db),
     organization=Depends(get_organization_or_404),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permissions("inbox.view")),
 ) -> list[PhishingReportPublic]:
     """List the report inbox, newest first."""
     filters = [PhishingReport.organization_id == org_id]
@@ -495,7 +501,7 @@ async def update_report(
     payload: PhishingReportUpdate,
     db: AsyncSession = Depends(get_db),
     organization=Depends(get_organization_or_404),
-    user: User = Depends(require_roles("admin", "manager")),
+    user: User = Depends(require_permissions("inbox.manage")),
 ) -> PhishingReportPublic:
     """Update a report's triage status and notes.
 

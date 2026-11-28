@@ -51,6 +51,7 @@ import { useParams, useSearchParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 
 import { trackingApi } from '@/api/endpoints';
+import { ImpactEvidenceCard } from '@/components/ImpactEvidenceCard';
 import { SimulationPreview } from '@/components/SimulationPreview';
 import { contentForChannel, type ChannelContent } from '@/lib/simulationContent';
 import type { TrackingCompleteResponse, TrackingContext } from '@/types';
@@ -681,6 +682,18 @@ export function TrainingExperiencePage() {
   const completed = alreadyComplete || Boolean(completion?.success);
   const ready = remaining <= 0;
 
+  // Opening the training page is itself an interaction: record it once so the
+  // monitoring board shows that the recipient followed the warning link, and not
+  // only when the quiz is completed.  A failed call is retried on the next mount.
+  const visitRecorded = useRef(false);
+  useEffect(() => {
+    if (!trackingUuid || visitRecorded.current) return;
+    visitRecorded.current = true;
+    void trackingApi.formViewed(trackingUuid).catch(() => {
+      visitRecorded.current = false;
+    });
+  }, [trackingUuid]);
+
   useEffect(() => {
     if (remaining <= 0) return undefined;
     const handle = window.setTimeout(() => {
@@ -916,6 +929,9 @@ export function TrainingExperiencePage() {
             </Alert>
           </motion.div>
         )}
+
+        {/* --------------------- forensic evidence --------------------- */}
+        <ImpactEvidenceCard trackingUuid={trackingUuid} />
 
         {/* --------------------- compromised assets --------------------- */}
         {compromisedAssets.length > 0 ? (

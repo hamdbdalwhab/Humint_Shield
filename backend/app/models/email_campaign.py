@@ -22,7 +22,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.database import Base, INETType, JSONBType, UUIDType, generate_uuid
 
 CAMPAIGN_STATUSES = ("draft", "active", "completed", "aborted")
-CHANNELS = ("email", "sms", "whatsapp", "qr", "vishing", "pretexting", "usb")
+CHANNELS = ("email", "sms", "whatsapp", "qr", "vishing", "pretexting", "usb", "voice")
 SIMULATION_CHANNELS = ("qr", "vishing", "pretexting", "usb")
 DEFAULT_CHANNEL = "email"
 
@@ -50,6 +50,12 @@ class EmailCampaign(Base):
         UUIDType, ForeignKey("templates.id", ondelete="SET NULL")
     )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
+    #: Stable identifier shared by every tracking row this campaign produces.
+    #: It lets the platform treat a campaign as one *journey* even when a
+    #: recipient is later re-tested in a follow-up wave.
+    journey_id: Mapped[uuid.UUID] = mapped_column(
+        UUIDType, default=generate_uuid, index=True, nullable=False
+    )
     channel: Mapped[str] = mapped_column(
         String(20), default=DEFAULT_CHANNEL, server_default=DEFAULT_CHANNEL, index=True, nullable=False
     )
@@ -61,6 +67,11 @@ class EmailCampaign(Base):
     target_employee_ids: Mapped[list] = mapped_column(JSONBType, default=list)
     total_targets: Mapped[int] = mapped_column(Integer, default=0)
     auto_retest_failed: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="0", nullable=False
+    )
+    #: Mandatory-training campaigns bypass the cooldown and blacklist guards so
+    #: repeated failures can still be forced into remediation.
+    is_mandatory_training: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default="0", nullable=False
     )
     sent_count: Mapped[int] = mapped_column(Integer, default=0)
@@ -123,6 +134,9 @@ class EmailTracking(Base):
     template_id: Mapped[uuid.UUID | None] = mapped_column(
         UUIDType, ForeignKey("templates.id", ondelete="SET NULL")
     )
+    #: Denormalised copy of the campaign's journey id so one tracking row can
+    #: be grouped into a journey without joining ``campaigns`` on every read.
+    journey_id: Mapped[uuid.UUID | None] = mapped_column(UUIDType, index=True)
     channel: Mapped[str] = mapped_column(
         String(20), default=DEFAULT_CHANNEL, server_default=DEFAULT_CHANNEL, index=True, nullable=False
     )
@@ -141,8 +155,8 @@ class EmailTracking(Base):
     opened_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     clicked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    #: Generic provider fields. ``email`` currently uses Brevo; SMS/WhatsApp will
-    #: use Vonage without a schema change.
+    #: Generic provider fields. ``email`` uses Brevo and ``sms`` uses TextBee,
+    #: with no schema change between transports.
     provider: Mapped[str | None] = mapped_column(String(30), default="brevo")
     provider_message_id: Mapped[str | None] = mapped_column(String(255), index=True)
     open_count: Mapped[int] = mapped_column(Integer, default=0)
@@ -313,8 +327,12 @@ class TrainingInteraction(Base):
     campaign_id: Mapped[uuid.UUID] = mapped_column(
         UUIDType, ForeignKey("campaigns.id", ondelete="CASCADE"), index=True, nullable=False
     )
-    employee_id: Mapped[uuid.UUID] = mapped_column(
-        UUIDType, ForeignKey("human_assets.id", ondelete="CASCADE"), index=True, nullable=False
+    #: ``None`` for a campaign-level event that has no employee yet — a generic
+    #: physical USB drop is opened by an unidentified endpoint, and a QR poster
+    #: is scanned before an identity is known.  Persisting the event matters more
+    #: than the attribution, so the column is nullable.
+    employee_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUIDType, ForeignKey("human_assets.id", ondelete="CASCADE"), index=True, nullable=True
     )
     #: ``email_open``, ``link_click``, ``form_viewed``, ``form_submitted``,
     #: ``phishing_reported`` or ``training_completed``.

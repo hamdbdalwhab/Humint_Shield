@@ -10,8 +10,13 @@
 # ---------------------------------------------------------------------------
 set -euo pipefail
 
-ROLE="${1:-web}"
-shift || true
+# Role selection: an explicit argument wins (``docker run image worker``), then
+# SERVICE_ROLE from the environment, then ``web``.  Railway services share one
+# image, so the worker service only needs SERVICE_ROLE=worker.
+ROLE="${SERVICE_ROLE:-${1:-web}}"
+if [ "$#" -gt 0 ]; then
+  shift
+fi
 
 run_migrations() {
   if [ "${RUN_MIGRATIONS:-true}" = "true" ]; then
@@ -45,7 +50,8 @@ case "$ROLE" in
   beat)
     echo "[entrypoint] starting celery beat"
     exec celery -A app.worker.celery_app:celery_app beat \
-      --loglevel="${LOG_LEVEL:-INFO}" "$@"
+      --loglevel="${LOG_LEVEL:-INFO}" \
+      --schedule "${CELERYBEAT_SCHEDULE:-/tmp/celerybeat-schedule}" "$@"
     ;;
   migrate)
     exec alembic upgrade head "$@"

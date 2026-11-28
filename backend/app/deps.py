@@ -12,8 +12,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import Settings, get_settings
 from app.database import get_db
 from app.logging_config import get_logger
-from app.models import Organization, User
-from app.security import TokenError, decode_token
+from app.models import Organization, TokenRevocation, User
+from app.security import TokenError, claim_version, decode_token
 from app.services.rate_limit import RateLimitExceeded, get_rate_limiter
 
 logger = get_logger(__name__)
@@ -22,11 +22,30 @@ bearer_scheme = HTTPBearer(auto_error=False)
 
 
 def _client_ip(request: Request) -> str:
-    """Extract the client IP, honouring ``X-Forwarded-For`` from the proxy."""
+    """Extract the client IP without trusting client-supplied headers.
+
+    Behind a reverse proxy (nginx in the Docker stack, Cloudflare in front of
+    it) the socket address is the proxy's, so the forwarded headers are used
+    when :attr:`Settings.trust_proxy_headers` is enabled.  Only the **rightmost**
+    ``X-Forwarded-For`` entry is trusted: it is the address appended by the
+    proxy closest to us, while anything a client sends to the left of it is
+    attacker-controlled and would otherwise let a caller pick its own
+    rate-limit bucket.
+    """
+    settings: Settings = get_settings()
+    socket_ip = request.client.host if request.client else "unknown"
+    if not settings.trust_proxy_headers:
+        return socket_ip
+    for header in ("cf-connecting-ip", "true-client-ip", "x-real-ip"):
+        val = request.headers.get(header)
+        if val and val.strip():
+            return val.strip()
     forwarded = request.headers.get("x-forwarded-for")
     if forwarded:
-        return forwarded.split(",")[0].strip()
-    return request.client.host if request.client else "unknown"
+        candidates = [part.strip() for part in forwarded.split(",") if part.strip()]
+        if candidates:
+            return candidates[-1]
+    return socket_ip
 
 
 async def enforce_rate_limit(
@@ -136,7 +155,110 @@ async def get_current_user(
     user = await db.get(User, user_id)
     if user is None or not user.is_active:
         raise unauthorized
+    # A token issued before the last logout / password change is revoked even
+    # though its signature and expiry are still valid.
+    if claim_version(payload) != int(user.token_version or 0):
+        raise unauthorized
+    # Per-token revocation log: logout can invalidate exactly the presented
+    # session without bumping the account-wide generation counter.
+    jti = payload.get("jti")
+    if jti:
+        revoked = await db.scalar(
+            select(TokenRevocation.id)
+            .where(TokenRevocation.token_jti == str(jti))
+            .limit(1)
+        )
+        if revoked is not None:
+            raise unauthorized
     return user
+
+
+async def get_token_claims(
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+) -> dict:
+    """Return the verified claims of the presented access token.
+
+    Used by endpoints that must act on the token itself (logout, password
+    change) and therefore need its ``jti``.
+
+    Args:
+        credentials: Parsed ``Authorization: Bearer`` header.
+
+    Returns:
+        The decoded JWT claims.
+
+    Raises:
+        HTTPException: 401 when the header is missing or the token is invalid.
+    """
+    if credentials is None or not credentials.credentials:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    try:
+        return decode_token(credentials.credentials)
+    except TokenError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated",
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from None
+
+
+def effective_permissions(user: User) -> set[str]:
+    """Return the permission keys an account actually holds.
+
+    Args:
+        user: Authenticated account.
+
+    Returns:
+        The role preset unioned with the account's explicit grants.
+    """
+    from app.permissions import effective_permissions as resolve
+
+    return set(resolve(user.role, user.permissions))
+
+
+def user_has_permission(user: User, permission: str) -> bool:
+    """Return whether ``user`` holds ``permission``."""
+    return permission in effective_permissions(user)
+
+
+def require_permissions(*permissions: str) -> Callable:
+    """Build a dependency that requires every listed permission.
+
+    This is the least-privilege gate used by every privileged endpoint: a
+    viewer with an explicit grant passes, an administrator without the grant in
+    its preset fails.  Permission keys come from :mod:`app.permissions`.
+
+    Args:
+        *permissions: Permission keys the caller must hold.
+
+    Returns:
+        A FastAPI dependency callable returning the authenticated user.
+    """
+    required = tuple(permissions)
+
+    async def _dependency(user: User = Depends(get_current_user)) -> User:
+        held = effective_permissions(user)
+        missing = [permission for permission in required if permission not in held]
+        if missing:
+            logger.warning(
+                "permission_denied",
+                user_id=str(user.id),
+                missing=missing,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=(
+                    "You do not have permission to perform this action "
+                    f"(missing: {', '.join(missing)})"
+                ),
+            )
+        return user
+
+    return _dependency
 
 
 def require_roles(*roles: str) -> Callable:

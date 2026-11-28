@@ -11,16 +11,31 @@ import io
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFile, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    HTTPException,
+    Request,
+    Response,
+    UploadFile,
+    status,
+)
 from PIL import Image, UnidentifiedImageError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.database import get_db
-from app.deps import get_current_user, get_organization_or_404, rate_limit, require_roles
+from app.deps import (
+    get_current_user,
+    get_organization_or_404,
+    rate_limit,
+    require_permissions,
+)
 from app.logging_config import get_logger
 from app.models import Organization, User
 from app.schemas.organization import BrandingPublic, BrandingUpdate
+from app.services.audit_service import log_audit
 from app.services.email_design import logo_url_for_organization
 
 logger = get_logger(__name__)
@@ -70,11 +85,17 @@ async def get_branding(
 async def update_branding(
     org_id: uuid.UUID,
     payload: BrandingUpdate,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     organization: Organization = Depends(get_organization_or_404),
-    user: User = Depends(require_roles("admin", "manager")),
+    user: User = Depends(require_permissions("settings.branding")),
 ) -> BrandingPublic:
-    """Update the company name, primary colour and support address."""
+    """Update organization settings, recording a before/after audit entry."""
+    audit_before = {
+        "company_name": organization.name,
+        "primary_color": organization.brand_primary_color,
+        "support_email": organization.brand_support_email,
+    }
     if payload.company_name is not None:
         organization.name = payload.company_name.strip()
     if payload.primary_color is not None:
@@ -83,6 +104,21 @@ async def update_branding(
         organization.brand_support_email = (
             str(payload.support_email) if payload.support_email else None
         )
+    await db.flush()
+    log_audit(
+        db,
+        user=user,
+        action="UPDATE",
+        target_table="organizations",
+        target_id=str(organization.id),
+        old=audit_before,
+        new={
+            "company_name": organization.name,
+            "primary_color": organization.brand_primary_color,
+            "support_email": organization.brand_support_email,
+        },
+        request=request,
+    )
     await db.commit()
     await db.refresh(organization)
     logger.info("branding_updated", org_id=str(org_id), user_id=str(user.id))
@@ -95,7 +131,7 @@ async def upload_logo(
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
     organization: Organization = Depends(get_organization_or_404),
-    user: User = Depends(require_roles("admin", "manager")),
+    user: User = Depends(require_permissions("settings.branding")),
 ) -> BrandingPublic:
     """Validate, normalise and store a company logo.
 
@@ -142,7 +178,7 @@ async def delete_logo(
     org_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
     organization: Organization = Depends(get_organization_or_404),
-    user: User = Depends(require_roles("admin", "manager")),
+    user: User = Depends(require_permissions("settings.branding")),
 ) -> BrandingPublic:
     """Remove the stored logo and fall back to the branded initial mark."""
     organization.brand_logo_data = None

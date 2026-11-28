@@ -11,6 +11,57 @@ import re
 from typing import Any
 import user_agents
 
+#: User agents that only fetch a URL to build a link preview or crawl a page.
+#: WhatsApp, Telegram, Slack, Teams and the social networks all fetch shared
+#: links this way; counting them as QR scans inflates campaign statistics by
+#: exactly the number of times the link was pasted into a chat.
+PREVIEW_BOT_PATTERNS: tuple[str, ...] = (
+    "whatsapp/",
+    "telegrambot",
+    "facebookexternalhit",
+    "facebot",
+    "twitterbot",
+    "linkedinbot",
+    "slackbot",
+    "slack-imgproxy",
+    "discordbot",
+    "skypeuripreview",
+    "pinterest/",
+    "redditbot",
+    "embedly",
+    "vkshare",
+    "mattermost",
+    "googlebot",
+    "bingbot",
+    "applebot",
+    "duckduckbot",
+    "yandexbot",
+    "baiduspider",
+    "headlesschrome",
+    "phantomjs",
+    "python-requests",
+    "python-httpx",
+    "httpx/",
+    "aiohttp/",
+    "curl/",
+    "wget/",
+    "go-http-client",
+    "libwww-perl",
+    "okhttp/",
+)
+
+
+def is_preview_bot(user_agent: str | None) -> bool:
+    """Return ``True`` for link-preview fetchers and crawlers.
+
+    A real phone browser never carries these tokens, so the caller can skip the
+    scan instead of creating a phantom QR interaction.
+    """
+    value = (user_agent or "").strip().lower()
+    if not value:
+        return False
+    return any(token in value for token in PREVIEW_BOT_PATTERNS)
+
 # Known Samsung Galaxy Model Number to Commercial Name Mapping
 _SAMSUNG_MODELS: dict[str, str] = {
     # Galaxy S24 Series
@@ -163,7 +214,7 @@ def detect_device_model(
 
     # 3. iOS Device Disambiguation (Safari freezes UA to "iPhone")
     if "iphone" in ua_lower or "ipad" in ua_lower or fp.get("platform") in ("iPhone", "iPad", "iOS"):
-        screen_str = str(fp.get("screen") or "")
+        screen_str = str(fp.get("screen") or fp.get("screen_resolution") or "")
         pixel_ratio = int(fp.get("pixel_ratio") or 3)
         if "x" in screen_str:
             try:

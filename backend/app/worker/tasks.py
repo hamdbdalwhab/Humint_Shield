@@ -12,6 +12,8 @@ from collections.abc import Coroutine
 from datetime import datetime, timedelta, timezone
 from typing import Any, TypeVar
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.database import get_session_factory
 from app.logging_config import get_logger
 from app.services.campaign_launcher import CampaignLauncher
@@ -276,5 +278,65 @@ def retest_failed_campaign_employees(self, campaign_id: str) -> dict:  # noqa: A
     async def _run() -> dict:
         async with get_session_factory()() as session:
             return await execute_retest_failed_employees(campaign_id, session)
+
+    return run_async(_run())
+
+
+@celery_app.task(name="app.worker.tasks.check_smart_alerts")
+def check_smart_alerts() -> dict:
+    """Evaluate the smart alert rules and log every triggered alert.
+
+    Celery beat runs this hourly.  The rules themselves live in
+    :mod:`app.services.alert_service` so the same evaluation can be reused by
+    the live dashboard without duplicating thresholds.
+
+    Returns:
+        ``{"alerts": <count>, "types": [...]}``.
+    """
+    logger.info("task_check_smart_alerts")
+
+    async def _run() -> dict:
+        from app.services.alert_service import collect_smart_alerts
+
+        async with get_session_factory()() as session:
+            alerts = await collect_smart_alerts(session)
+        for alert in alerts:
+            logger.warning(
+                "smart_alert",
+                alert_type=alert["type"],
+                severity=alert["severity"],
+                detail=alert["detail_ar"],
+                entity_id=alert["entity_id"],
+            )
+        return {
+            "alerts": len(alerts),
+            "types": [alert["type"] for alert in alerts],
+        }
+
+    return run_async(_run())
+
+
+@celery_app.task(name="app.worker.tasks.archive_monthly_scores", bind=True, max_retries=0)
+def archive_monthly_scores(
+    self, month: str | None = None, force: bool = False
+) -> dict:  # noqa: ANN001
+    """Archive the current month's Elo scores and reset live scores to 1000.
+
+    Celery beat runs this daily at 23:59 UTC.  The service checks whether the
+    day is actually the last day of the month, so every other run is a cheap
+    no-op.  ``force=True`` (or an explicit ``month``) is used by the manual
+    admin endpoint and local tests.
+    """
+    logger.info("task_archive_monthly_scores", month=month, force=force)
+
+    async def _run() -> dict:
+        from app.services.employee_service import (
+            archive_monthly_scores as archive_scores,
+        )
+
+        async with get_session_factory()() as session:
+            return await archive_scores(
+                session, month_year=month, force=force
+            )
 
     return run_async(_run())

@@ -30,13 +30,11 @@ export default defineConfig({
         target: process.env.VITE_API_PROXY ?? 'http://localhost:8000',
         changeOrigin: true,
       },
-      // The backend owns /training/{tracking_uuid} (the standalone micro-learning
-      // page). The trailing slash matters: without it this prefix also captures
-      // the SPA route /training-library.
-      '/training/': {
-        target: process.env.VITE_API_PROXY ?? 'http://localhost:8000',
-        changeOrigin: true,
-      },
+      // /training/{tracking_uuid} is an SPA route and must stay with Vite. It used
+      // to be proxied to the backend, which answered with the *built* index.html:
+      // that document points at /assets/*.js, and the dev server does not serve
+      // those hashed files, so the training page rendered as a blank screen and
+      // recorded nothing. Only the API is proxied now.
     },
   },
   build: {

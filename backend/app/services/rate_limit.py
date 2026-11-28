@@ -36,13 +36,22 @@ class RateLimiter:
                 ``None``, :meth:`_get_redis` attempts to create one lazily.
         """
         self._redis = redis_client
-        self._redis_failed = False
+        #: Monotonic timestamp before which Redis is not retried after a failure.
+        self._redis_retry_at = 0.0
         self._memory: dict[str, deque[float]] = defaultdict(deque)
+        self._last_prune = 0.0
 
     async def _get_redis(self):
-        """Return a Redis client or ``None`` when unavailable."""
-        if self._redis is not None or self._redis_failed:
+        """Return a Redis client, or ``None`` while Redis is unreachable.
+
+        A failed connection is retried after a short cooldown instead of being
+        latched off for the lifetime of the process: a single transient blip
+        must not permanently downgrade every worker to per-process limits.
+        """
+        if self._redis is not None:
             return self._redis
+        if time.monotonic() < self._redis_retry_at:
+            return None
         settings = get_settings()
         try:
             import redis.asyncio as aioredis
@@ -58,7 +67,7 @@ class RateLimiter:
             self._redis = client
         except Exception as exc:  # pragma: no cover - depends on environment
             logger.warning("rate_limit_redis_unavailable", error=str(exc))
-            self._redis_failed = True
+            self._redis_retry_at = time.monotonic() + 30.0
             self._redis = None
         return self._redis
 
@@ -89,7 +98,7 @@ class RateLimiter:
                 raise
             except Exception as exc:  # pragma: no cover - redis outage
                 logger.warning("rate_limit_redis_error", error=str(exc))
-                self._redis_failed = True
+                self._redis_retry_at = time.monotonic() + 30.0
                 self._redis = None
         self._check_memory(key, limit, window, now)
 
@@ -108,6 +117,7 @@ class RateLimiter:
 
     def _check_memory(self, key: str, limit: int, window: int, now: float) -> None:
         """Sliding-window check backed by a process-local deque."""
+        self._prune(now, window)
         bucket = self._memory[key]
         cutoff = now - window
         while bucket and bucket[0] <= cutoff:
@@ -116,6 +126,25 @@ class RateLimiter:
             retry_after = max(1, int(window - (now - bucket[0])) + 1)
             raise RateLimitExceeded(retry_after=retry_after)
         bucket.append(now)
+
+    def _prune(self, now: float, window: int) -> None:
+        """Drop expired buckets so the fallback store cannot grow without bound.
+
+        The limiter is keyed by caller-controlled values (IP, scope); leaving
+        empty deques behind would turn a spoofed-IP flood into a memory leak.
+
+        Args:
+            now: Current epoch seconds.
+            window: Active window length in seconds.
+        """
+        if now - self._last_prune < 60:
+            return
+        self._last_prune = now
+        cutoff = now - window
+        for stale_key in [
+            k for k, bucket in self._memory.items() if not bucket or bucket[-1] <= cutoff
+        ]:
+            self._memory.pop(stale_key, None)
 
     async def reset(self, key: str) -> None:
         """Clear the counters for ``key`` (used by tests and admin tooling)."""

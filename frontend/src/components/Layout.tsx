@@ -6,9 +6,13 @@
  * default and collapses to a temporary drawer on small screens.
  */
 import AppBar from '@mui/material/AppBar';
+import Autocomplete from '@mui/material/Autocomplete';
 import Avatar from '@mui/material/Avatar';
 import Badge from '@mui/material/Badge';
 import Box from '@mui/material/Box';
+import Dialog from '@mui/material/Dialog';
+import DialogContent from '@mui/material/DialogContent';
+import DialogTitle from '@mui/material/DialogTitle';
 import Divider from '@mui/material/Divider';
 import Drawer from '@mui/material/Drawer';
 import IconButton from '@mui/material/IconButton';
@@ -20,6 +24,7 @@ import Menu from '@mui/material/Menu';
 import MenuItem from '@mui/material/MenuItem';
 import Popover from '@mui/material/Popover';
 import Stack from '@mui/material/Stack';
+import TextField from '@mui/material/TextField';
 import Toolbar from '@mui/material/Toolbar';
 import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
@@ -27,6 +32,7 @@ import { alpha, useTheme } from '@mui/material/styles';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
   Activity,
+  BarChart3,
   Bell,
   BookOpen,
   ChevronLeft,
@@ -47,13 +53,14 @@ import {
   Sparkles,
   Terminal,
   Usb,
+  UserSearch,
   Users,
 } from 'lucide-react';
 import { useMemo, useState, type ReactNode } from 'react';
 import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 
-import { lmsApi } from '@/api/endpoints';
+import { employeesApi, lmsApi } from '@/api/endpoints';
 import { PageTransition } from '@/components/PageTransition';
 import { useAuth } from '@/hooks/useAuth';
 import { relativeArabic } from '@/lib/format';
@@ -73,6 +80,7 @@ const CAMPAIGN_NAV: NavItem[] = [
   { labelAr: 'الموظفون', labelEn: 'Human Assets', to: '/employees', icon: <Users size={19} /> },
   { labelAr: 'قوالب الرسائل', labelEn: 'Templates', to: '/templates', icon: <Mail size={19} /> },
   { labelAr: 'الحملات', labelEn: 'Campaigns', to: '/campaigns', icon: <Megaphone size={19} /> },
+  { labelAr: 'التقارير', labelEn: 'Reports', to: '/reports', icon: <BarChart3 size={19} /> },
   { labelAr: 'محاكاة SOC', labelEn: 'SOC Simulation', to: '/incident-response-simulation', icon: <Terminal size={19} /> },
 ];
 
@@ -88,6 +96,7 @@ const PAGE_TITLES: Array<{ prefix: string; ar: string; en: string }> = [
   { prefix: '/employees', ar: 'الموظفون', en: 'Human Assets' },
   { prefix: '/templates', ar: 'قوالب الرسائل', en: 'Templates' },
   { prefix: '/campaigns', ar: 'الحملات', en: 'Campaigns' },
+  { prefix: '/reports', ar: 'التقارير', en: 'Reports' },
   {
     prefix: '/incident-response-simulation',
     ar: 'محاكاة SOC',
@@ -98,6 +107,7 @@ const PAGE_TITLES: Array<{ prefix: string; ar: string; en: string }> = [
   { prefix: '/my-training', ar: 'تدريبي', en: 'My Training' },
   { prefix: '/report-inbox', ar: 'صندوق البلاغات', en: 'Report Inbox' },
   { prefix: '/settings', ar: 'الإعدادات', en: 'Settings' },
+  { prefix: '/change-password', ar: 'تغيير كلمة المرور', en: 'Change Password' },
 ];
 
 interface RecentEvent {
@@ -222,6 +232,8 @@ export function Layout({ children }: { children: ReactNode }) {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [profileAnchor, setProfileAnchor] = useState<null | HTMLElement>(null);
   const [bellAnchor, setBellAnchor] = useState<null | HTMLElement>(null);
+  const [peopleOpen, setPeopleOpen] = useState(false);
+  const [peopleSearch, setPeopleSearch] = useState('');
   const { user, logout, organizationId } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
@@ -239,6 +251,20 @@ export function Layout({ children }: { children: ReactNode }) {
     () => ((dashboardQuery.data?.recent_events ?? []) as RecentEvent[]).slice(0, 8),
     [dashboardQuery.data],
   );
+
+  const peopleOptionsQuery = useQuery({
+    queryKey: ['employees', organizationId, 'quick-open', peopleSearch],
+    queryFn: () =>
+      employeesApi.list(organizationId as string, {
+        search: peopleSearch || undefined,
+        per_page: 20,
+        is_active: true,
+      }),
+    enabled: Boolean(organizationId && peopleOpen),
+    staleTime: 20_000,
+  });
+
+  const peopleOptions = peopleOptionsQuery.data?.items ?? [];
 
   const pageTitle = useMemo(() => {
     if (location.pathname === '/') return { ar: 'مركز القيادة', en: 'Command Center' };
@@ -391,6 +417,16 @@ export function Layout({ children }: { children: ReactNode }) {
               <Typography sx={{ fontSize: '0.68rem', fontWeight: 800, color: 'primary.main' }}>AR</Typography>
               <Typography sx={{ fontSize: '0.62rem' }}>RTL</Typography>
             </Box>
+          </Tooltip>
+
+          <Tooltip title="فتح ملف موظف">
+            <IconButton
+              onClick={() => setPeopleOpen(true)}
+              aria-label="فتح ملف موظف"
+              sx={{ display: { xs: 'none', sm: 'inline-flex' } }}
+            >
+              <UserSearch size={20} />
+            </IconButton>
           </Tooltip>
 
           <Tooltip title="أحدث أحداث التتبع">
@@ -547,6 +583,17 @@ export function Layout({ children }: { children: ReactNode }) {
         <MenuItem
           onClick={() => {
             setProfileAnchor(null);
+            navigate('/change-password');
+          }}
+        >
+          <ListItemIcon>
+            <KeyRound size={16} />
+          </ListItemIcon>
+          <ListItemText primary="تغيير كلمة المرور" />
+        </MenuItem>
+        <MenuItem
+          onClick={() => {
+            setProfileAnchor(null);
             void logout();
           }}
         >
@@ -614,6 +661,43 @@ export function Layout({ children }: { children: ReactNode }) {
           </AnimatePresence>
         </Box>
       </Box>
+
+      <Dialog
+        open={peopleOpen}
+        onClose={() => setPeopleOpen(false)}
+        fullWidth
+        maxWidth="sm"
+        dir="rtl"
+        TransitionProps={{ onExited: () => setPeopleSearch('') }}
+      >
+        <DialogTitle sx={{ fontWeight: 800, fontSize: '1rem' }}>فتح ملف موظف</DialogTitle>
+        <DialogContent sx={{ pb: 2.5 }}>
+          <Autocomplete
+            options={peopleOptions}
+            loading={peopleOptionsQuery.isLoading}
+            getOptionLabel={(option) => `${option.first_name} ${option.last_name} — ${option.email}`}
+            isOptionEqualToValue={(option, value) => option.id === value.id}
+            noOptionsText="لا يوجد موظف مطابق"
+            loadingText="جارٍ البحث…"
+            onInputChange={(_, value) => setPeopleSearch(value)}
+            onChange={(_, value) => {
+              if (!value) return;
+              setPeopleOpen(false);
+              setPeopleSearch('');
+              navigate(`/employees/${value.id}/intelligence`);
+            }}
+            renderInput={(params) => (
+              <TextField
+                {...params}
+                autoFocus
+                label="ابحث بالاسم أو البريد الإلكتروني"
+                placeholder="اكتب حرفين على الأقل…"
+                sx={{ mt: 1 }}
+              />
+            )}
+          />
+        </DialogContent>
+      </Dialog>
     </Box>
   );
 }

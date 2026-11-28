@@ -17,6 +17,7 @@ synthetic event list so history is never lost.
 """
 from __future__ import annotations
 
+import re
 import uuid
 from typing import Any
 
@@ -47,8 +48,18 @@ EVENT_LABELS = {
     "training_completed": "Micro-training completed",
     "qr_scanned": "QR code scanned",
     "usb_opened": "USB awareness document opened",
+    "usb_device_probe": "Device identity collected by the local tool",
     "credential_disclosed": "Verification code disclosed",
     "financial_fraud": "Gift-card codes sent",
+    # Real voice calls.  ``not_answered`` is a recipient outcome (the phone rang
+    # and nobody picked up); ``failed`` means the call never got through.
+    "vishing_call_placed": "Vishing call placed",
+    "vishing_call_created": "Vishing call placed",
+    "vishing_call_ringing": "Phone ringing",
+    "vishing_call_answered": "Call answered",
+    "vishing_call_completed": "Vishing call completed",
+    "vishing_call_not_answered": "Vishing call — no answer",
+    "vishing_call_failed": "Vishing call could not be completed",
 }
 
 
@@ -221,6 +232,189 @@ def serialize_interaction(interaction: TrainingInteraction) -> dict:
     }
 
 
+def build_forensic_context(tracking: EmailTracking) -> dict | None:
+    """Flatten what a USB document captured into the dossier's field names.
+
+    The packet is stored nested (``client_context['usb_telemetry']`` with
+    ``device``/``screen``/``gpu``/``webrtc``/``server`` sub-objects) so nothing
+    is lost.  The dossier renders one flat card per section, so this helper
+    lifts every value to the key the UI reads **and** keeps the raw packet, so a
+    scan is never displayed as a wall of dashes.
+
+    Returns:
+        The flattened context, or ``None`` when the tracking row never carried
+        a client context (email/SMS rows).
+    """
+    raw = tracking.client_context
+    context = raw if isinstance(raw, dict) else {}
+    if not context:
+        return None
+    packet = (
+        context.get("usb_telemetry")
+        if isinstance(context.get("usb_telemetry"), dict)
+        else {}
+    )
+    if not packet:
+        # Email/QR contexts are already flat; flattening them with an empty USB
+        # packet would overwrite their own keys with ``None``.
+        return context
+    device = packet.get("device") if isinstance(packet.get("device"), dict) else {}
+    screen = packet.get("screen") if isinstance(packet.get("screen"), dict) else {}
+    gpu = packet.get("gpu") if isinstance(packet.get("gpu"), dict) else {}
+    source = packet.get("source") if isinstance(packet.get("source"), dict) else {}
+    server = packet.get("server") if isinstance(packet.get("server"), dict) else {}
+    webrtc = packet.get("webrtc") if isinstance(packet.get("webrtc"), dict) else {}
+    network = packet.get("network") if isinstance(packet.get("network"), dict) else {}
+    geo = context.get("geo") if isinstance(context.get("geo"), dict) else {}
+    probe_block = (
+        packet.get("local_probe")
+        if isinstance(packet.get("local_probe"), dict)
+        else {}
+    )
+    # The optional local collector is the only source that can name the Windows
+    # account and the real machine; when it ran, its values outrank the browser's
+    # masked guesses.  ``identity`` is the current shape; the block itself is
+    # accepted too so an older row still renders.
+    probe = (
+        probe_block.get("identity")
+        if isinstance(probe_block.get("identity"), dict)
+        else probe_block
+    )
+    source_meta = (
+        context.get("usb_source")
+        if isinstance(context.get("usb_source"), dict)
+        else {}
+    )
+
+    candidates = [str(item) for item in (webrtc.get("local_ips") or []) if item]
+    mdns_name = next((item for item in candidates if item.endswith(".local")), None)
+    # Modern browsers replace the real hostname with a random mDNS UUID.  It is
+    # kept (it still identifies the machine across visits) but it must never be
+    # presented as the machine's name.
+    random_mdns = bool(
+        mdns_name
+        and re.fullmatch(
+            r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\.local",
+            mdns_name,
+        )
+    )
+    browser_hostname = device.get("hostname") or context.get("hostname")
+    probe_hostname = probe.get("hostname") or None
+    probe_username = probe.get("username") or None
+    device_real_name = (
+        probe_hostname
+        or (None if (browser_hostname and random_mdns) else browser_hostname)
+        or context.get("device_real_name")
+        or None
+    )
+    identity_source = context.get("identity_source") or (
+        "local_tool"
+        if probe
+        else "query_parameter"
+        if context.get("username") or context.get("hostname")
+        else None
+    )
+    local_ip = next((item for item in candidates if not item.endswith(".local")), None)
+    fingerprint_value = (
+        packet.get("fingerprint")
+        or context.get("device_fingerprint")
+        or None
+    )
+    scan_count = int(tracking.open_count or 1)
+
+    return {
+        **context,
+        # --- Hardware ---------------------------------------------------
+        "device_real_name": device_real_name,
+        "device_model": (
+            probe.get("model") or server.get("device_model") or device.get("ua_model") or None
+        ),
+        "device_owner_name": context.get("device_owner_name") or None,
+        "gpu_renderer": gpu.get("renderer") or None,
+        "gpu_vendor": gpu.get("vendor") or None,
+        "webgl_renderer": gpu.get("renderer") or None,
+        "cpu_cores": probe.get("cpu_cores") or device.get("hardware_concurrency") or None,
+        "cpu_model": probe.get("cpu") or None,
+        "cpu_logical": probe.get("cpu_logical") or None,
+        "device_memory_gb": (
+            probe.get("ram_gb")
+            or device.get("device_memory_gb")
+            or device.get("estimate_ram_gb")
+            or None
+        ),
+        "hardware_fingerprint": fingerprint_value,
+        "fingerprint_hash": fingerprint_value,
+        # --- Network ----------------------------------------------------
+        "local_ip": local_ip or tracking.last_ip_address,
+        "public_ip": server.get("ip") or tracking.last_ip_address,
+        "mDNS_name": mdns_name,
+        "hostname": probe_hostname or (None if random_mdns else browser_hostname or None),
+        "username": probe_username or device.get("username") or context.get("username") or None,
+        # --- Local identity tool ---------------------------------------
+        "identity_source": identity_source,
+        "windows_account": probe_username,
+        "windows_hostname": probe_hostname,
+        "windows_account_domain": probe.get("user_domain") or probe.get("domain"),
+        "windows_logged_on_user": probe.get("logged_on_user") or None,
+        "device_domain": probe.get("domain") or probe.get("workgroup") or None,
+        "device_manufacturer": probe.get("manufacturer") or None,
+        "device_serial": probe.get("serial") or None,
+        "os_build": probe.get("os_build") or None,
+        "os_version": probe.get("os_version") or None,
+        "probe_elevated": probe.get("is_admin"),
+        "probe_collected_at": probe.get("collected_at") or probe_block.get("received_at"),
+        "probe_mac": probe.get("mac") or None,
+        "local_probe": probe_block or None,
+        "isp": server.get("isp") or geo.get("isp") or None,
+        "city": server.get("city") or geo.get("city") or None,
+        "country": server.get("country") or geo.get("country") or None,
+        "latitude": (
+            server.get("latitude")
+            if server.get("latitude") is not None
+            else geo.get("latitude")
+        ),
+        "longitude": (
+            server.get("longitude")
+            if server.get("longitude") is not None
+            else geo.get("longitude")
+        ),
+        # --- Display & browser -----------------------------------------
+        "screen_resolution": (
+            f"{screen.get('width')}x{screen.get('height')}"
+            if screen.get("width") and screen.get("height")
+            else None
+        ),
+        "pixel_ratio": screen.get("pixel_ratio"),
+        "color_depth": screen.get("color_depth"),
+        "language": device.get("language") or context.get("language"),
+        "languages": device.get("languages") or context.get("languages"),
+        "timezone": device.get("timezone") or context.get("timezone"),
+        "os": device.get("os") or context.get("os"),
+        "browser": device.get("browser") or context.get("browser"),
+        "user_agent": (
+            device.get("user_agent")
+            or tracking.last_user_agent
+            or context.get("user_agent")
+        ),
+        "network": network or None,
+        "power": packet.get("power") or None,
+        # --- Provenance ------------------------------------------------
+        "status": context.get("status") or (
+            "repeat_scan" if scan_count > 1 else "first_scan"
+        ),
+        "scan_count": scan_count,
+        "source_path": (
+            source.get("path") or context.get("source_path") or source_meta.get("path")
+        ),
+        "source_url": source.get("href") or source_meta.get("href"),
+        "opened_at": source.get("opened_at"),
+        "telemetry_received": bool(packet),
+        # Raw packets stay available for the debug footer and exports.
+        "usb_telemetry": packet or None,
+        "geo": geo or None,
+    }
+
+
 def build_record(
     tracking: EmailTracking,
     campaign: EmailCampaign,
@@ -285,7 +479,7 @@ def build_record(
         "submitted_identifier": tracking.submitted_identifier,
         "submitted_fields": tracking.submitted_fields or None,
         "submitted_values": latest_values,
-        "client_context": tracking.client_context or None,
+        "client_context": build_forensic_context(tracking),
         "events": events,
         "submissions": submissions,
     }
@@ -441,10 +635,13 @@ class InteractionReportService:
         Returns:
             Ledger entries enriched with the recipient's name and address.
         """
+        # An outer join keeps campaign-level rows (a generic USB drop, an
+        # anonymous QR scan) in the feed: those have no employee record, and an
+        # inner join silently dropped their events from the audit trail.
         rows = (
             await db.execute(
                 select(EmailTracking, HumanAsset)
-                .join(HumanAsset, HumanAsset.id == EmailTracking.employee_id)
+                .outerjoin(HumanAsset, HumanAsset.id == EmailTracking.employee_id)
                 .where(EmailTracking.campaign_id == campaign.id)
             )
         ).all()
@@ -455,14 +652,32 @@ class InteractionReportService:
         feed: list[dict[str, Any]] = []
         for tracking, employee in rows:
             events = grouped.get(tracking.id) or synthesized_events(tracking)
+            if employee is not None:
+                employee_id = employee.id
+                employee_name = employee.full_name
+                employee_email = employee.email
+                department = employee.department
+            else:
+                employee_id = tracking.id
+                employee_name = (
+                    "USB drop endpoint"
+                    if (tracking.channel or "").strip().lower() == "usb"
+                    else "Unknown visitor"
+                )
+                employee_email = tracking.submitted_email or "—"
+                department = (
+                    "Physical USB drop"
+                    if (tracking.channel or "").strip().lower() == "usb"
+                    else "Unattributed"
+                )
             for event in events:
                 feed.append(
                     {
                         **event,
-                        "employee_id": employee.id,
-                        "employee_name": employee.full_name,
-                        "employee_email": employee.email,
-                        "department": employee.department,
+                        "employee_id": employee_id,
+                        "employee_name": employee_name,
+                        "employee_email": employee_email,
+                        "department": department,
                     }
                 )
         feed.sort(key=lambda item: item["occurred_at"])

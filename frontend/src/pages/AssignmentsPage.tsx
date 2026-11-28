@@ -1,5 +1,10 @@
 /**
  * Assignments: remediation tracking for training modules.
+ *
+ * An assignment is an internal training task, never an email. The page now
+ * derives an "overdue" state from the due date (the database only stores
+ * ``assigned``/``completed``) so a past-due remediation cannot masquerade as
+ * healthy, and all write actions are gated by ``lms.manage``.
  */
 import Alert from '@mui/material/Alert';
 import Button from '@mui/material/Button';
@@ -10,6 +15,7 @@ import DialogActions from '@mui/material/DialogActions';
 import DialogContent from '@mui/material/DialogContent';
 import DialogTitle from '@mui/material/DialogTitle';
 import IconButton from '@mui/material/IconButton';
+import InputAdornment from '@mui/material/InputAdornment';
 import MenuItem from '@mui/material/MenuItem';
 import Stack from '@mui/material/Stack';
 import Table from '@mui/material/Table';
@@ -21,9 +27,10 @@ import TableRow from '@mui/material/TableRow';
 import TextField from '@mui/material/TextField';
 import Tooltip from '@mui/material/Tooltip';
 import AddIcon from '@mui/icons-material/Add';
+import SearchIcon from '@mui/icons-material/Search';
 import SendIcon from '@mui/icons-material/Send';
 import TaskAltIcon from '@mui/icons-material/TaskAlt';
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import toast from 'react-hot-toast';
@@ -31,12 +38,13 @@ import toast from 'react-hot-toast';
 import { employeesApi, lmsApi } from '@/api/endpoints';
 import { EmptyState, LoadingState } from '@/components/Feedback';
 import { PageHeader } from '@/components/PageHeader';
+import { StatCard } from '@/components/StatCard';
 import { useAuth } from '@/hooks/useAuth';
 import { errorMessage } from '@/lib/errors';
 import { formatDate } from '@/lib/format';
 import type { Assignment } from '@/types';
 
-const STATUS_OPTIONS = ['all', 'assigned', 'completed'] as const;
+const STATUS_OPTIONS = ['all', 'assigned', 'completed', 'overdue'] as const;
 
 const STATUS_COLORS: Record<string, 'default' | 'info' | 'success' | 'warning'> = {
   assigned: 'info',
@@ -44,12 +52,24 @@ const STATUS_COLORS: Record<string, 'default' | 'info' | 'success' | 'warning'> 
   overdue: 'warning',
 };
 
+/** An assignment is overdue when it is open and its due date has passed. */
+function isOverdue(assignment: Assignment): boolean {
+  if (assignment.status === 'completed' || !assignment.due_date) return false;
+  return new Date(assignment.due_date).getTime() < Date.now();
+}
+
+function derivedStatus(assignment: Assignment): string {
+  return isOverdue(assignment) ? 'overdue' : assignment.status;
+}
+
 export function AssignmentsPage() {
-  const { organizationId } = useAuth();
+  const { organizationId, can } = useAuth();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+  const canManage = can('lms.manage');
 
   const [statusFilter, setStatusFilter] = useState<string>('all');
+  const [search, setSearch] = useState('');
   const [dialogOpen, setDialogOpen] = useState(false);
   const [moduleId, setModuleId] = useState('');
   const [employeeId, setEmployeeId] = useState('');
@@ -57,11 +77,8 @@ export function AssignmentsPage() {
   const [notes, setNotes] = useState('');
 
   const assignmentsQuery = useQuery({
-    queryKey: ['assignments', organizationId, statusFilter],
-    queryFn: () =>
-      lmsApi.assignments(organizationId as string, {
-        status: statusFilter === 'all' ? undefined : statusFilter,
-      }),
+    queryKey: ['assignments', organizationId],
+    queryFn: () => lmsApi.assignments(organizationId as string),
     enabled: Boolean(organizationId),
   });
 
@@ -111,6 +128,39 @@ export function AssignmentsPage() {
     onError: (error) => toast.error(errorMessage(error)),
   });
 
+  const allAssignments = useMemo<Assignment[]>(
+    () => assignmentsQuery.data ?? [],
+    [assignmentsQuery.data],
+  );
+
+  const counts = useMemo(() => {
+    const completed = allAssignments.filter((item) => item.status === 'completed').length;
+    const overdue = allAssignments.filter(isOverdue).length;
+    return {
+      total: allAssignments.length,
+      completed,
+      overdue,
+      open: allAssignments.length - completed,
+      rate: allAssignments.length ? Math.round((completed / allAssignments.length) * 100) : 0,
+    };
+  }, [allAssignments]);
+
+  const visible = useMemo(() => {
+    const needle = search.trim().toLowerCase();
+    return allAssignments.filter((assignment) => {
+      if (statusFilter !== 'all' && derivedStatus(assignment) !== statusFilter) return false;
+      if (!needle) return true;
+      return [
+        assignment.module_title,
+        assignment.employee_name,
+        assignment.employee_email,
+        assignment.notes,
+      ]
+        .filter(Boolean)
+        .some((value) => String(value).toLowerCase().includes(needle));
+    });
+  }, [allAssignments, search, statusFilter]);
+
   if (!organizationId) {
     return <Alert severity="warning">Your account is not attached to an organization.</Alert>;
   }
@@ -129,20 +179,60 @@ export function AssignmentsPage() {
             >
               Send simulation email
             </Button>
-            <Button variant="contained" startIcon={<AddIcon />} onClick={() => setDialogOpen(true)}>
+            <Button
+              variant="contained"
+              startIcon={<AddIcon />}
+              disabled={!canManage}
+              onClick={() => setDialogOpen(true)}
+            >
               New assignment
             </Button>
           </Stack>
         }
       />
 
+      <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} sx={{ mb: 3 }}>
+        <Card sx={{ flex: 1, p: 0 }}>
+          <StatCard label="Open" value={counts.open} tone="primary" />
+        </Card>
+        <Card sx={{ flex: 1, p: 0 }}>
+          <StatCard label="Overdue" value={counts.overdue} tone={counts.overdue ? 'error' : 'success'} />
+        </Card>
+        <Card sx={{ flex: 1, p: 0 }}>
+          <StatCard label="Completed" value={counts.completed} tone="success" />
+        </Card>
+        <Card sx={{ flex: 1, p: 0 }}>
+          <StatCard label="Completion rate" value={`${counts.rate}%`} tone="default" />
+        </Card>
+      </Stack>
+
+      {counts.overdue > 0 ? (
+        <Alert severity="warning" sx={{ mb: 2 }}>
+          {counts.overdue} assignment{counts.overdue === 1 ? '' : 's'} passed the due date without
+          completion. Follow up or reassign the module — remediation that is never finished leaves
+          the risk in place.
+        </Alert>
+      ) : null}
+
       <Alert severity="info" sx={{ mb: 2 }}>
-        Creating an assignment only records an internal training task — <strong>it never sends an email</strong>.
-        To send a real phishing-simulation email with live open/click tracking, use{' '}
-        <strong>Campaigns → New campaign</strong>.
+        Creating an assignment only records an internal training task —{' '}
+        <strong>it never sends an email</strong>. To send a real phishing-simulation email with live
+        open/click tracking, use <strong>Campaigns → New campaign</strong>.
       </Alert>
 
-      <Stack direction="row" spacing={2} sx={{ mb: 2 }} alignItems="center">
+      {!canManage ? (
+        <Alert severity="info" sx={{ mb: 2 }}>
+          You have read-only access. Creating or completing assignments requires{' '}
+          <code>lms.manage</code>.
+        </Alert>
+      ) : null}
+
+      <Stack
+        direction={{ xs: 'column', sm: 'row' }}
+        spacing={2}
+        sx={{ mb: 2 }}
+        alignItems={{ xs: 'stretch', sm: 'center' }}
+      >
         <TextField
           select
           size="small"
@@ -157,18 +247,36 @@ export function AssignmentsPage() {
             </MenuItem>
           ))}
         </TextField>
-        <Chip label={`${assignmentsQuery.data?.length ?? 0} assignments`} />
+        <TextField
+          size="small"
+          label="Search"
+          value={search}
+          onChange={(event) => setSearch(event.target.value)}
+          sx={{ minWidth: 260 }}
+          InputProps={{
+            startAdornment: (
+              <InputAdornment position="start">
+                <SearchIcon fontSize="small" />
+              </InputAdornment>
+            ),
+          }}
+        />
+        <Chip label={`${visible.length} of ${counts.total} assignments`} />
       </Stack>
 
       {assignmentsQuery.isLoading ? (
         <LoadingState label="Loading assignments…" />
       ) : assignmentsQuery.error ? (
         <Alert severity="error">{errorMessage(assignmentsQuery.error)}</Alert>
-      ) : (assignmentsQuery.data ?? []).length === 0 ? (
+      ) : visible.length === 0 ? (
         <Card>
           <EmptyState
-            title="No assignments"
-            description="Create an assignment from the Training Library or from this page."
+            title={allAssignments.length === 0 ? 'No assignments' : 'No matching assignments'}
+            description={
+              allAssignments.length === 0
+                ? 'Create an assignment from the Training Library or from this page.'
+                : 'Adjust the status or search to widen the view.'
+            }
           />
         </Card>
       ) : (
@@ -187,41 +295,51 @@ export function AssignmentsPage() {
                 </TableRow>
               </TableHead>
               <TableBody>
-                {assignmentsQuery.data?.map((assignment) => (
-                  <TableRow key={assignment.id} hover>
-                    <TableCell>{assignment.module_title ?? '—'}</TableCell>
-                    <TableCell>
-                      {assignment.employee_name ?? assignment.employee_email ?? 'Whole organization'}
-                    </TableCell>
-                    <TableCell align="center">
-                      <Chip
-                        size="small"
-                        variant="outlined"
-                        label={assignment.status}
-                        color={STATUS_COLORS[assignment.status] ?? 'default'}
-                      />
-                    </TableCell>
-                    <TableCell>{formatDate(assignment.due_date)}</TableCell>
-                    <TableCell>{formatDate(assignment.completed_at)}</TableCell>
-                    <TableCell>{assignment.notes ?? '—'}</TableCell>
-                    <TableCell align="right">
-                      {assignment.status !== 'completed' ? (
-                        <Tooltip title="Mark complete">
-                          <IconButton
-                            size="small"
-                            color="success"
-                            disabled={completeMutation.isPending}
-                            onClick={() => completeMutation.mutate(assignment)}
-                          >
-                            <TaskAltIcon fontSize="small" />
-                          </IconButton>
-                        </Tooltip>
-                      ) : (
-                        <TaskAltIcon fontSize="small" color="success" />
-                      )}
-                    </TableCell>
-                  </TableRow>
-                ))}
+                {visible.map((assignment) => {
+                  const status = derivedStatus(assignment);
+                  const overdue = status === 'overdue';
+                  return (
+                    <TableRow key={assignment.id} hover>
+                      <TableCell>{assignment.module_title ?? '—'}</TableCell>
+                      <TableCell>
+                        {assignment.employee_name ??
+                          assignment.employee_email ??
+                          'Whole organization'}
+                      </TableCell>
+                      <TableCell align="center">
+                        <Chip
+                          size="small"
+                          variant="outlined"
+                          label={status}
+                          color={STATUS_COLORS[status] ?? 'default'}
+                        />
+                      </TableCell>
+                      <TableCell sx={overdue ? { color: 'error.main', fontWeight: 700 } : undefined}>
+                        {formatDate(assignment.due_date)}
+                      </TableCell>
+                      <TableCell>{formatDate(assignment.completed_at)}</TableCell>
+                      <TableCell>{assignment.notes ?? '—'}</TableCell>
+                      <TableCell align="right">
+                        {assignment.status !== 'completed' ? (
+                          <Tooltip title={canManage ? 'Mark complete' : 'Requires lms.manage'}>
+                            <span>
+                              <IconButton
+                                size="small"
+                                color="success"
+                                disabled={completeMutation.isPending || !canManage}
+                                onClick={() => completeMutation.mutate(assignment)}
+                              >
+                                <TaskAltIcon fontSize="small" />
+                              </IconButton>
+                            </span>
+                          </Tooltip>
+                        ) : (
+                          <TaskAltIcon fontSize="small" color="success" />
+                        )}
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
               </TableBody>
             </Table>
           </TableContainer>
@@ -233,8 +351,8 @@ export function AssignmentsPage() {
         <DialogContent dividers>
           <Stack spacing={2} sx={{ mt: 1 }}>
             <Alert severity="warning">
-              This action does not send email to the employee. To deliver a real simulation email, launch a
-              campaign instead.
+              This action does not send email to the employee. To deliver a real simulation email,
+              launch a campaign instead.
             </Alert>
             <TextField
               select
@@ -287,7 +405,7 @@ export function AssignmentsPage() {
           <Button onClick={() => setDialogOpen(false)}>Cancel</Button>
           <Button
             variant="contained"
-            disabled={!moduleId || createMutation.isPending}
+            disabled={!moduleId || createMutation.isPending || !canManage}
             onClick={() => createMutation.mutate()}
           >
             Create (no email)
